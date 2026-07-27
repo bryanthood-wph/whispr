@@ -76,6 +76,30 @@ doesn't work as expected:
   [unsorted]`) are placeholders for a separate personal note-taking workflow
   of the original author's - harmless, just ignore them.
 
+## Your data
+
+- Transcripts, recordings, and logs go wherever you chose during setup
+  (default: `Documents\whispr-data`) - not inside the install folder itself.
+- Audio (WAV) files are deleted automatically once a call transcribes
+  successfully. If transcription fails, the audio is kept so it can be
+  retried - clean those up yourself if you don't want them kept.
+- Transcripts (the `.md` files) are never auto-deleted. Delete them from
+  your chosen output folder yourself whenever you want.
+- After setup, the install folder itself (the bundled Python + dependencies
+  + model) takes up roughly 900MB-1GB on disk, separate from the ~550MB
+  one-time download.
+
+## Uninstall / stop it from starting at login
+
+1. Delete the shortcut at
+   `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\whispr.lnk`
+   (paste that path into File Explorer's address bar) - whispr will no
+   longer start automatically at your next login.
+2. If whispr is currently running, right-click its tray icon and quit it.
+3. Delete the folder you installed whispr into. That's everything - nothing
+   else is written outside your chosen output folder (see "Your data"
+   above) and that Startup shortcut.
+
 ## Manual start / troubleshooting
 
 - To start whispr right now instead of waiting for your next login,
@@ -84,3 +108,5 @@ doesn't work as expected:
   useful if you need to report a problem.
 - To change your microphone/speaker pick or output folder later, just run
   `install.cmd` again.
+- Questions or problems: ask whoever shared this repo with you, or open an
+  issue on the GitHub repo if you have access to file one.

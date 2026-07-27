@@ -38,10 +38,21 @@ understand this before it sets anything up.
 
 See **[README-INSTALL.md](README-INSTALL.md)** for the full walkthrough. Short
 version: download this repo, double-click `install.cmd`, confirm the consent
-notice, answer two questions (where to save files, which mic/speaker to
-use), wait a few minutes on the first run. Windows x64 + the new Teams
-client only — see README-INSTALL.md for the full list of known limitations
-(Outlook variants, locale, ARM64, etc.).
+notice, answer a few setup questions (where to save files, which mic/speaker
+to use), then wait — the first run downloads a one-time ~550MB setup package,
+so give it a few minutes. Designed for Windows x64 + the new Teams client;
+the installer warns (but lets you continue) on other setups — see
+README-INSTALL.md for the full list of known limitations (Outlook variants,
+locale, ARM64, etc.).
+
+Some antivirus/Defender tools flag unsigned software that watches for
+windows, opens your mic/speakers, and sets itself to start at login — all
+normal for what this does. See README-INSTALL.md if you hit that.
+
+**Your data**: files land wherever you choose during setup, not bundled
+with the app. Audio is deleted automatically after a successful
+transcription; transcripts are never auto-deleted — see README-INSTALL.md
+for the full data/retention and uninstall details.
 
 ## Why there's no built-in summarization
 
@@ -65,11 +76,32 @@ needing the original author to do it for you.
 whispr/
   config.yaml     # every tunable (paths, device matching, model, thresholds)
   whispr/         # watcher -> capture -> transcribe -> output pipeline
-  transcripts/    # where finished .md transcripts land
+  transcripts/    # dev default; the installer repoints this to your chosen
+                  # output folder (see "Your data" above)
+```
+
+A sample of what a finished transcript looks like:
+
+```markdown
+---
+call_title: Weekly AI Sync
+start: '2026-07-14T10:00:00-04:00'
+attendees: [Jane Doe, John Smith]
+---
+
+> _Summary pending._
+
+**[00:00:04] Others:** Hey, can you hear me?
+**[00:00:19] Me:** Yep, loud and clear.
 ```
 
 Full module-by-module breakdown, key invariants, and the build history are
 in [CLAUDE.md](CLAUDE.md), [PLAN.md](PLAN.md), and [UNCERTAINTIES.md](UNCERTAINTIES.md).
+
+## Questions or problems?
+
+Ask whoever shared this repo with you, or open an issue here on GitHub if
+you have access to file one.
 
 ## License
 
