@@ -80,14 +80,26 @@ if (-not (Test-Path -LiteralPath $PythonDir)) { Fail "Bundle extraction did not 
 if (-not (Test-Path -LiteralPath $WheelsDir)) { Fail "Bundle extraction did not produce a 'wheels' folder under '$InstallRoot'." }
 if (-not (Test-Path -LiteralPath $ModelDir))  { Fail "Bundle extraction did not produce a 'model' folder under '$InstallRoot'." }
 
-# --- Step 2: enable site-packages in the embeddable Python ---
+# --- Step 2: enable site-packages in the embeddable Python, and make the
+# whispr/ package (which lives in $InstallRoot, one level above python\)
+# importable. ._pth paths resolve relative to the ._pth file's OWN directory,
+# not the process's working directory -- "-m whispr" would otherwise fail
+# with "No module named whispr" regardless of cwd. Both edits are idempotent.
 $PthFile = Get-ChildItem -LiteralPath $PythonDir -Filter 'python*._pth' | Select-Object -First 1
 if (-not $PthFile) { Fail "Could not find the embeddable Python's ._pth file under '$PythonDir'." }
-(Get-Content -LiteralPath $PthFile.FullName) -replace '^\s*#\s*import\s+site\s*$', 'import site' |
-    Set-Content -LiteralPath $PthFile.FullName
+$pthLines = Get-Content -LiteralPath $PthFile.FullName
+$pthLines = $pthLines -replace '^\s*#\s*import\s+site\s*$', 'import site'
+if (-not ($pthLines -contains '..')) { $pthLines += '..' }
+Set-Content -LiteralPath $PthFile.FullName -Value $pthLines
 
 $PythonExe = Join-Path $PythonDir 'python.exe'
 if (-not (Test-Path -LiteralPath $PythonExe)) { Fail "Bundled python.exe missing at '$PythonExe'." }
+
+# Never consult a per-user site-packages directory that might exist from some
+# unrelated Python install on this machine -- the whole point of bundling an
+# embeddable Python is isolation from whatever else is installed. Must be set
+# for every python.exe invocation below AND at runtime (see run-whispr.cmd).
+$env:PYTHONNOUSERSITE = '1'
 
 # --- Step 3: bootstrap pip fully offline ---
 Write-Step "Setting up the Python environment (offline, no internet needed from here)..."

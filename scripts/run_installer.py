@@ -223,12 +223,16 @@ def create_startup_shortcut(install_root: Path) -> bool:
 
     startup_dir = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
     shortcut_path = startup_dir / "whispr.lnk"
-    pythonw = install_root / "python" / "pythonw.exe"
+    # Point at the run-whispr.cmd wrapper, not pythonw.exe directly -- the
+    # wrapper sets PYTHONNOUSERSITE=1 so whispr's bundled Python stays
+    # isolated from any unrelated Python install the recipient's machine
+    # might already have (a shortcut object can't set environment variables
+    # on its own).
+    launcher = install_root / "run-whispr.cmd"
 
     shell = win32com.client.Dispatch("WScript.Shell")
     shortcut = shell.CreateShortcut(str(shortcut_path))
-    shortcut.TargetPath = str(pythonw)
-    shortcut.Arguments = "-m whispr"
+    shortcut.TargetPath = str(launcher)
     shortcut.WorkingDirectory = str(install_root)
     shortcut.Description = "whispr - Teams call recorder (starts at logon)"
     shortcut.Save()
@@ -243,10 +247,11 @@ def create_startup_shortcut(install_root: Path) -> bool:
 def run_smoke_test(install_root: Path) -> None:
     python_exe = install_root / "python" / "python.exe"
     print("\nRunning a 3-second test recording (checks mic + speaker capture)...")
+    env = dict(os.environ, PYTHONNOUSERSITE="1")
     try:
         result = subprocess.run(
             [str(python_exe), "-m", "whispr", "record-test", "3"],
-            cwd=str(install_root), capture_output=True, text=True, timeout=30,
+            cwd=str(install_root), capture_output=True, text=True, timeout=30, env=env,
         )
     except Exception as exc:
         print(f"Could not run the test recording: {exc}")
@@ -303,9 +308,8 @@ def main() -> int:
 
     log(install_root, "=== whispr installer finished successfully ===")
     print("\nSetup complete. whispr will start automatically the next time you log in.")
-    print("To start it right now instead of waiting for logon, double-click the")
-    print(f"shortcut at your Windows Startup folder, or run:\n"
-          f'  "{install_root / "python" / "pythonw.exe"}" -m whispr')
+    print("To start it right now instead of waiting for logon, double-click:")
+    print(f'  "{install_root / "run-whispr.cmd"}"')
     return 0
 
 

@@ -66,8 +66,8 @@ doesn't work as expected:
 
 ## Manual start / troubleshooting
 
-- To start whispr right now instead of waiting for your next login, run:
-  `python\pythonw.exe -m whispr` from the folder you installed to.
+- To start whispr right now instead of waiting for your next login,
+  double-click **`run-whispr.cmd`** in the folder you installed to.
 - `install.log` in that same folder records every step the installer took -
   useful if you need to report a problem.
 - To change your microphone/speaker pick or output folder later, just run
