@@ -1,0 +1,19 @@
+# Runtime output — never commit call data or audio
+transcripts/
+recordings/
+logs/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Scratch
+*.tmp
+.*.tmp
+
+# Distribution build staging (offline bundle: embeddable Python + wheels + model,
+# ~800MB-1GB) — built by scripts/build-dist.ps1, published as a GitHub Release
+# asset, never committed as a git blob.
+dist/

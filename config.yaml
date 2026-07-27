@@ -1,0 +1,123 @@
+# whispr configuration — all tunable literals live here (no hardcoding in code).
+
+paths:
+  transcripts: transcripts        # relative to repo root or absolute
+  recordings: recordings
+  logs: logs
+
+audio:
+  samplerate: 16000
+  channels: 1
+  # Loopback open failures before re-probing to a different endpoint.
+  max_open_failures: 2
+  # Substring matched (case-insensitive) against input device names to find the mic.
+  # First match wins; falls back to the system default input if none match.
+  mic_name_match: "Plantronics"
+  # Substring matched against WASAPI loopback (render) endpoint names to bias the
+  # endpoint probe. The probe still measures energy on all active render endpoints
+  # and locks whichever actually carries audio; this is only a tiebreaker hint.
+  loopback_name_hint: "SoundWire"
+  # Endpoint probe: how long to listen on each candidate render endpoint (seconds)
+  # and the dBFS floor above which an endpoint is considered "carrying audio".
+  probe_seconds: 2.0
+  probe_dbfs_floor: -70.0
+  # RMS watchdog: if the locked loopback endpoint stays below this dBFS for longer
+  # than watchdog_silence_seconds while a call is active, re-run the probe.
+  watchdog_dbfs_floor: -70.0
+  watchdog_silence_seconds: 30
+
+trigger:
+  process_name: "ms-teams.exe"
+  # An active call/meeting opens a dedicated window titled `<X> | Microsoft Teams`
+  # (X = meeting subject, or the other party's name for an ad-hoc call). Chat/nav
+  # panes look like `Chat | <X> | Microsoft Teams` or `Activity | Microsoft Teams`,
+  # so a "session" window is `<X> | Microsoft Teams` where X does NOT start with a
+  # nav keyword. (Phase 0 finding 2026-07-13: call and meeting windows are
+  # title-identical; meeting-vs-call is decided by Outlook calendar cross-reference,
+  # not by the title — see metadata.is_live_meeting.)
+  session_title_suffix: " | Microsoft Teams"
+  # If the part before the suffix starts with one of these (case-insensitive), the
+  # window is navigation/chat, not a live call/meeting.
+  nav_prefixes:
+    - "Chat |"
+    - "Activity |"
+    - "Calendar |"
+    - "Calls |"
+    - "Files |"
+    - "Store |"
+    - "Apps |"
+    - "Help |"
+    - "Settings |"
+    - "Communities |"
+    - "Shifts |"
+    - "Tasks |"
+    - "Praise |"
+    - "New Message |"
+    - "Viva |"
+  # Titles that indicate the window returned to a home/nav state (call ended).
+  end_title_patterns:
+    - "Activity \\|"
+    - "Chat \\|"
+    - "^Microsoft Teams$"
+  # Process names whose ACTIVE audio session confirms a Teams call is really live.
+  # New Teams routes call audio through the WebView2 host, not ms-teams.exe itself.
+  audio_session_process_names:
+    - "ms-teams.exe"
+    - "msedgewebview2.exe"
+  # Seconds the Teams audio session must be gone (AFTER audio was once active)
+  # before the watchdog force-stops a recording — covers a missed end-title without
+  # cutting off normal conversation pauses. Never fires during the pre-join wait.
+  audio_gone_stop_seconds: 45
+  # Window-gone backstop: poll cadence (seconds) and consecutive no-window polls
+  # required before stopping (debounce to ride out transient title flips at join).
+  window_gone_poll_seconds: 2.0
+  window_gone_confirm_polls: 2
+  # Auto-discard a completed recording shorter than this (seconds of actual
+  # captured audio, not wall-clock) instead of transcribing it. Guards against
+  # Teams pre-join preview windows that briefly flash a session-shaped title
+  # with real audio (observed 2026-07-17: ~4s "Meeting join" blip before a
+  # scheduled meeting). Must stay above window_gone_poll_seconds *
+  # window_gone_confirm_polls (the debounce floor below which whispr's own
+  # end-detection can't distinguish a real short call anyway).
+  min_recording_seconds: 12
+
+prompt:
+  # Ad-hoc call Yes/No box: seconds before auto-decision. no_answer_action applies
+  # both on timeout and when the screen is locked (box can't be shown).
+  timeout_seconds: 30
+  no_answer_action: keep          # keep | discard
+
+transcription:
+  model: small
+  device: cpu
+  compute_type: int8
+  # Use only the locally-cached model; never reach out to HuggingFace to download.
+  # The 'small' model is already cached from viability testing. If true and the
+  # model is missing, load fails loudly instead of silently fetching over the network.
+  local_files_only: true
+  beam_size: 5
+  language: en
+  vad_filter: true
+  vad_min_silence_ms: 500
+  # Merge gap: consecutive segments from the same speaker closer than this many
+  # seconds are joined into one turn.
+  turn_merge_gap_seconds: 1.5
+
+# whispr does NOT summarize. Transcripts are written with placeholder summary/topic
+# fields for a local on-device agent to fill offline — see SUMMARY_AGENT.md. There is
+# deliberately no summary config here: nothing in whispr contacts any service.
+
+retention:
+  # Delete WAVs after a successful transcription. Failed transcriptions keep audio.
+  delete_audio_on_success: true
+
+metadata:
+  # Max seconds of clock skew when matching a recording window to a calendar item.
+  calendar_match_tolerance_seconds: 300
+  invite_notes_max_chars: 500
+  # Safety cap on Restrict-iteration to guard against a pathological calendar.
+  max_calendar_items: 200
+  # Outlook connect attempts for post-call metadata fetch (hot-path is_live_meeting always uses 1).
+  outlook_connect_retries: 3
+
+version: "0.1.0"
