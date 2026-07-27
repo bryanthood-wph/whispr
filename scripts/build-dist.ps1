@@ -14,6 +14,31 @@
 
 $ErrorActionPreference = 'Stop'
 
+# Expected SHA256 of the embeddable Python zip and get-pip.py. Neither
+# python.org nor bootstrap.pypa.io serve an official checksum for these
+# directly, so this is a trust-on-first-use pin rather than independent
+# verification: the first build after this script starts populates these
+# values (printed to the console -- copy them in below), and every build
+# after that fails loudly if what gets downloaded doesn't match, instead of
+# silently folding a changed file into the bundle. If you deliberately bump
+# the Python version, clear the value, run once to see the new hash, then
+# pin it again.
+$ExpectedEmbedHash  = 'BA6BD811C4EEDB19195CF275770EF127E893D63701E24152606E2CB76F6D876A'
+$ExpectedGetPipHash = 'A341E1A43E38001C551A1508A73FF23636A11970B61D901D9A1CAD2A18F57055'
+
+function Test-PinnedHash {
+    param([string]$FilePath, [string]$Expected, [string]$Label)
+    $actual = (Get-FileHash -LiteralPath $FilePath -Algorithm SHA256).Hash
+    if (-not $Expected) {
+        Write-Host "  NOTE: no pinned hash set for $Label yet -- observed SHA256: $actual" -ForegroundColor Yellow
+        Write-Host "        Pin it in build-dist.ps1 (`$Expected*Hash) once you've reviewed it." -ForegroundColor Yellow
+        return
+    }
+    if ($actual.ToUpper() -ne $Expected.ToUpper()) {
+        Fail "$Label hash mismatch. Expected $Expected, got $actual. Either the upstream file changed or something tampered with it -- do not proceed without reviewing this."
+    }
+}
+
 $RepoRoot      = Split-Path -Parent $PSScriptRoot           # C:\github\whispr
 $DevPython     = Join-Path $RepoRoot '.venv\Scripts\python.exe'
 $Requirements  = Join-Path $RepoRoot 'requirements.txt'
@@ -56,16 +81,19 @@ try {
 } catch {
     Fail "Could not download embeddable Python from $embedUrl. ($($_.Exception.Message))"
 }
+Test-PinnedHash -FilePath $embedZip -Expected $ExpectedEmbedHash -Label 'embeddable Python zip'
 $pythonDir = Join-Path $StageDir 'python'
 Expand-Archive -LiteralPath $embedZip -DestinationPath $pythonDir -Force
 Remove-Item -LiteralPath $embedZip -Force
 
 Write-Step "Downloading get-pip.py..."
+$getPipPath = Join-Path $StageDir 'get-pip.py'
 try {
-    Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile (Join-Path $StageDir 'get-pip.py') -UseBasicParsing
+    Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile $getPipPath -UseBasicParsing
 } catch {
     Fail "Could not download get-pip.py. ($($_.Exception.Message))"
 }
+Test-PinnedHash -FilePath $getPipPath -Expected $ExpectedGetPipHash -Label 'get-pip.py'
 
 # --- Step 3: stage the faster-whisper model ----------------------------------
 # Verified empirically on this build machine (2026-07-27): huggingface_hub's

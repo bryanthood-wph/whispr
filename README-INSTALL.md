@@ -5,21 +5,33 @@ calls/meetings, transcribes them locally on your own machine (nothing is
 sent to any cloud service), and saves a text transcript. It only works with
 Microsoft Teams on Windows.
 
-## Before you install: consent and recording policy
+## Before you install: read this
 
-Recording calls may require the consent of everyone on the call, depending on
-your state/country and organization's policy. That's on you to check before
-you start using this - it's not something the software decides for you.
+**This recording is completely invisible to everyone else on the call.**
+Teams' own recording indicator never appears - the other participants get
+no banner, no notification, nothing. They will not know they're being
+recorded unless you tell them yourself.
+
+**Muting your microphone in Teams does not stop this from recording you.**
+whispr captures audio at the hardware level, below where Teams' mute button
+operates. The tray icon / stopping the recording is the only real control.
+
+Recording a call without the knowledge or consent of everyone on it may be
+illegal where you are, or against your organization's policies, or both -
+this varies by state/country and by employer. That is your responsibility
+to check *before* you install this, not something the software decides or
+checks for you. The installer will ask you to explicitly confirm you
+understand this before it sets anything up.
 
 ## Install (3 steps)
 
 1. Download/clone this repository to your computer - anywhere is fine (your
    Desktop, Documents, etc.).
 2. Double-click **`install.cmd`** in that folder.
-3. Answer the two questions it asks (where to save your transcripts, and
-   which microphone/speaker to use) - then wait. The first run downloads a
-   one-time ~1GB setup package, so give it a few minutes on a normal home
-   internet connection.
+3. Confirm the consent notice, then answer the two setup questions (where to
+   save your transcripts, and which microphone/speaker to use) - then wait.
+   The first run downloads a one-time ~550MB setup package, so give it a few
+   minutes on a normal home internet connection.
 
 When it finishes, whispr is running and will start automatically every time
 you log in to Windows - you don't need to do anything else. It sits quietly

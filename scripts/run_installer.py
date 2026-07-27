@@ -37,6 +37,37 @@ def log(install_root: Path, message: str) -> None:
         fh.write(line + "\n")
 
 
+# -- consent gate (blocking -- must be explicitly accepted, not a footnote) --
+
+_CONSENT_BANNER = """
+================================================================
+IMPORTANT -- READ BEFORE CONTINUING
+================================================================
+whispr records BOTH sides of your Microsoft Teams calls/meetings.
+
+  - The other people on the call are NOT notified in any way. Teams'
+    own recording indicator never appears. The recording is completely
+    invisible to them unless you tell them yourself.
+  - Muting your microphone in Teams does NOT stop this tool from
+    recording you -- it captures audio at the hardware level, below
+    where Teams' mute button operates.
+
+Recording a call without the knowledge or consent of everyone on it may
+be illegal where you are, or against your organization's policies, or
+both. That is your responsibility to check BEFORE using this, not
+something this software decides or checks for you.
+================================================================
+"""
+
+
+def confirm_consent(install_root: Path) -> bool:
+    print(_CONSENT_BANNER)
+    answer = input("Type YES to confirm you understand and accept this, or anything else to cancel: ").strip()
+    accepted = answer.upper() == "YES"
+    log(install_root, f"consent gate: {'ACCEPTED' if accepted else 'DECLINED'} (raw input={answer!r})")
+    return accepted
+
+
 # -- output directory ------------------------------------------------------
 
 def prompt_output_dir(install_root: Path) -> Path:
@@ -189,33 +220,6 @@ def patch_config(
     log(install_root, f"config.yaml patched (output_dir={output_dir}, mic={mic_name!r}, loopback={loopback_name!r})")
 
 
-# -- Teams presence check (best-effort, informational only) ----------------
-
-def check_teams_installed(install_root: Path) -> None:
-    import shutil
-
-    local_appdata = Path(os.environ.get("LOCALAPPDATA", ""))
-    new_teams = local_appdata / "Microsoft" / "WindowsApps" / "ms-teams.exe"
-    classic_teams = local_appdata / "Microsoft" / "Teams" / "current" / "Teams.exe"
-
-    if shutil.which("ms-teams.exe") or new_teams.exists():
-        log(install_root, "Teams check: new Teams client (ms-teams.exe) found.")
-        return
-    if classic_teams.exists():
-        msg = (
-            "Only the CLASSIC Teams client was found on this machine. whispr's call "
-            "detection targets the NEW Teams client (ms-teams.exe) and will not "
-            "record on classic Teams. See README-INSTALL.md."
-        )
-    else:
-        msg = (
-            "Could not find Microsoft Teams installed on this machine. whispr only "
-            "records Teams calls/meetings -- install Teams before relying on it."
-        )
-    print(f"\nWARNING: {msg}")
-    log(install_root, f"WARNING: {msg}")
-
-
 # -- Startup-folder auto-start shortcut --------------------------------------
 
 def create_startup_shortcut(install_root: Path) -> bool:
@@ -286,11 +290,14 @@ def main() -> int:
     install_root = Path(args.install_root).resolve()
 
     log(install_root, "=== whispr installer starting ===")
+    if not confirm_consent(install_root):
+        print("\nSetup cancelled - nothing was installed or configured.")
+        return 1
+
     try:
         output_dir = prompt_output_dir(install_root)
         mic_name, loop_name = run_device_picker(install_root)
         patch_config(install_root, output_dir, mic_name, loop_name)
-        check_teams_installed(install_root)
 
         shortcut_ok = create_startup_shortcut(install_root)
         if not shortcut_ok:

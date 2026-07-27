@@ -34,18 +34,55 @@ function Fail {
     exit 1
 }
 
-$BundleZip = Join-Path $InstallRoot $BundleAssetName
-$PythonDir = Join-Path $InstallRoot 'python'
-$WheelsDir = Join-Path $InstallRoot 'wheels'
-$ModelDir  = Join-Path $InstallRoot 'model'
-$GetPip    = Join-Path $InstallRoot 'get-pip.py'
+$BundleZip      = Join-Path $InstallRoot $BundleAssetName
+$PythonDir      = Join-Path $InstallRoot 'python'
+$WheelsDir      = Join-Path $InstallRoot 'wheels'
+$ModelDir       = Join-Path $InstallRoot 'model'
+$GetPip         = Join-Path $InstallRoot 'get-pip.py'
+$VersionMarker  = Join-Path $InstallRoot '.bundle-version'
 
-# --- Step 1: obtain the offline bundle (skip entirely if already staged) ---
-$alreadyStaged = (Test-Path -LiteralPath $PythonDir) -and (Test-Path -LiteralPath $WheelsDir) -and (Test-Path -LiteralPath $ModelDir)
+# --- Step 0: quick compatibility checks, before downloading anything --------
+Write-Step "Checking compatibility..."
+$arch = $env:PROCESSOR_ARCHITECTURE
+if ($arch -notin @('AMD64', 'x86')) {
+    Write-Host "WARNING: this machine reports architecture '$arch'. whispr's bundled Python" -ForegroundColor Yellow
+    Write-Host "and dependencies are built for 64-bit x86 (AMD64) Windows only and will" -ForegroundColor Yellow
+    Write-Host "likely fail to run here (e.g. ARM64 devices like Surface Pro X)." -ForegroundColor Yellow
+    if ((Read-Host "Continue anyway? (y/N)") -notmatch '^[Yy]') { Write-Host "Cancelled."; exit 1 }
+}
+
+$localAppData = $env:LOCALAPPDATA
+$newTeams     = Join-Path $localAppData 'Microsoft\WindowsApps\ms-teams.exe'
+$classicTeams = Join-Path $localAppData 'Microsoft\Teams\current\Teams.exe'
+$teamsOnPath  = Get-Command 'ms-teams.exe' -ErrorAction SilentlyContinue
+if (-not (Test-Path -LiteralPath $newTeams) -and -not $teamsOnPath) {
+    if (Test-Path -LiteralPath $classicTeams) {
+        Write-Host "WARNING: only the CLASSIC Teams client was found on this machine. whispr's" -ForegroundColor Yellow
+        Write-Host "call detection targets the NEW Teams client and will not work with classic Teams." -ForegroundColor Yellow
+    } else {
+        Write-Host "WARNING: could not find Microsoft Teams installed on this machine. whispr" -ForegroundColor Yellow
+        Write-Host "only records Teams calls/meetings." -ForegroundColor Yellow
+    }
+    if ((Read-Host "Continue anyway? (y/N)") -notmatch '^[Yy]') { Write-Host "Cancelled."; exit 1 }
+}
+
+# --- Step 1: obtain the offline bundle (skip if already staged AND current) -
+$alreadyStaged = (Test-Path -LiteralPath $PythonDir) -and (Test-Path -LiteralPath $WheelsDir) -and (Test-Path -LiteralPath $ModelDir) `
+    -and (Test-Path -LiteralPath $VersionMarker) -and ((Get-Content -LiteralPath $VersionMarker -Raw).Trim() -eq $ReleaseTag)
 if (-not $alreadyStaged) {
+    # A stale bundle from an older release may already be sitting here (e.g. a
+    # recipient re-running install.cmd after a new version was published) --
+    # remove it first so old and new files never mix.
+    foreach ($old in @($PythonDir, $WheelsDir, $ModelDir, $VersionMarker)) {
+        if (Test-Path -LiteralPath $old) {
+            Write-Step "Removing older bundle contents at '$old'..."
+            Remove-Item -LiteralPath $old -Recurse -Force
+        }
+    }
+
     if (-not (Test-Path -LiteralPath $BundleZip)) {
         $bundleUrl = "https://github.com/$RepoSlug/releases/download/$ReleaseTag/$BundleAssetName"
-        Write-Step "Downloading the offline install bundle (one-time, ~1GB)..."
+        Write-Step "Downloading the offline install bundle (one-time, ~550MB)..."
         Write-Host "    $bundleUrl"
         try {
             Invoke-WebRequest -Uri $bundleUrl -OutFile $BundleZip -UseBasicParsing
@@ -79,6 +116,15 @@ if (-not $alreadyStaged) {
 if (-not (Test-Path -LiteralPath $PythonDir)) { Fail "Bundle extraction did not produce a 'python' folder under '$InstallRoot'." }
 if (-not (Test-Path -LiteralPath $WheelsDir)) { Fail "Bundle extraction did not produce a 'wheels' folder under '$InstallRoot'." }
 if (-not (Test-Path -LiteralPath $ModelDir))  { Fail "Bundle extraction did not produce a 'model' folder under '$InstallRoot'." }
+
+# Only now that python/wheels/model are confirmed present: record the version
+# staged, and remove the downloaded zip + checksum file -- keeping them
+# around would silently double the install's disk footprint for no reason.
+Set-Content -LiteralPath $VersionMarker -Value $ReleaseTag -NoNewline
+if (Test-Path -LiteralPath $BundleZip) {
+    Remove-Item -LiteralPath $BundleZip -Force
+    Remove-Item -LiteralPath (Join-Path $InstallRoot $ChecksumAssetName) -Force -ErrorAction SilentlyContinue
+}
 
 # --- Step 2: enable site-packages in the embeddable Python, and make the
 # whispr/ package (which lives in $InstallRoot, one level above python\)

@@ -61,44 +61,54 @@ whispr is a Windows-only always-on recorder for Microsoft Teams. Everything runs
 - **`notify_stopped()` must remain idempotent** — it is called unconditionally from `_finish()` which is reachable from both the tray and watcher paths.
 - **COM threads:** `_run`, `_audio_backstop_loop`, and all Outlook-touching code run inside `with com_initialized():`.
 
-## Scheduled sync jobs (`scripts/`)
+## This repo vs. the author's full personal environment
 
-Separate from the local-only `whispr/` package: `scripts/nightly-ingest.ps1`
-(Mon–Fri) and `scripts/weekly-lint-compile.ps1` (Sunday) push transcript summaries
-into the sibling cohoodOBS vault via the Claude Code CLI. **These deliberately send
-data off-machine** (enterprise-governed API) — the local-only constraint governs
-`whispr/`, not these jobs. Shared plumbing lives in `scripts/sync-common.ps1`; see
-`scripts/README-nightly-sync.md`.
+This is the distribution copy of whispr — packaged for others to install and
+run (see `README-INSTALL.md`, `install.cmd`/`install.ps1`,
+`scripts/run_installer.py`, `scripts/build-dist.ps1`). The author's own
+personal machine also runs a separate set of scheduled jobs that push
+transcript summaries into a private vault over an enterprise-governed API
+(a **local-only-breaking**, off-machine sync — the opposite of `whispr/`'s
+own local-only constraint). Those jobs are deliberately **not part of this
+repository** and are out of scope for anyone building on this codebase.
 
-**Both are Task Scheduler jobs set to "run only when logged on"** — the machine must
-be on and logged in (locked is fine) at the scheduled time, or the run is missed.
-With `-StartWhenAvailable`/`-WakeToRun` a missed run catches up on next wake/logon;
-the nightly watermark means missed runs *defer* work, never lose it.
+## App auto-start (`scripts/run_installer.py` + `run-whispr.cmd`)
 
-**When extending any scheduled/automation/deployed work here, scope the operational
-envelope up front** — per-run cost & latency, host availability, auth-at-run-time,
-missed-run catch-up, idempotency/recovery, failure alerting, teardown — not just the
-happy-path logic.
-
-## App auto-start (`scripts/register-startup-shortcut.ps1`)
-
-whispr the recorder starts at logon via a **Startup-folder shortcut**
+whispr starts at logon via a **Startup-folder shortcut**
 (`%APPDATA%\...\Startup\whispr.lnk`), not a scheduled task. A Task Scheduler
-`-AtLogOn` trigger was tried first and confirmed empirically (2026-07-17) to be
-blocked by policy for this non-admin account — isolated by testing identical
-principal/settings with only the trigger type changed. The Startup folder needs
-no elevated privilege, so it sidesteps the restriction. whispr's own
-single-instance mutex (`_acquire_single_instance`) makes a redundant launch a
-harmless no-op, so no "is it already running" check is needed in the shortcut
-itself.
+`-AtLogOn` trigger was tried first on the author's own machine and confirmed
+empirically (2026-07-17) to be blocked by policy for that non-admin account —
+isolated by testing identical principal/settings with only the trigger type
+changed. The Startup folder needs no elevated privilege, so it sidesteps that
+class of restriction. whispr's own single-instance mutex
+(`_acquire_single_instance`) makes a redundant launch a harmless no-op, so no
+"is it already running" check is needed in the shortcut itself.
 
-Scheduled-task `RestartCount`/`RestartInterval` (used on the two sync jobs
-above) was also found, in the same investigation, to **not** fire on an ordinary
-non-zero process exit — only when the *scheduler* itself fails to run the task
-(killed by the scheduler, hit its execution-time limit). It's not a working
-transient-failure safety net for either sync job's own script failures; revisit
-if real transient failures are observed. See `register-task.ps1`'s `.NOTES` for
-the full empirical trace.
+The shortcut is created by `create_startup_shortcut()` in
+`scripts/run_installer.py` via `win32com.client` (`WScript.Shell`), and points
+at `run-whispr.cmd` — a thin wrapper, not `pythonw.exe` directly — because a
+`.lnk` shortcut object has no way to set an environment variable, and the
+launch needs `PYTHONNOUSERSITE=1` set (see "Embeddable Python isolation"
+below) every time, not just at install.
+
+## Embeddable Python isolation (install.ps1)
+
+The distributed installer bundles its own embeddable Python rather than
+requiring one pre-installed. Two non-obvious things had to be fixed after a
+live install test surfaced them (not caught by code review alone):
+
+- An embeddable distribution's `._pth` file resolves every path relative to
+  the file's OWN directory (i.e. `python\`), not the process's working
+  directory — so `-m whispr` failed with `No module named whispr` even
+  though `whispr\` lives one level up. `install.ps1` appends a `..` line to
+  the `._pth` file to fix this, since `whispr\` is one directory above
+  `python\`.
+- Enabling `import site` (required for pip/site-packages to work at all)
+  also enables `site.ENABLE_USER_SITE` by default, which pulls in *any*
+  pre-existing per-user Python installation on the recipient's machine —
+  defeating the entire point of bundling an isolated interpreter. Fixed by
+  setting `PYTHONNOUSERSITE=1` for every `python.exe` invocation, both during
+  install (`install.ps1`) and at runtime (`run-whispr.cmd`).
 
 ## Testing notes
 
