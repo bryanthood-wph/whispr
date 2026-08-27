@@ -17,3 +17,21 @@ __pycache__/
 # ~800MB-1GB) — built by scripts/build-dist.ps1, published as a GitHub Release
 # asset, never committed as a git blob.
 dist/
+
+# Author-local operations scripts (see CLAUDE.md, "This repo vs. the author's
+# full personal environment"). These run only on the author's machine — the
+# vault-sync jobs, the recorder watchdog, and the task registration that wires
+# them up — and are deliberately not distributed.
+#
+# Deny-by-default rather than an enumerated list, for two reasons: naming them
+# individually would publish the filenames into a public repo, and it would fail
+# OPEN — the next personal script added here would not be covered. CLAUDE.md
+# states this boundary as an invariant; until now nothing enforced it, so a
+# routine `git add -A` would have published the enterprise-API plumbing.
+#
+# Ignore rules do not apply to already-tracked files, so edits to the two
+# distribution scripts below still stage normally. A genuinely NEW distribution
+# script needs `git add -f` once, then behaves the same way.
+/scripts/*
+!/scripts/build-dist.ps1
+!/scripts/run_installer.py
