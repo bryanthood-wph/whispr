@@ -63,14 +63,32 @@ whispr is a Windows-only always-on recorder for Microsoft Teams. Everything runs
 
 ## This repo vs. the author's full personal environment
 
-This is the distribution copy of whispr — packaged for others to install and
-run (see `README-INSTALL.md`, `install.cmd`/`install.ps1`,
-`scripts/run_installer.py`, `scripts/build-dist.ps1`). The author's own
-personal machine also runs a separate set of scheduled jobs that push
-transcript summaries into a private vault over an enterprise-governed API
-(a **local-only-breaking**, off-machine sync — the opposite of `whispr/`'s
-own local-only constraint). Those jobs are deliberately **not part of this
-repository** and are out of scope for anyone building on this codebase.
+**This repository is PRIVATE** (made private 2026-08-27). It holds two things
+that were previously kept apart:
+
+- `whispr/` itself, plus the machinery that packages it for others to install
+  (`README-INSTALL.md`, `install.cmd`/`install.ps1`, `scripts/run_installer.py`,
+  `scripts/build-dist.ps1`, and the `v0.1.0` GitHub Release asset). That still
+  works, but none of it is publicly reachable any more — a recipient needs
+  access to this repo.
+- `scripts/` — the author's own scheduled jobs: the recorder watchdog, the task
+  registration, and the nightly jobs that push transcript summaries into a
+  private vault over an enterprise-governed API (a **local-only-breaking**,
+  off-machine sync — the opposite of `whispr/`'s own local-only constraint).
+
+Only the storage location changed. `whispr/`'s local-only constraint is
+unchanged and still enforced in code, and the ops scripts are still no part of
+the installed distribution — `build-dist.ps1` stages only `wheels/`, `python/`,
+`get-pip.py` and `model/`, so a recipient gets neither the watchdog nor the
+sync tasks. Before 2026-08-27 these scripts were kept out of the repo entirely,
+for one reason only: it was public.
+
+**Guardrail — if this repo is ever made public again, extract `scripts/` first.**
+It carries enterprise-API plumbing and per-run cost figures that must not be
+published. A `/scripts/*` deny-by-default block in `.gitignore` enforced that
+until the repo went private, at which point the block was removed as redundant.
+Nothing enforces it now except this paragraph, so reinstate the block *before*
+flipping visibility, not after.
 
 ## App auto-start — two different mechanisms, don't conflate them
 
@@ -82,11 +100,10 @@ checks whispr's own single-instance mutex (`_acquire_single_instance`) and
 launches only if no instance holds it. Registered by `scripts/register-task.ps1`
 alongside the three sync tasks.
 
-Both `scripts/watch-recorder.ps1` and `scripts/register-task.ps1` live only on
-the author's machine and are **not in this repository** — the same boundary as
-the vault-sync jobs described above, since `register-task.ps1` registers those
-jobs too. They are described here because they explain how the recorder starts,
-not because you will find them in a clone.
+Both `scripts/watch-recorder.ps1` and `scripts/register-task.ps1` are **in this
+repository** as of 2026-08-27. They were author-machine-only until then, kept
+out while the repo was public (see the section above); they are still not part
+of the installed distribution.
 
 Why the repetition exists (2026-08-23 outage): whispr was terminated externally
 (`0x40010004`, no crash logged) and stayed dead **three days**. The task's only

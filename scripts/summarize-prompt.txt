@@ -1,0 +1,103 @@
+You are producing a faithful, near-exact paraphrased record of a Microsoft Teams
+meeting that was captured locally and auto-transcribed. This record will be filed
+as a source note in a knowledge vault, so accuracy and completeness matter more
+than brevity — do not compress away substance.
+
+MEETING CONTEXT (from the recording's metadata):
+- Title: {{CALL_TITLE}}
+- Date: {{DATE}}
+- Type: {{CALL_TYPE}}
+- Organizer: {{ORGANIZER}}
+- Attendees: {{ATTENDEES}}
+- Invite notes: {{INVITE_NOTES}}
+
+HOW TO READ THE TRANSCRIPT — SPEAKER ATTRIBUTION (read carefully; this is where
+summaries most often go wrong):
+- Lines labeled "Me:" are always Colby Hood (the recording owner / microphone).
+  You may always attribute these to Colby by name.
+- Lines labeled "Others:" are ONE combined far-end channel with NO per-person
+  labels. You usually CANNOT tell which attendee is speaking — so do not guess.
+  Attribute an "Others:" statement to a named attendee ONLY when the transcript
+  itself proves who spoke: they introduce themselves ("this is Zach"), or they are
+  addressed by name and then immediately answer. Otherwise refer to the speaker
+  generically — "an attendee", "someone asked", "the team".
+- A name that appears INSIDE what someone says is a MENTION, not the speaker.
+  When Colby says "Laura and I worked on that", Laura is merely mentioned — she did
+  not necessarily say anything. NEVER turn a mention (or being addressed) into a
+  statement authored by that person.
+- Naming someone as the OWNER or DOER of an action/decision is DIFFERENT from
+  attributing speech, and IS allowed whenever the call explicitly states it — by
+  anyone, about the past, present, or future (e.g. "Zach will reach out to Tyler",
+  "Colby is sending the data request", "Dennis built the model"). Use the name in
+  that factual owner/doer sense even when you can't tell who spoke the sentence.
+- Bottom line: if you cannot prove it from the transcript, do not assume it. Stick
+  to the facts.
+- The transcript is machine-generated and may contain mis-hearings; interpret
+  charitably from context but do not invent facts that are not present.
+
+YOUR TASK — write a near-exact paraphrased version of the discussion:
+1. Capture ALL discussion points that were made, in the order they occurred.
+   Paraphrase closely; do not omit topics, caveats, or numbers.
+2. Attribute statements to a speaker by name ONLY per the attribution rules above
+   — Colby freely; a far-end voice only when the transcript proves who spoke;
+   otherwise stay generic. When in doubt, stay generic. (Naming owners/doers of
+   stated actions is still fine, per the rules above.)
+3. Pull out every action item. For each, name the intended owner(s) where the
+   call states or clearly implies who owns it. Collect these under a final
+   "## Action Items" section as a bulleted list, each in the form
+   "- [Owner] — action".
+
+OUTPUT FORMAT (strict):
+- Output ONLY the note body. Do NOT emit a YAML frontmatter block (--- ... ---);
+  that is added separately.
+- Begin with a single one-sentence summary line in blockquote form: "> ...".
+  It should state the core outcome/takeaway of the meeting, not just the subject.
+- Then clean prose under short, descriptive "##" section headers grouped by topic.
+- Remove all timestamps and the "Me:"/"Others:" labels. Express Colby's
+  contributions in prose ("Colby noted..."); for far-end voices you cannot
+  positively identify, use generic attribution ("an attendee explained...") —
+  do NOT invent or guess a name.
+- Do NOT add analysis, conclusions, recommendations, or next steps that were not
+  actually discussed on the call.
+- Do NOT wrap the output in code fences.
+
+EXAMPLES — what good vs. wrong attribution looks like (drawn from a real staffing
+call). Study the GOOD/WRONG distinction; apply the same discipline:
+
+Example 1 — "Me" is Colby; a company/place named is only a mention:
+  Transcript: [Me] "Do they have deterministic logic driving the allocations? I saw
+  a plus/minus feedback mechanism at Capital One where each division lead could
+  adjust based on an event."
+  GOOD: "Colby asked whether the allocations use deterministic logic, citing a
+  plus/minus adjustment mechanism he had seen at [[Capital One]]."
+  WHY: "Me" is Colby (always nameable). Capital One is a place Colby mentioned — it
+  is not a speaker, so nothing is attributed to it.
+
+Example 2 — far-end speaker NOT identifiable, but the action owner IS stated:
+  Transcript: [Others] "The four things this week are the data request, the access
+  request, and confirming the two USI folks — Colby, those are on you."
+  GOOD: "An attendee set four tasks for the week (data request, access request,
+  confirming two USI staff) and assigned them to Colby."
+  WHY: the speaker can't be identified, so use "an attendee" — not a guessed name.
+  Colby is named only because the content explicitly assigns the work to him.
+
+Example 3 — do NOT promote a mentioned/addressed name into the author of a claim:
+  Transcript: [Me] "I can assure you we won't sign up for anything extra, Lauren —
+  I've learned that the hard way on another project."
+  GOOD: "Colby assured the group he would not take on extra scope, having learned
+  that the hard way on a prior project."
+  WRONG: "Laura said they shouldn't take on extra scope." — Laura/Lauren is
+  addressed BY Colby here; she is not shown making that point. Being mentioned or
+  addressed is not authoring a statement.
+
+Example 4 — a far-end speaker you CAN positively identify (addressed, then answers):
+  Transcript: [Others] "Ben, what's your read on availability?" [Others] "I think
+  we've got Colby, Laura, and Tony; we're trying to ring-fence the people we know
+  are capable."
+  GOOD: "Asked for his read on availability, Ben said the capable pool includes
+  Colby, Laura, and Tony, and that they are trying to ring-fence known performers."
+  WHY: the speaker is addressed by name ("Ben") and immediately answers, so the
+  reply is provably his — this is the ONLY kind of far-end naming that's allowed.
+
+TRANSCRIPT FOLLOWS:
+{{TRANSCRIPT_BODY}}
