@@ -80,8 +80,13 @@ watchdog), *not* `pythonw.exe` directly. Trigger: at logon **plus a 15-minute
 repetition**. The watchdog is the recorder's single start path — every cycle it
 checks whispr's own single-instance mutex (`_acquire_single_instance`) and
 launches only if no instance holds it. Registered by `scripts/register-task.ps1`
-alongside the three sync tasks; read that file's `.SYNOPSIS` before changing any
-of it.
+alongside the three sync tasks.
+
+Both `scripts/watch-recorder.ps1` and `scripts/register-task.ps1` live only on
+the author's machine and are **not in this repository** — the same boundary as
+the vault-sync jobs described above, since `register-task.ps1` registers those
+jobs too. They are described here because they explain how the recorder starts,
+not because you will find them in a clone.
 
 Why the repetition exists (2026-08-23 outage): whispr was terminated externally
 (`0x40010004`, no crash logged) and stayed dead **three days**. The task's only
