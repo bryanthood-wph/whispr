@@ -26,13 +26,27 @@ rem branches instead of them diverging.
 setlocal
 set PYTHONNOUSERSITE=1
 
+rem Anchor the working directory to the repo root. `-m whispr` resolves the
+rem package from the CURRENT directory, so launching this script from anywhere
+rem else started pythonw.exe, which died instantly on "No module named whispr"
+rem while `start` still reported exit 0 -- a silent no-op (found 2026-08-27).
+rem /d is required for the drive to change too. pushd rather than cd so the
+rem caller's directory is restored on exit, and so a UNC path is mapped to a
+rem temporary drive letter instead of failing outright.
+pushd "%~dp0" || (
+    echo ERROR: cannot enter "%~dp0" -- whispr not launched.
+    exit /b 1
+)
+
 if exist "%~dp0.venv\Scripts\pythonw.exe" (
     start "" "%~dp0.venv\Scripts\pythonw.exe" -m whispr
+    popd
     exit /b 0
 )
 
 if exist "%~dp0python\pythonw.exe" (
     start "" "%~dp0python\pythonw.exe" -m whispr
+    popd
     exit /b 0
 )
 
@@ -43,4 +57,5 @@ echo ERROR: no whispr Python interpreter found. Tried:
 echo   "%~dp0.venv\Scripts\pythonw.exe"   (development checkout)
 echo   "%~dp0python\pythonw.exe"          (installed distribution)
 echo Run install.ps1, or create the venv, before launching whispr.
+popd
 exit /b 1
