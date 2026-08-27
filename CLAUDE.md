@@ -72,24 +72,43 @@ transcript summaries into a private vault over an enterprise-governed API
 own local-only constraint). Those jobs are deliberately **not part of this
 repository** and are out of scope for anyone building on this codebase.
 
-## App auto-start (`scripts/run_installer.py` + `run-whispr.cmd`)
+## App auto-start — two different mechanisms, don't conflate them
 
-whispr starts at logon via a **Startup-folder shortcut**
-(`%APPDATA%\...\Startup\whispr.lnk`), not a scheduled task. A Task Scheduler
-`-AtLogOn` trigger was tried first on the author's own machine and confirmed
-empirically (2026-07-17) to be blocked by policy for that non-admin account —
-isolated by testing identical principal/settings with only the trigger type
-changed. The Startup folder needs no elevated privilege, so it sidesteps that
-class of restriction. whispr's own single-instance mutex
-(`_acquire_single_instance`) makes a redundant launch a harmless no-op, so no
-"is it already running" check is needed in the shortcut itself.
+**On the author's dev machine, whispr is started by the `whispr-recorder`
+scheduled task**, whose action is `scripts/watch-recorder.ps1` (a liveness
+watchdog), *not* `pythonw.exe` directly. Trigger: at logon **plus a 15-minute
+repetition**. The watchdog is the recorder's single start path — every cycle it
+checks whispr's own single-instance mutex (`_acquire_single_instance`) and
+launches only if no instance holds it. Registered by `scripts/register-task.ps1`
+alongside the three sync tasks; read that file's `.SYNOPSIS` before changing any
+of it.
 
-The shortcut is created by `create_startup_shortcut()` in
-`scripts/run_installer.py` via `win32com.client` (`WScript.Shell`), and points
-at `run-whispr.cmd` — a thin wrapper, not `pythonw.exe` directly — because a
-`.lnk` shortcut object has no way to set an environment variable, and the
-launch needs `PYTHONNOUSERSITE=1` set (see "Embeddable Python isolation"
-below) every time, not just at install.
+Why the repetition exists (2026-08-23 outage): whispr was terminated externally
+(`0x40010004`, no crash logged) and stayed dead **three days**. The task's only
+trigger was `-AtLogOn`, and the machine neither rebooted nor logged off in that
+window, so nothing ever re-fired. `RestartCount` does not cover this — see
+`register-task.ps1`'s 2026-07-17 finding, re-confirmed by the outage. Two load-
+bearing details in `watch-recorder.ps1`: it detects via the **mutex**, not a
+process scan (`pythonw.exe -m whispr` matches both the venv stub and the real
+app), and it launches via **`Win32_Process::Create`**, which parents the new
+process to the WMI host — outside the task's job object, so terminating the
+watchdog can't take the recorder down with it.
+
+**In the distributed installer, whispr starts from a Startup-folder shortcut**
+(`%APPDATA%\...\Startup\whispr.lnk`), created by `create_startup_shortcut()` in
+`scripts/run_installer.py` via `win32com.client` (`WScript.Shell`). It points at
+`run-whispr.cmd` — a thin wrapper, not `pythonw.exe` directly — because a `.lnk`
+has no way to set an environment variable, and the launch needs
+`PYTHONNOUSERSITE=1` every time (see "Embeddable Python isolation" below). The
+watchdog above is **not** part of the installed distribution.
+
+Historical note, now contradicted: this file previously stated that `-AtLogOn`
+triggers were empirically blocked by policy (2026-07-17) for the author's
+non-admin account, which is why the Startup shortcut was chosen. That no longer
+matches observation — an `-AtLogOn` trigger demonstrably fired on 2026-08-23
+06:19:33. Either the policy changed or the original isolation missed a variable.
+`register-task.ps1` now reads the trigger back after registering rather than
+trusting either account.
 
 ## Embeddable Python isolation (install.ps1)
 
