@@ -106,6 +106,24 @@ Start-ScheduledTask -TaskName whispr-weekly-lint-compile   # then watch logs/
 
 `-DryRun` is safe from anywhere: it makes no `claude` call at all.
 
+**Pushing needs the owning GitHub account to be active.** Two accounts sit in
+`gh`'s keyring; `cohood_deloitte` is usually the active one, and it cannot see
+this repo now that it is private and owned by `bryanthood-wph`. The push fails
+`remote: Repository not found` — a 404, not a 403, because GitHub will not admit
+a private repo exists to an account that lacks access. This looked like a broken
+remote the first time (2026-09-08) and is only an account mismatch. Switch for
+the push and switch back, so the work default is not left changed:
+
+```powershell
+gh auth switch --user bryanthood-wph
+git -c credential.helper="!gh auth git-credential" push origin master
+gh auth switch --user cohood_deloitte
+```
+
+Separately, a persistent user-level `GH_TOKEN` env var has historically pinned
+`gh` to the wrong account. Clear it per-process only — never delete the variable:
+`[Environment]::SetEnvironmentVariable('GH_TOKEN', $null, 'Process')`.
+
 ## App auto-start — two different mechanisms, don't conflate them
 
 **On the author's dev machine, whispr is started by the `whispr-recorder`
