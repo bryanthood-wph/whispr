@@ -90,6 +90,22 @@ until the repo went private, at which point the block was removed as redundant.
 Nothing enforces it now except this paragraph, so reinstate the block *before*
 flipping visibility, not after.
 
+**Never run the sync jobs by invoking the script directly from inside a Claude
+Code session.** They shell out to the `claude` CLI, and a nested invocation
+inherits the parent session's environment — `CLAUDECODE=1`,
+`CLAUDE_CODE_CHILD_SESSION=1`, `ANTHROPIC_BASE_URL`, the messaging socket and
+token. The nested call dies instantly: `is_error: true`, `duration_api_ms: 0`,
+zero tokens, empty stderr, and the job reports `/lint call failed or returned an
+empty result` (observed 2026-09-08, and the same signature on 2026-08-03). The
+job is fine; the environment is not. Task Scheduler supplies a clean one, so run
+them that way instead — it also exercises the real registered action:
+
+```powershell
+Start-ScheduledTask -TaskName whispr-weekly-lint-compile   # then watch logs/
+```
+
+`-DryRun` is safe from anywhere: it makes no `claude` call at all.
+
 ## App auto-start — two different mechanisms, don't conflate them
 
 **On the author's dev machine, whispr is started by the `whispr-recorder`

@@ -354,6 +354,13 @@ function Invoke-QueueCompilePass {
 try {
     Write-Log -Level INFO -Message "=== weekly-lint-compile starting (DryRun=$DryRun BacklogOnly=$BacklogOnly LintTimeoutSeconds=$LintTimeoutSeconds CompileTimeoutSeconds=$CompileTimeoutSeconds MaxCompiles=$MaxCompiles WorkstreamDays=$WorkstreamDays MaxWorkstreamCompiles=$MaxWorkstreamCompiles) ==="
 
+    # Before any long claude call — this job is the reason Set-SystemAwake
+    # exists (2026-09-08: standby froze /lint 65 s in and the timeout fired 19 h
+    # later on wake). Not gated on -DryRun: a dry run does only local file reads
+    # and finishes in seconds, so the request costs nothing either way, and
+    # gating it would mean the rehearsal no longer matches the real run.
+    Set-SystemAwake | Out-Null
+
     $totalCost = 0.0
     $compileArgs = @('--model', 'sonnet', '--permission-mode', 'dontAsk', '--allowedTools', $AllowedTools)
 

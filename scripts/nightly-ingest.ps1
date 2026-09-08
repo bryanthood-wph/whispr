@@ -162,6 +162,12 @@ if (-not (Test-Path -LiteralPath $script:DailyLogPath)) { [System.IO.File]::Writ
 try {
     Write-Log -Level INFO -Message "=== nightly-ingest starting (DryRun=$DryRun QuietMinutes=$QuietMinutes TimeoutSeconds=$TimeoutSeconds) ==="
 
+    # Same exposure as weekly-lint-compile, which is where this bit: a 01:00
+    # trigger on a laptop, then per-file summarize+ingest calls that each run
+    # for minutes. This job has not been caught by standby yet; it is one line
+    # to make sure it is not, rather than waiting for the night it is.
+    Set-SystemAwake | Out-Null
+
     if (-not (Test-Path -LiteralPath $PromptTemplatePath)) {
         Invoke-JobFailure -StepName 'startup' -Detail "Summarize prompt template not found at '$PromptTemplatePath'."
     }

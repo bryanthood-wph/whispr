@@ -290,6 +290,64 @@ function ConvertFrom-ClaudeJsonLenient {
 }
 
 # ---------------------------------------------------------------------------
+# Sleep suppression — keep the machine out of standby for the life of the job.
+# ---------------------------------------------------------------------------
+function Set-SystemAwake {
+    <#
+      Ask Windows not to idle-sleep while this process runs.
+
+      Added 2026-09-08 after the weekly job failed this way. The Sunday 01:00
+      run never fired (machine asleep); Task Scheduler caught it up on Monday at
+      12:46:30, it invoked /lint at 12:46:46, and the system entered Modern
+      Standby at 12:47:51 — 65 seconds later. Everything was suspended for ~19
+      hours and the 1800 s timeout fired the moment the machine woke, reported
+      as "/lint call timed out". The lint was not slow; it was frozen. Any job
+      here that waits on a multi-minute claude call has the same exposure.
+
+      ES_CONTINUOUS makes the request persist rather than being a one-shot
+      nudge; ES_SYSTEM_REQUIRED is what actually keeps the system up. Display
+      sleep is deliberately NOT requested — the screen going dark is fine, and
+      asking for ES_DISPLAY_REQUIRED on a laptop that is meant to be idle would
+      be a worse citizen than the problem it fixes.
+
+      LIMITS, worth stating rather than discovering later: this stops IDLE
+      transitions only. It does not survive the lid closing, the user choosing
+      Sleep, or a battery-critical event — all of which can still suspend a run.
+      No explicit release is needed on the normal path because the execution
+      state is per-thread and Windows clears it when the process exits; -Release
+      exists for callers that keep running after the long work is done.
+
+      Never throws. A job that cannot suppress sleep should still do its work.
+    #>
+    param([switch]$Release)
+
+    $ES_CONTINUOUS      = [uint32]'0x80000000'
+    $ES_SYSTEM_REQUIRED = [uint32]'0x00000001'
+
+    try {
+        if (-not ('Whispr.Power' -as [type])) {
+            Add-Type -Namespace 'Whispr' -Name 'Power' -MemberDefinition @'
+[DllImport("kernel32.dll", SetLastError = true)]
+public static extern uint SetThreadExecutionState(uint esFlags);
+'@
+        }
+        $flags = if ($Release) { $ES_CONTINUOUS } else { $ES_CONTINUOUS -bor $ES_SYSTEM_REQUIRED }
+        # Returns the PREVIOUS state, or 0 on failure.
+        $prev = [Whispr.Power]::SetThreadExecutionState($flags)
+        if ($prev -eq 0) {
+            Write-Log -Level WARN -Message 'Could not suppress sleep (SetThreadExecutionState returned 0); a long call may still be suspended by standby.'
+            return $false
+        }
+        if ($Release) { Write-Log -Message 'Sleep suppression released.' }
+        else          { Write-Log -Message 'Sleep suppression ON for the life of this process (idle standby only; lid-close still sleeps).' }
+        return $true
+    } catch {
+        Write-Log -Level WARN -Message "Could not suppress sleep ($($_.Exception.GetType().Name): $($_.Exception.Message)); continuing anyway."
+        return $false
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Failure handling — the "durable trio" (+ best-effort toast), a single
 # choke point for every FAIL THE JOB exit in either script.
 # ---------------------------------------------------------------------------
