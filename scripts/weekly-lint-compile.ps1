@@ -95,6 +95,7 @@ $RepoRoot      = Split-Path -Parent $PSScriptRoot                     # C:\githu
 $LogDir        = Join-Path $RepoRoot 'logs'
 $VaultRoot     = 'C:\github\cohoodOBS'                                # sibling repo — not under $RepoRoot
 $VaultSourcesDir = Join-Path $VaultRoot 'sources'
+$VaultLogPath    = Join-Path $VaultRoot 'log.md'                      # the vault's own activity record
 
 $EventLogSource = 'whispr-weekly'
 $EventLogName   = 'Application'
@@ -239,6 +240,84 @@ function Get-LintStalePages {
     $section = $Matches[1]
     $names = [regex]::Matches($section, '(?m)^-\s+\*\*([^*]+?)\.md\*\*') | ForEach-Object { $_.Groups[1].Value.Trim() }
     return ,@($names | Select-Object -Unique)
+}
+
+function Get-LintFindingCounts {
+    # Pulls the per-section "(N)" counts out of the lint report's six section
+    # headers (`### 1. Orphan notes (12)`, `### 2. Dangling links (450)`, ...).
+    # Deliberately does NOT default a missing section to 0: writing "0 orphans"
+    # because the parse failed would put a false number into the vault's
+    # permanent record, which is worse than recording that counts weren't
+    # available. Complete is true only when all six parsed.
+    param([AllowNull()][string]$LintReportText)
+    $counts = @{}
+    if (-not [string]::IsNullOrWhiteSpace($LintReportText)) {
+        foreach ($m in [regex]::Matches($LintReportText, '(?m)^###\s*([1-6])\.[^\r\n(]*\((\d+)\)')) {
+            $counts[[int]$m.Groups[1].Value] = [int]$m.Groups[2].Value
+        }
+    }
+    $missing = @(1..6 | Where-Object { -not $counts.ContainsKey($_) })
+    return [PSCustomObject]@{ Counts = $counts; Complete = ($missing.Count -eq 0); Missing = $missing }
+}
+
+function Write-VaultLintLogEntry {
+    <#
+      THE BACKSTOP for the vault's lint record.
+
+      /lint's command file tells Claude to append a `## [date] lint | N findings`
+      line to cohoodOBS/log.md — but that instruction sat AFTER an interactive
+      "which should I fix?" question, and this job calls `claude -p`, where there
+      is no second turn and nobody ever answers. The model emitted its report,
+      reached the question, and the process exited before appending anything. So
+      between 2026-08-17 and 2026-09-13 the vault recorded four successful weekly
+      lint runs as: nothing at all. The report is held in memory only, so those
+      four weeks of findings are unrecoverable.
+
+      lint.md is fixed too (the append is now a work step ahead of the question),
+      but a prompt instruction is precisely what failed here, so this writes the
+      line deterministically whenever the model didn't.
+
+      Idempotent — if today's entry is already present the prompt fix worked and
+      this does nothing. Never throws: a record-keeping backstop must not be able
+      to fail the job it exists to record. Also appends at the true end of file,
+      which the model-written entries have not reliably done.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$VaultLogPath,
+        [AllowNull()][string]$LintReportText
+    )
+    try {
+        if (-not (Test-Path -LiteralPath $VaultLogPath)) {
+            Write-Log -Level WARN -Message "Vault log not found at '$VaultLogPath' — this lint run will go unrecorded."
+            return
+        }
+
+        $today = Get-Date -Format 'yyyy-MM-dd'
+        $existing = [System.IO.File]::ReadAllText($VaultLogPath)
+        if ($existing -match ('(?m)^##\s*\[' + [regex]::Escape($today) + '\]\s*lint\s*\|')) {
+            Write-Log -Level INFO -Message "Vault log already carries a lint entry for $today (/lint wrote its own) — backstop not needed."
+            return
+        }
+
+        $parsed = Get-LintFindingCounts -LintReportText $LintReportText
+        if ($parsed.Complete) {
+            $c = $parsed.Counts
+            $total = $c[1] + $c[2] + $c[3] + $c[4] + $c[5] + $c[6]
+            $entry = "## [$today] lint | $total findings — $($c[1]) orphans, $($c[2]) dangling links ($($c[6]) compile candidates), $($c[3]) contradictions, $($c[4]) stale pages, $($c[5]) stale claims <!-- backstop -->"
+        } else {
+            Write-Log -Level WARN -Message "Lint report section counts not fully parseable (missing section(s): $($parsed.Missing -join ', ')) — recording the run without inventing numbers."
+            $entry = "## [$today] lint | ran (weekly job) — finding counts unparseable; see whispr logs\weekly-lint-compile-$today.log <!-- backstop -->"
+        }
+
+        # Defensive: many agents mutate this file, and a missing trailing newline
+        # would otherwise glue this entry onto the last existing line.
+        if ($existing.Length -gt 0 -and -not $existing.EndsWith("`n")) { $entry = "`n" + $entry }
+
+        Add-Utf8Line -Path $VaultLogPath -Line $entry
+        Write-Log -Level WARN -Message "BACKSTOP FIRED — /lint did not write its own log.md entry; wrote it from PowerShell instead: $entry"
+    } catch {
+        Write-Log -Level WARN -Message "Could not write the vault lint log entry (non-fatal — the lint itself succeeded): $($_.Exception.Message)"
+    }
 }
 
 function Test-VaultPageExists {
@@ -419,6 +498,14 @@ try {
 
     $stalePages = Get-LintStalePages -LintReportText $lintReportText
     Write-Log -Level INFO -Message "Lint stale-pages list (existing pages eligible for recompile even though they already exist): $(if ($stalePages.Count -gt 0) { $stalePages -join ', ' } else { '(none)' })"
+
+    # Record the lint run in the vault's own log here — before extraction and the
+    # compile calls, so no other claude process is writing to log.md concurrently.
+    if ($DryRun) {
+        Write-Log -Level INFO -Message "[DRYRUN] Would ensure cohoodOBS/log.md carries a lint entry for today (backstop makes no writes in a rehearsal)."
+    } else {
+        Write-VaultLintLogEntry -VaultLogPath $VaultLogPath -LintReportText $lintReportText
+    }
 
     # --- Step 4: extract compile candidates (haiku), workstream-first split ----
     # haiku: constrained extraction/classification over text we already have
