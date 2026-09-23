@@ -31,6 +31,17 @@
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 # ---------------------------------------------------------------------------
+# Where nightly-ingest.ps1 parks a file it cannot resolve. Lives here, not in
+# nightly-ingest.ps1, because it now has two consumers: that script does the
+# parking, check-nightly-freshness.ps1 reports on what is sitting there.
+# Defining it in both would let them drift into disagreeing about the path.
+# A SUBDIRECTORY of transcripts\ on purpose: same volume, so parking is a
+# directory-entry rename and LastWriteTimeUtc survives untouched. It is also
+# invisible to nightly-ingest's candidate walk, which is non-recursive.
+# ---------------------------------------------------------------------------
+$NeedsAttentionDir = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) 'transcripts') '_needs-attention'
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 function Write-Utf8File {
@@ -382,9 +393,29 @@ function Invoke-JobFailure {
         [Parameter(Mandatory)][string]$Detail,
         [string]$FileContext = '(n/a)',
         [int]$ExitCode = -1,
-        [string]$StdErr = ''
+        [string]$StdErr = '',
+        # Raise the same durable trio (sentinel + Event Log + toast) but RETURN
+        # instead of `exit 1`. Added 2026-09-23 for nightly-ingest's file-parking
+        # path: a file the job cannot resolve needs to be reported durably, but
+        # killing the run would skip every later file — strictly worse than the
+        # stall being fixed. Deliberately a switch on this function rather than a
+        # second alerting path, because this is the single choke point for the
+        # trio and a parallel copy would drift.
+        #
+        # The log-line wording below is load-bearing, not cosmetic:
+        # check-nightly-freshness.ps1's Check B greps a run's last 5 log lines for
+        # 'nightly-ingest SUCCESS|FAIL THE JOB'. If this path emitted "FAIL THE
+        # JOB", a park late in a run that was then killed externally would plant a
+        # false terminal marker and Check B would report OK on a stuck run.
+        [switch]$NonFatal
     )
-    $timestamp = Get-Date -Format 'yyyy-MM-dd-HHmmss'
+    # Millisecond resolution, not seconds. The fatal path could never collide —
+    # it exits — but -NonFatal returns, so one run can raise several alerts, and
+    # Write-Utf8File overwrites. At second resolution two parks in the same
+    # second silently collapsed into one sentinel, losing an audit record of
+    # exactly the kind this trio exists to preserve. The 'FAILED-'/
+    # 'NEEDS-ATTENTION-' prefixes are unchanged, so existing globs still match.
+    $timestamp = Get-Date -Format 'yyyy-MM-dd-HHmmss-fff'
     $errorBlock = @"
 STEP: $StepName
 FILE: $FileContext
@@ -394,11 +425,21 @@ STDERR:
 $StdErr
 "@
 
-    Write-Log -Level ERROR -Message "FAIL THE JOB — step '$StepName' failed (file: $FileContext, exit: $ExitCode). $Detail"
+    if ($NonFatal) {
+        Write-Log -Level WARN -Message "NEEDS ATTENTION — step '$StepName' (file: $FileContext). $Detail"
+    } else {
+        Write-Log -Level ERROR -Message "FAIL THE JOB — step '$StepName' failed (file: $FileContext, exit: $ExitCode). $Detail"
+    }
 
-    # 1) Sentinel file.
+    # 1) Sentinel file. The distinct prefix keeps the two alert classes apart for
+    #    a human skimming logs\: FAILED-* means the job died and produced nothing,
+    #    NEEDS-ATTENTION-* means it carried on and one file needs a decision.
+    #    Nothing machine-reads the prefix — Check D scans the park directory and
+    #    the day's log instead, deliberately (see its comment). Do not add a
+    #    consumer that globs these by date; that was tried and could not fire.
     try {
-        $sentinelPath = Join-Path $LogDir "FAILED-$timestamp.txt"
+        $sentinelName = if ($NonFatal) { "NEEDS-ATTENTION-$timestamp.txt" } else { "FAILED-$timestamp.txt" }
+        $sentinelPath = Join-Path $LogDir $sentinelName
         Write-Utf8File -Path $sentinelPath -Content $errorBlock
     } catch {
         Write-Log -Level ERROR -Message "Could not write failure sentinel: $($_.Exception.Message)"
@@ -409,7 +450,8 @@ $StdErr
         if (-not [System.Diagnostics.EventLog]::SourceExists($EventLogSource)) {
             New-EventLog -LogName $EventLogName -Source $EventLogSource -ErrorAction Stop
         }
-        Write-EventLog -LogName $EventLogName -Source $EventLogSource -EntryType Error -EventId $EventId -Message $errorBlock -ErrorAction Stop
+        $entryType = if ($NonFatal) { 'Warning' } else { 'Error' }
+        Write-EventLog -LogName $EventLogName -Source $EventLogSource -EntryType $entryType -EventId $EventId -Message $errorBlock -ErrorAction Stop
     } catch {
         Write-Log -Level WARN -Message "Could not write to Windows Event Log (may require elevation for first-time source creation; continuing): $($_.Exception.Message)"
     }
@@ -419,10 +461,13 @@ $StdErr
     # generic label so the toast still identifies which job failed.
     $jobLabel = if ($JobName) { $JobName } else { 'whispr-sync' }
     try {
-        Send-BestEffortToast -Title "$jobLabel FAILED" -Message "$StepName failed: $Detail" -NotifierId $jobLabel
+        $toastTitle = if ($NonFatal) { "$jobLabel NEEDS ATTENTION" } else { "$jobLabel FAILED" }
+        Send-BestEffortToast -Title $toastTitle -Message "$StepName : $Detail" -NotifierId $jobLabel
     } catch {
         Write-Log -Level WARN -Message "Toast notification path threw (non-fatal): $($_.Exception.Message)"
     }
+
+    if ($NonFatal) { return }
 
     exit 1
 }

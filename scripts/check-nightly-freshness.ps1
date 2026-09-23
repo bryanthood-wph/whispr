@@ -21,6 +21,13 @@
       exact signature (external kill, no FAILED sentinel because the kill
       preempted the script's own error handling).
 
+  C — the recorder's periodic recovery is not armed (runs FIRST; see the block
+      comment above it for why the ordering is load-bearing).
+  D — a file is parked in transcripts\_needs-attention\ awaiting a human, or
+      today's run FAILED to park one (watermark frozen, expensive re-ingest
+      loop live). Both are invisible to Check B, because the run continues and
+      still logs SUCCESS. Runs LAST.
+
   A run that already self-reported failure (logs "FAIL THE JOB..." via
   Invoke-JobFailure, matched case-insensitively on "fail") is NOT re-flagged
   here — it already alerted through the existing durable trio; re-alerting
@@ -172,6 +179,70 @@ if (-not (Test-Path -LiteralPath $todayLog)) {
         $detail = "today's log ($todayLog) exists, the task is not Running, and no terminal marker (SUCCESS/FAIL) appears in its last 5 lines — the run started and never finished. Last line: $lastLine"
         Invoke-CheckFailure -Check 'B' -StepName 'watchdog-stuck-run' -Detail $detail -FileContext $todayLog
     }
+}
+
+# -- Check D: last night's run parked a file it could not resolve ------------
+# Added 2026-09-23. Checks B and C both assume a broken pipeline announces itself
+# by stopping. A parked file does not: nightly-ingest.ps1 reports it via
+# Invoke-JobFailure -NonFatal and then carries on, so the run still logs
+# "nightly-ingest SUCCESS" and Check B — which greps the tail for exactly that —
+# reports OK. That is bit-for-bit the 2026-09-09..09-16 blind window, where eight
+# consecutive "SUCCESS" runs made zero forward progress.
+#
+# The gap being closed is DELIVERY, not detection. The nightly job alerts at
+# 01:00 into logs\, which nobody reads (there were 10 unread FAILED-*.txt files
+# sitting there when this was written). This check runs twice daily at hours when
+# a human is around, so it is the right place to surface the sentinel.
+#
+# Deliberately NOT a watermark-age check, and NOT a scan for today's
+# NEEDS-ATTENTION-<date> sentinel either. The .SYNOPSIS forbids time heuristics
+# and is right to — the watermark can legitimately sit days stale with the laptop
+# off. A date-stamped sentinel glob looked state-based but smuggled the same
+# assumption back in: under the schedule register-task.ps1 registers (ingest
+# 22:00, this check 09:00 and 20:00) the park always lands AFTER both of that
+# day's checks, and tomorrow's runs build a different date string, so it could
+# never fire at all. Both conditions below read state that the condition itself
+# maintains, so no schedule can hide them.
+#
+# The two predicates are scoped differently ON PURPOSE:
+#   - A SUCCESSFUL park happens once, and the file then sits there indefinitely,
+#     so this must be persistent: it nags every run until a human deals with the
+#     file. That matches Check C, which also nags until fixed.
+#   - A FAILED park regenerates its own evidence every single run (the watermark
+#     stays frozen, the same file is retried, the same line is logged), so
+#     scoping it to today's log is self-re-detecting and cannot go quiet while
+#     the condition lasts.
+# $todayLog is the path Check B already computed — not recomputed here.
+#
+# RUNS LAST, which inverts this file's "order by how badly the condition
+# self-heals" rule, deliberately. Invoke-JobFailure ends in `exit 1`, so any
+# firing check masks the ones below it — and a parked file is the only condition
+# here where the pipeline is otherwise healthy and still making progress. Masking
+# it for one 12-hour cycle costs nothing; masking C, A or B costs a dead pipeline.
+$problems = @()
+
+$parked = @(Get-ChildItem -LiteralPath $NeedsAttentionDir -File -ErrorAction SilentlyContinue)
+if ($parked.Count -gt 0) {
+    $names = ($parked | Select-Object -First 3 | ForEach-Object { $_.Name }) -join ', '
+    $problems += "$($parked.Count) file(s) sit parked in '$NeedsAttentionDir' awaiting a human ($names). nightly-ingest skipped each one and will never ingest it until it is fixed and its LastWriteTimeUtc is bumped."
+}
+
+# The LATEST park attempt, not merely any. A daily log accumulates every run of
+# the day, so "does this file contain a failure" would keep alarming after a
+# later run had already parked the file successfully — a stale alarm that cannot
+# clear until midnight. Whichever line came last is the current state, and a
+# retry that succeeds silences it immediately.
+if (Test-Path -LiteralPath $todayLog) {
+    $parkAttempts = @(Select-String -LiteralPath $todayLog -Pattern 'Could NOT park |PARKED ' -ErrorAction SilentlyContinue)
+    if ($parkAttempts.Count -gt 0 -and $parkAttempts[-1].Line -match 'Could NOT park ') {
+        $problems += "the most recent park attempt today FAILED, so the watermark is FROZEN — every run from now on re-summarizes and re-ingests the whole backlog at full claude cost until that file is moved or fixed by hand. This is the 2026-09-09 failure mode; see $todayLog."
+    }
+}
+
+if ($problems.Count -eq 0) {
+    Write-Log -Message "Check D OK: nothing parked in '$NeedsAttentionDir', and today's run parked everything it needed to."
+} else {
+    Invoke-CheckFailure -Check 'D' -StepName 'nightly-needs-attention' -Detail ($problems -join ' ALSO: ') -FileContext $NeedsAttentionDir
 }
 
 Write-Log -Message "=== check-nightly-freshness done ==="

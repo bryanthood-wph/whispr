@@ -73,6 +73,9 @@ $ErrorActionPreference = 'Stop'
 # the vault is a *sibling* repo so its root is necessarily a literal constant.
 $RepoRoot            = Split-Path -Parent $PSScriptRoot                     # C:\github\whispr
 $TranscriptsDir       = Join-Path $RepoRoot 'transcripts'
+# $NeedsAttentionDir (where Move-ToNeedsAttention parks an unresolvable file) is
+# defined in sync-common.ps1, dot-sourced below — check-nightly-freshness.ps1
+# needs the same path, so it has one definition rather than two.
 $LogDir               = Join-Path $RepoRoot 'logs'
 $PromptTemplatePath   = Join-Path $PSScriptRoot 'summarize-prompt.txt'
 $WatermarkFile        = Join-Path $LogDir 'nightly-ingest-last-run.txt'
@@ -97,12 +100,31 @@ $JobName               = 'whispr-nightly-ingest'   # used by the shared failure-
 # fully-good file, so the next run retries the failed one instead of silently
 # losing it.)
 # ---------------------------------------------------------------------------
-# Frozen once we hit a file we can't safely resolve (malformed frontmatter or
-# partial:true). We keep processing/ingesting *later* files in the same run
-# (skip != fail-the-job), but we stop persisting new watermark values from that
-# point on, so the unresolved file (and everything at/after it) is retried in
-# full next run rather than being silently skipped forever once a later file's
-# timestamp would otherwise have pushed the watermark past it.
+# A file we can't safely resolve (malformed frontmatter or partial:true) is
+# PARKED — moved out of the scanned directory by Move-ToNeedsAttention — and the
+# watermark keeps advancing. Freezing is the FALLBACK, used only when the move
+# itself fails.
+#
+# It used to be the other way round, and that cost 14 days (2026-09-09 -> 09-23).
+# Freezing assumed a human would resolve the file promptly; nothing told the
+# human. One pasted non-transcript froze the watermark at 2026-09-08 and every
+# subsequent run re-summarized and re-ingested the same growing backlog — one
+# file was processed 10 times, ~$14/night, $69.41 over the final five runs. Once
+# the backlog exceeded the task's 1h ExecutionTimeLimit (from 09-17) the
+# scheduler killed each run mid-flight. Worse, the runs from 09-09 to 09-16 still
+# logged "nightly-ingest SUCCESS" while making zero forward progress, so
+# check-nightly-freshness.ps1's Check B reported OK for eight days.
+#
+# Parking removes the file from discovery BY CONSTRUCTION, so the retry loop
+# cannot recur. The invariant the freeze protected — an unresolved file must
+# never be silently skipped — still holds, by different means: the file is
+# physically moved somewhere a human can see it, named in the log, and reported
+# through Invoke-JobFailure -NonFatal (durable sentinel + Event Log).
+#
+# The freeze survives for the one case parking cannot cover: if Move-Item throws
+# (the file is locked by whoever put it there), an advancing watermark would
+# skip the file PERMANENTLY. That is strictly worse than the stall this replaced,
+# so the catch block freezes exactly as before — but now it also alerts.
 $script:WatermarkFrozen = $false
 
 function Get-Watermark {
@@ -129,6 +151,81 @@ function Set-Watermark {
         return
     }
     Write-Utf8File -Path $WatermarkFile -Content $UtcTimestamp.ToUniversalTime().ToString('o')
+}
+
+function Move-ToNeedsAttention {
+    <#
+      Park a file this job cannot resolve, INSTEAD of freezing the watermark.
+      See the $script:WatermarkFrozen comment above for why this replaced
+      freezing as the primary path.
+
+      Local rather than in sync-common.ps1 for the same reason
+      check-nightly-freshness.ps1 keeps Invoke-CheckFailure local: it depends on
+      $NeedsAttentionDir/$TranscriptsDir/$script:WatermarkFrozen, all
+      nightly-only concepts. weekly-lint-compile.ps1 never walks transcripts.
+    #>
+    param(
+        [Parameter(Mandatory)][System.IO.FileInfo]$File,
+        [Parameter(Mandatory)][string]$Reason
+    )
+
+    # Mirrors Set-Watermark's DryRun arm: report, change nothing, freeze nothing.
+    if ($DryRun) {
+        Write-Log -Level WARN -Message "[DRYRUN] Would park '$($File.Name)' ($Reason) into '$NeedsAttentionDir'; watermark would NOT be frozen."
+        return
+    }
+
+    # Stated everywhere this file is mentioned, because parking silently breaks
+    # the obvious repair: a same-volume move preserves LastWriteTimeUtc, so once
+    # the watermark has passed that mtime, moving the fixed file back is a no-op.
+    # Do NOT "solve" that by scanning _needs-attention\ — that reintroduces the
+    # unbounded retry through the back door.
+    $fixHint = "To re-process after fixing: set its LastWriteTimeUtc to now " +
+               "((Get-Item <path>).LastWriteTimeUtc = (Get-Date).ToUniversalTime()) then move it back to " +
+               "'$TranscriptsDir'. Moving it back UNCHANGED does nothing — the watermark has passed its mtime."
+
+    Write-Log -Level WARN -Message "Parking '$($File.Name)' ($Reason) -> '$NeedsAttentionDir' ..."
+
+    # Only the MOVE is guarded. Reporting happens after the try on purpose: with
+    # $ErrorActionPreference = 'Stop', an unrelated throw from Write-Log (its
+    # AppendAllText is unguarded, so a transient sharing violation on the daily
+    # log is enough) would otherwise land in the catch below and freeze the
+    # watermark while alerting "Could NOT park" for a file that HAD been parked.
+    # That single mis-attribution would restore the full-backlog re-ingest at
+    # full claude cost — the exact failure this function exists to end.
+    try {
+        if (-not (Test-Path -LiteralPath $NeedsAttentionDir)) {
+            New-Item -ItemType Directory -Path $NeedsAttentionDir -Force | Out-Null
+        }
+        # Never -Force: an already-parked copy of the same name is the artifact
+        # we moved it here to preserve, so overwriting would destroy the
+        # evidence. Suffix instead, matching whispr/output.py::_resolve_unique_path.
+        # The Test-Path race is benign — single writer, once a night — and
+        # Move-Item without -Force throws on a genuine collision rather than
+        # silently overwriting.
+        $dest = Join-Path $NeedsAttentionDir $File.Name
+        $n = 2
+        while (Test-Path -LiteralPath $dest) {
+            $dest = Join-Path $NeedsAttentionDir ('{0}-{1}{2}' -f $File.BaseName, $n, $File.Extension)
+            $n++
+        }
+        Move-Item -LiteralPath $File.FullName -Destination $dest
+    } catch {
+        # Could not park it (locked by an editor, ACL, AV handle). Fall back to
+        # the old freeze so the file cannot be silently skipped. This is now the
+        # ONLY remaining path to the 2026-09 stall, and unlike then it alerts.
+        $script:WatermarkFrozen = $true
+        Write-Log -Level ERROR -Message "Could NOT park '$($File.Name)' ($($_.Exception.Message)) — freezing the watermark instead, so it is retried rather than lost. The backlog will grow and cost will recur every night until this file is dealt with."
+        Invoke-JobFailure -NonFatal -StepName 'needs-attention-park-failed' -FileContext $File.Name `
+            -Detail "Could not move '$($File.FullName)' to '$NeedsAttentionDir': $($_.Exception.Message). Watermark FROZEN as a fallback — every later run will re-process the whole backlog until this file is moved or fixed by hand."
+        return
+    }
+
+    # $dest is still in scope: try/catch does not create one in PowerShell, and
+    # these lines are reachable only when the catch above did not return.
+    Write-Log -Level WARN -Message "PARKED '$($File.Name)' -> '$dest' ($Reason). Watermark NOT frozen. $fixHint"
+    Invoke-JobFailure -NonFatal -StepName 'needs-attention' -FileContext $File.Name `
+        -Detail "Parked to '$dest' ($Reason). Later files in this run continue normally. $fixHint"
 }
 
 # ---------------------------------------------------------------------------
@@ -202,8 +299,7 @@ try {
         # (a) Split frontmatter/body.
         $parsed = Split-Frontmatter -Content $raw
         if (-not $parsed.Valid) {
-            Write-Log -Level WARN -Message "No valid frontmatter block in '$($file.Name)' — SKIPPING (needs manual attention). Watermark will not advance past this file."
-            $script:WatermarkFrozen = $true
+            Move-ToNeedsAttention -File $file -Reason 'no valid frontmatter block — not a transcript'
             continue
         }
         $frontmatter = $parsed.Frontmatter
@@ -213,8 +309,14 @@ try {
         $partialRaw = Get-FrontmatterScalar -Frontmatter $frontmatter -Key 'partial'
         $isPartial = ($null -ne $partialRaw) -and ($partialRaw.Trim().ToLowerInvariant() -eq 'true')
         if ($isPartial) {
-            Write-Log -Level WARN -Message "'$($file.Name)' has partial: true — SKIPPING (needs manual attention). Watermark will not advance past this file."
-            $script:WatermarkFrozen = $true
+            # Parked, not retried: whispr writes each transcript exactly once and
+            # atomically (output.py::atomic_write_text) and never revisits it, so
+            # a partial:true file will NEVER become non-partial. Retrying it every
+            # night waits on an event that cannot occur. Parked rather than
+            # ingested because whether a cut-off recording belongs in the vault is
+            # a separate decision — its frontmatter already self-labels, so
+            # ingesting partials outright is a reasonable future change.
+            Move-ToNeedsAttention -File $file -Reason 'partial: true — recording was cut off'
             continue
         }
 
