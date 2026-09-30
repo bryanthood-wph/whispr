@@ -235,7 +235,7 @@ if ($parked.Count -gt 0) {
 if (Test-Path -LiteralPath $todayLog) {
     $parkAttempts = @(Select-String -LiteralPath $todayLog -Pattern 'Could NOT park |PARKED ' -ErrorAction SilentlyContinue)
     if ($parkAttempts.Count -gt 0 -and $parkAttempts[-1].Line -match 'Could NOT park ') {
-        $problems += "the most recent park attempt today FAILED, so the watermark is FROZEN — every run from now on re-summarizes and re-ingests the whole backlog at full claude cost until that file is moved or fixed by hand. This is the 2026-09-09 failure mode; see $todayLog."
+        $problems += "the most recent park attempt today FAILED, so the watermark is FROZEN — every run from now on re-lists the whole backlog behind that file until it is moved or fixed by hand (the ingest ledger skips what is already ingested, so the re-listing no longer costs claude calls, but the frozen file itself is never ingested). This is the 2026-09-09 failure mode; see $todayLog."
     }
 }
 

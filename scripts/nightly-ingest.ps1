@@ -26,6 +26,10 @@
   -QuietMinutes    Skip transcripts modified more recently than this many minutes ago
                     (guards against racing whispr while it is still writing a file).
   -TimeoutSeconds  Hard external per-claude-call timeout (process is killed on expiry).
+  -WatermarkOverrideUtc
+                   Rehearsal only — accepted only together with -DryRun. Replaces the
+                    stored watermark for this run (e.g. 1970-01-01 to rehearse a lost
+                    watermark file) without reading or writing the real one.
 
 .NOTES
   CLI surface verified against the actual installed binary (claude.exe 2.1.205, via
@@ -61,7 +65,8 @@
 param(
     [switch]$DryRun,
     [int]$QuietMinutes = 10,
-    [int]$TimeoutSeconds = 300
+    [int]$TimeoutSeconds = 300,
+    [string]$WatermarkOverrideUtc
 )
 
 $ErrorActionPreference = 'Stop'
@@ -79,6 +84,7 @@ $TranscriptsDir       = Join-Path $RepoRoot 'transcripts'
 $LogDir               = Join-Path $RepoRoot 'logs'
 $PromptTemplatePath   = Join-Path $PSScriptRoot 'summarize-prompt.txt'
 $WatermarkFile        = Join-Path $LogDir 'nightly-ingest-last-run.txt'
+$LedgerFile           = Join-Path $LogDir 'nightly-ingest-ledger.jsonl'
 
 $VaultRoot            = 'C:\github\cohoodOBS'                               # sibling repo — not under $RepoRoot
 $VaultSourcesDir      = Join-Path $VaultRoot 'sources'
@@ -127,17 +133,26 @@ $JobName               = 'whispr-nightly-ingest'   # used by the shared failure-
 # so the catch block freezes exactly as before — but now it also alerts.
 $script:WatermarkFrozen = $false
 
+function ConvertTo-UtcTimestamp {
+    # One parser for every watermark value: the stored file (written as 'o', so
+    # it carries its Z), the epoch fallback, and -WatermarkOverrideUtc. A value
+    # with no offset is read as UTC, never as local time.
+    param([Parameter(Mandatory)][string]$Text)
+    return [datetime]::Parse($Text, [System.Globalization.CultureInfo]::InvariantCulture,
+        [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor [System.Globalization.DateTimeStyles]::AssumeUniversal)
+}
+
 function Get-Watermark {
     if (Test-Path -LiteralPath $WatermarkFile) {
         $raw = ''
         try {
             $raw = [System.IO.File]::ReadAllText($WatermarkFile).Trim()
-            return ([datetime]::Parse($raw, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)).ToUniversalTime()
+            return (ConvertTo-UtcTimestamp -Text $raw)
         } catch {
             Write-Log -Level WARN -Message "Watermark file unreadable/corrupt ('$raw'); treating as epoch (process everything). Error: $($_.Exception.Message)"
         }
     }
-    return [datetime]::Parse('1970-01-01T00:00:00Z', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+    return (ConvertTo-UtcTimestamp -Text '1970-01-01T00:00:00Z')
 }
 
 function Set-Watermark {
@@ -215,9 +230,9 @@ function Move-ToNeedsAttention {
         # the old freeze so the file cannot be silently skipped. This is now the
         # ONLY remaining path to the 2026-09 stall, and unlike then it alerts.
         $script:WatermarkFrozen = $true
-        Write-Log -Level ERROR -Message "Could NOT park '$($File.Name)' ($($_.Exception.Message)) — freezing the watermark instead, so it is retried rather than lost. The backlog will grow and cost will recur every night until this file is dealt with."
+        Write-Log -Level ERROR -Message "Could NOT park '$($File.Name)' ($($_.Exception.Message)) — freezing the watermark instead, so it is retried rather than lost. Every later run re-lists the backlog behind it until this file is dealt with (the ingest ledger skips what is already ingested, so the re-listing costs no claude calls)."
         Invoke-JobFailure -NonFatal -StepName 'needs-attention-park-failed' -FileContext $File.Name `
-            -Detail "Could not move '$($File.FullName)' to '$NeedsAttentionDir': $($_.Exception.Message). Watermark FROZEN as a fallback — every later run will re-process the whole backlog until this file is moved or fixed by hand."
+            -Detail "Could not move '$($File.FullName)' to '$NeedsAttentionDir': $($_.Exception.Message). Watermark FROZEN as a fallback — every later run re-lists the backlog behind it until this file is moved or fixed by hand."
         return
     }
 
@@ -226,6 +241,174 @@ function Move-ToNeedsAttention {
     Write-Log -Level WARN -Message "PARKED '$($File.Name)' -> '$dest' ($Reason). Watermark NOT frozen. $fixHint"
     Invoke-JobFailure -NonFatal -StepName 'needs-attention' -FileContext $File.Name `
         -Detail "Parked to '$dest' ($Reason). Later files in this run continue normally. $fixHint"
+}
+
+# ---------------------------------------------------------------------------
+# Idempotency — the ingest ledger and the per-file gate (added 2026-09-30).
+#
+# The watermark decides which transcripts are LISTED; it was never able to say
+# whether one had already been ingested. So anything that re-listed a
+# transcript — the 2026-09-09..09-23 freeze, a hand-rewound watermark, an
+# unreadable watermark file (epoch: every transcript) — re-summarized it and
+# rewrote sources\<name>.md over the existing note. The transcript's own
+# frontmatter always reads status raw / topic placeholder, so each rewrite reset
+# an already-integrated note to raw with a new, differently-worded body — the
+# vault's one hard rule (a note's body is immutable once it leaves raw). 155 of
+# 278 /ingest calls in that window were repeats of files already ingested.
+#
+# Two layers, checked before any claude call:
+#   1. The ledger (append-only JSONL, one line per ingested transcript: name +
+#      sha256). A listed name already in the ledger is skipped at zero cost —
+#      this is what makes a rewound or lost watermark harmless, and it still
+#      remembers notes that were deliberately deleted from the vault afterwards.
+#   2. The vault note itself. A transcript missing from the ledger whose note
+#      already exists is never rewritten. The note is compared with the
+#      transcript's own frontmatter (the state whispr hands over), not with any
+#      literal status or topic value: if the note has moved on, /ingest already
+#      ran; if it has not, an earlier run wrote it and /ingest never finished, so
+#      only /ingest is re-run.
+# ---------------------------------------------------------------------------
+$script:IngestLedger = @{}   # transcript file name -> sha256; case-insensitive like the filesystem
+
+function Get-TranscriptSha256 {
+    param([Parameter(Mandatory)][string]$Path)
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function New-IngestLedgerLine {
+    # Records the entry in memory and returns its JSONL line for the caller to
+    # persist. Origin: ingest = this run's /ingest succeeded; backfill-vault =
+    # the note had already been ingested by an earlier path; backfill-log =
+    # seeded from a past run's SUCCESS line when the ledger was first created.
+    param(
+        [Parameter(Mandatory)][string]$TranscriptName,
+        [Parameter(Mandatory)][string]$Sha256,
+        [Parameter(Mandatory)][ValidateSet('ingest', 'backfill-vault', 'backfill-log')][string]$Origin
+    )
+    $script:IngestLedger[$TranscriptName] = $Sha256
+    return ([PSCustomObject]@{
+        transcript = $TranscriptName
+        sha256     = $Sha256
+        origin     = $Origin
+        recordedAt = (Get-Date).ToUniversalTime().ToString('o')
+    } | ConvertTo-Json -Compress)
+}
+
+function Add-IngestLedgerEntry {
+    param(
+        [Parameter(Mandatory)][string]$TranscriptName,
+        [Parameter(Mandatory)][string]$Sha256,
+        [Parameter(Mandatory)][string]$Origin
+    )
+    $line = New-IngestLedgerLine -TranscriptName $TranscriptName -Sha256 $Sha256 -Origin $Origin
+    if ($DryRun) {
+        Write-Log -Level INFO -Message "[DRYRUN] Would append ingest-ledger entry ($Origin): $TranscriptName"
+        return
+    }
+    Add-Utf8Line -Path $LedgerFile -Line $line
+}
+
+function Initialize-IngestLedger {
+    <#
+      Load the ledger into $script:IngestLedger. A partial last line (a crash
+      mid-append) or any other unparseable line is skipped, not fatal — the
+      vault-note check behind the ledger still stops that file being rewritten.
+
+      First run (no ledger file): seed it from every past run's
+      "SUCCESS '<file>'" log line whose transcript still exists, so transcripts
+      ingested before the ledger existed — including ones whose vault note was
+      later deleted on purpose — are never re-ingested.
+    #>
+    if (Test-Path -LiteralPath $LedgerFile) {
+        $bad = 0
+        foreach ($line in [System.IO.File]::ReadAllLines($LedgerFile, $script:Utf8NoBom)) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            try {
+                $entry = $line | ConvertFrom-Json -ErrorAction Stop
+                if ($entry.transcript -and $entry.sha256) { $script:IngestLedger[[string]$entry.transcript] = [string]$entry.sha256 }
+                else { $bad++ }
+            } catch { $bad++ }
+        }
+        $badNote = if ($bad -gt 0) { " ($bad unparseable line(s) ignored)" } else { '' }
+        Write-Log -Level INFO -Message "Ingest ledger loaded: $($script:IngestLedger.Count) transcript(s) from '$LedgerFile'$badNote."
+        return
+    }
+
+    Write-Log -Level INFO -Message "Ingest ledger not found at '$LedgerFile' — seeding it from past nightly-ingest logs."
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $successRe = '^\[[^\]]+\] \[INFO\] SUCCESS ''(.+?)'' — summarize cost '
+    foreach ($log in (Get-ChildItem -LiteralPath $LogDir -Filter 'nightly-ingest-*.log' -File | Sort-Object Name)) {
+        foreach ($m in (Select-String -LiteralPath $log.FullName -Pattern $successRe)) {
+            $name = $m.Matches[0].Groups[1].Value
+            if ($script:IngestLedger.ContainsKey($name)) { continue }
+            $transcriptPath = Join-Path $TranscriptsDir $name
+            if (-not (Test-Path -LiteralPath $transcriptPath)) { continue }
+            $lines.Add((New-IngestLedgerLine -TranscriptName $name -Sha256 (Get-TranscriptSha256 -Path $transcriptPath) -Origin 'backfill-log'))
+        }
+    }
+    if ($DryRun) {
+        Write-Log -Level INFO -Message "[DRYRUN] Would create the ingest ledger seeded with $($lines.Count) transcript(s) from past SUCCESS log lines (held in memory for this rehearsal only)."
+        return
+    }
+    Write-Utf8File -Path $LedgerFile -Content ((@($lines) | ForEach-Object { "$_`n" }) -join '')
+    Write-Log -Level INFO -Message "Ingest ledger created at '$LedgerFile', seeded with $($lines.Count) transcript(s) from past SUCCESS log lines."
+}
+
+function New-IngestDecision {
+    # The gate's result. -Backfill: a skip should also record the transcript in
+    # the ledger. -Alert: a skip must be reported durably, not just logged.
+    param(
+        [Parameter(Mandatory)][ValidateSet('skip', 'ingest-only', 'full')][string]$Action,
+        [Parameter(Mandatory)][string]$Reason,
+        [ValidateSet('INFO', 'WARN')][string]$Level = 'INFO',
+        [switch]$Backfill,
+        [switch]$Alert
+    )
+    return [PSCustomObject]@{ Action = $Action; Reason = $Reason; Level = $Level; Backfill = [bool]$Backfill; Alert = [bool]$Alert }
+}
+
+function Get-IngestDecision {
+    # Decide what to do with one listed transcript BEFORE any claude call.
+    param(
+        [Parameter(Mandatory)][string]$TranscriptName,
+        [Parameter(Mandatory)][string]$Sha256,
+        [Parameter(Mandatory)][string]$TranscriptFrontmatter,
+        [Parameter(Mandatory)][string]$NotePath
+    )
+    if ($script:IngestLedger.ContainsKey($TranscriptName)) {
+        $ledgerSha = $script:IngestLedger[$TranscriptName]
+        if ($ledgerSha -eq $Sha256) {
+            return (New-IngestDecision -Action skip -Reason 'already ingested (ledger)')
+        }
+        # Deliberately a log line, not an alert (decision 2026-09-30): the note
+        # stays exactly as it was ingested; nothing is re-summarized. Prefixes
+        # are length-guarded because the ledger is a hand-editable text file.
+        $short = { param($h) if ($h.Length -gt 12) { $h.Substring(0, 12) + '…' } else { $h } }
+        return (New-IngestDecision -Action skip -Level WARN `
+            -Reason "transcript changed since it was ingested (ledger sha256 $(& $short $ledgerSha), now $(& $short $Sha256)) — vault note left as ingested")
+    }
+
+    if (-not (Test-Path -LiteralPath $NotePath)) {
+        return (New-IngestDecision -Action full -Reason 'new transcript')
+    }
+
+    $note = Split-Frontmatter -Content ([System.IO.File]::ReadAllText($NotePath))
+    if (-not $note.Valid) {
+        return (New-IngestDecision -Action skip -Level WARN -Alert `
+            -Reason "vault note '$NotePath' exists but its frontmatter does not parse — left untouched")
+    }
+    $noteStatus = Get-FrontmatterScalar -Frontmatter $note.Frontmatter -Key 'status'
+    $noteTopic  = Get-FrontmatterScalar -Frontmatter $note.Frontmatter -Key 'topic'
+    $handedStatus = Get-FrontmatterScalar -Frontmatter $TranscriptFrontmatter -Key 'status'
+    $handedTopic  = Get-FrontmatterScalar -Frontmatter $TranscriptFrontmatter -Key 'topic'
+
+    if ($noteStatus -ne $handedStatus) {
+        return (New-IngestDecision -Action skip -Backfill -Reason "vault note already moved on (status '$noteStatus')")
+    }
+    if ($noteTopic -ne $handedTopic) {
+        return (New-IngestDecision -Action skip -Backfill -Reason "vault note already ingested (topic $noteTopic)")
+    }
+    return (New-IngestDecision -Action ingest-only -Reason 'vault note written by an earlier run whose /ingest never finished — re-running /ingest only, no re-summarize, no rewrite')
 }
 
 # ---------------------------------------------------------------------------
@@ -270,9 +453,21 @@ try {
     }
     $promptTemplate = [System.IO.File]::ReadAllText($PromptTemplatePath)
 
-    # --- Step 2: watermark + enumerate candidates ---------------------------
-    $watermark = Get-Watermark
-    Write-Log -Level INFO -Message "Watermark (last fully-good file's LastWriteTimeUtc): $($watermark.ToString('o'))"
+    # --- Step 2: watermark + ledger + enumerate candidates -------------------
+    if ($WatermarkOverrideUtc) {
+        if (-not $DryRun) {
+            Invoke-JobFailure -StepName 'startup' -Detail "-WatermarkOverrideUtc is a rehearsal switch and is only accepted together with -DryRun."
+        }
+        try {
+            $watermark = ConvertTo-UtcTimestamp -Text $WatermarkOverrideUtc
+        } catch {
+            Invoke-JobFailure -StepName 'startup' -Detail "-WatermarkOverrideUtc '$WatermarkOverrideUtc' is not a parseable date/time: $($_.Exception.Message)"
+        }
+        Write-Log -Level INFO -Message "[DRYRUN] Watermark OVERRIDDEN for this rehearsal: $($watermark.ToString('o')) (the watermark file is neither read nor written)."
+    } else {
+        $watermark = Get-Watermark
+        Write-Log -Level INFO -Message "Watermark (last fully-good file's LastWriteTimeUtc): $($watermark.ToString('o'))"
+    }
 
     # Quiet-period guard: skip anything whispr might still be actively writing.
     $cutoffUtc = (Get-Date).ToUniversalTime().AddMinutes(-1 * $QuietMinutes)
@@ -280,6 +475,15 @@ try {
     if (-not (Test-Path -LiteralPath $TranscriptsDir)) {
         Invoke-JobFailure -StepName 'startup' -Detail "Transcripts directory not found at '$TranscriptsDir'."
     }
+    if (-not (Test-Path -LiteralPath $VaultSourcesDir)) {
+        Invoke-JobFailure -StepName 'startup' -Detail "Vault sources directory not found at '$VaultSourcesDir'."
+    }
+
+    # Only after both directories are confirmed: a first-run seed checks each
+    # past SUCCESS line against $TranscriptsDir, so seeding while that directory
+    # is missing would persist an empty ledger.
+    Initialize-IngestLedger
+
     $candidates = Get-ChildItem -LiteralPath $TranscriptsDir -Filter '*.md' -File |
         Where-Object { $_.LastWriteTimeUtc -gt $watermark -and $_.LastWriteTimeUtc -lt $cutoffUtc } |
         Sort-Object LastWriteTimeUtc
@@ -287,6 +491,7 @@ try {
     Write-Log -Level INFO -Message "Found $($candidates.Count) transcript(s) to consider: $(($candidates | ForEach-Object { $_.Name }) -join ', ')"
 
     $ingestedCount = 0
+    $skippedCount = 0
     $totalCost = 0.0
 
     # --- Step 3: per-file loop ------------------------------------------------
@@ -320,66 +525,96 @@ try {
             continue
         }
 
-        $callTitle   = Get-FrontmatterOrDefault (Get-FrontmatterScalar -Frontmatter $frontmatter -Key 'call_title')
-        $date        = Get-FrontmatterOrDefault (Get-FrontmatterScalar -Frontmatter $frontmatter -Key 'date')
-        $callType    = Get-FrontmatterOrDefault (Get-FrontmatterScalar -Frontmatter $frontmatter -Key 'call_type')
-        $organizer   = Get-FrontmatterOrDefault (Get-FrontmatterScalar -Frontmatter $frontmatter -Key 'organizer')
-        $attendees   = Get-FrontmatterOrDefault (Get-FrontmatterAttendees -Frontmatter $frontmatter)
-        $inviteNotes = Get-FrontmatterOrDefault (Get-FrontmatterScalar -Frontmatter $frontmatter -Key 'invite_notes')
-
-        # (c) Build the summarization prompt.
-        $summarizePrompt = $promptTemplate.
-            Replace('{{CALL_TITLE}}', $callTitle).
-            Replace('{{DATE}}', $date).
-            Replace('{{CALL_TYPE}}', $callType).
-            Replace('{{ORGANIZER}}', $organizer).
-            Replace('{{ATTENDEES}}', $attendees).
-            Replace('{{INVITE_NOTES}}', $inviteNotes).
-            Replace('{{TRANSCRIPT_BODY}}', $body)
-
-        # (d)/(e) Summarize. haiku by default — summarization/paraphrase of an
-        # already-structured transcript is a straightforward task, not one that
-        # needs sonnet's extra reasoning; use sonnet below only where the task
-        # (writing into the vault, following /ingest's multi-step rules)
-        # actually benefits from it. No --allowedTools here: this call needs
-        # zero file/tool access (prompt text is fully self-contained), so under
-        # --permission-mode dontAsk every tool is auto-denied — strictly more
-        # restrictive than granting Read/Edit/Write it doesn't need.
-        $summarizeResult = Invoke-ClaudeStep -StepName "summarize:$($file.Name)" -PromptText $summarizePrompt `
-            -ExtraArgs @('--model', 'haiku', '--permission-mode', 'dontAsk') `
-            -WorkingDirectory $RepoRoot -TimeoutSeconds $TimeoutSeconds
-
-        if (-not $summarizeResult.Success) {
-            $why = if ($summarizeResult.TimedOut) { 'timed out' } else { 'failed or returned an empty result' }
-            Invoke-JobFailure -StepName "summarize:$($file.Name)" -FileContext $file.Name `
-                -Detail "Summarize call $why." -ExitCode $summarizeResult.ExitCode -StdErr $summarizeResult.StdErr
-        }
-        $totalCost += $summarizeResult.CostUsd
-        $summarizedBody = $summarizeResult.Result
-
-        # (f) Assemble the vault source file content deterministically — the
-        # frontmatter block is carried over byte-for-byte (already vault-
-        # compliant), we never let claude touch it.
-        if ($DryRun) {
-            $summarizedBody = "[DRYRUN placeholder — claude summarize call was skipped]`n`n" + $body
-        }
-        $outputContent = "---`n$frontmatter`n---`n`n$($summarizedBody.Trim())`n"
+        # (b2) Idempotency gate — before any claude call. See the ledger comment
+        # block above for why this exists and what each outcome means.
+        $sha256 = Get-TranscriptSha256 -Path $file.FullName
         $targetPath = Join-Path $VaultSourcesDir "$basename.md"
+        $decision = Get-IngestDecision -TranscriptName $file.Name -Sha256 $sha256 -TranscriptFrontmatter $frontmatter -NotePath $targetPath
 
-        if ($DryRun) {
-            $preview = ($outputContent -split "`n" | Select-Object -First 20) -join "`n"
-            Write-Log -Level INFO -Message "[DRYRUN] Would write vault source file: '$targetPath'"
-            Write-Log -Level INFO -Message "[DRYRUN] First 20 lines of would-be content:`n$preview"
-        } else {
-            if (-not (Test-Path -LiteralPath $VaultSourcesDir)) {
-                Invoke-JobFailure -StepName "write-vault-source:$($file.Name)" -FileContext $file.Name `
-                    -Detail "Vault sources directory not found at '$VaultSourcesDir'."
+        if ($decision.Action -eq 'skip') {
+            Write-Log -Level $decision.Level -Message "SKIP '$($file.Name)' — $($decision.Reason). No claude call."
+            if ($decision.Alert) {
+                # The watermark still advances past this file, so without an
+                # alert nothing would ever surface it again.
+                $alertDetail = "$($decision.Reason). The transcript was not ingested and will not be listed again; fix the note's frontmatter by hand."
+                if ($DryRun) {
+                    Write-Log -Level WARN -Message "[DRYRUN] Would raise NEEDS ATTENTION (gate-note-unparseable) for '$($file.Name)': $alertDetail"
+                } else {
+                    Invoke-JobFailure -NonFatal -StepName 'gate-note-unparseable' -FileContext $file.Name -Detail $alertDetail
+                }
             }
-            try {
-                Write-Utf8File -Path $targetPath -Content $outputContent
-            } catch {
-                Invoke-JobFailure -StepName "write-vault-source:$($file.Name)" -FileContext $file.Name `
-                    -Detail "Failed writing vault source file: $($_.Exception.Message)"
+            if ($decision.Backfill) {
+                Add-IngestLedgerEntry -TranscriptName $file.Name -Sha256 $sha256 -Origin 'backfill-vault'
+            }
+            Set-Watermark -UtcTimestamp $file.LastWriteTimeUtc
+            $skippedCount += 1
+            continue
+        }
+
+        $summarizeCost = 0.0
+        if ($decision.Action -eq 'ingest-only') {
+            Write-Log -Level INFO -Message "INGEST-ONLY '$($file.Name)' — $($decision.Reason)."
+        } else {
+            $callTitle   = Get-FrontmatterOrDefault (Get-FrontmatterScalar -Frontmatter $frontmatter -Key 'call_title')
+            $date        = Get-FrontmatterOrDefault (Get-FrontmatterScalar -Frontmatter $frontmatter -Key 'date')
+            $callType    = Get-FrontmatterOrDefault (Get-FrontmatterScalar -Frontmatter $frontmatter -Key 'call_type')
+            $organizer   = Get-FrontmatterOrDefault (Get-FrontmatterScalar -Frontmatter $frontmatter -Key 'organizer')
+            $attendees   = Get-FrontmatterOrDefault (Get-FrontmatterAttendees -Frontmatter $frontmatter)
+            $inviteNotes = Get-FrontmatterOrDefault (Get-FrontmatterScalar -Frontmatter $frontmatter -Key 'invite_notes')
+
+            # (c) Build the summarization prompt.
+            $summarizePrompt = $promptTemplate.
+                Replace('{{CALL_TITLE}}', $callTitle).
+                Replace('{{DATE}}', $date).
+                Replace('{{CALL_TYPE}}', $callType).
+                Replace('{{ORGANIZER}}', $organizer).
+                Replace('{{ATTENDEES}}', $attendees).
+                Replace('{{INVITE_NOTES}}', $inviteNotes).
+                Replace('{{TRANSCRIPT_BODY}}', $body)
+
+            # (d)/(e) Summarize. haiku by default — summarization/paraphrase of an
+            # already-structured transcript is a straightforward task, not one that
+            # needs sonnet's extra reasoning; use sonnet below only where the task
+            # (writing into the vault, following /ingest's multi-step rules)
+            # actually benefits from it. No --allowedTools here: this call needs
+            # zero file/tool access (prompt text is fully self-contained), so under
+            # --permission-mode dontAsk every tool is auto-denied — strictly more
+            # restrictive than granting Read/Edit/Write it doesn't need.
+            $summarizeResult = Invoke-ClaudeStep -StepName "summarize:$($file.Name)" -PromptText $summarizePrompt `
+                -ExtraArgs @('--model', 'haiku', '--permission-mode', 'dontAsk') `
+                -WorkingDirectory $RepoRoot -TimeoutSeconds $TimeoutSeconds
+
+            if (-not $summarizeResult.Success) {
+                $why = if ($summarizeResult.TimedOut) { 'timed out' } else { 'failed or returned an empty result' }
+                Invoke-JobFailure -StepName "summarize:$($file.Name)" -FileContext $file.Name `
+                    -Detail "Summarize call $why." -ExitCode $summarizeResult.ExitCode -StdErr $summarizeResult.StdErr
+            }
+            $summarizeCost = $summarizeResult.CostUsd
+            $totalCost += $summarizeCost
+            $summarizedBody = $summarizeResult.Result
+
+            # (f) Assemble the vault source file content deterministically — the
+            # frontmatter block is carried over byte-for-byte (already vault-
+            # compliant), we never let claude touch it. Written with -CreateNew:
+            # the gate has just established there is no note at this path, so an
+            # existing one here means something raced us — fail rather than
+            # overwrite it.
+            if ($DryRun) {
+                $summarizedBody = "[DRYRUN placeholder — claude summarize call was skipped]`n`n" + $body
+            }
+            $outputContent = "---`n$frontmatter`n---`n`n$($summarizedBody.Trim())`n"
+
+            if ($DryRun) {
+                $preview = ($outputContent -split "`n" | Select-Object -First 20) -join "`n"
+                Write-Log -Level INFO -Message "[DRYRUN] Would write vault source file: '$targetPath'"
+                Write-Log -Level INFO -Message "[DRYRUN] First 20 lines of would-be content:`n$preview"
+            } else {
+                try {
+                    Write-Utf8File -Path $targetPath -Content $outputContent -CreateNew
+                } catch {
+                    Invoke-JobFailure -StepName "write-vault-source:$($file.Name)" -FileContext $file.Name `
+                        -Detail "Failed writing vault source file (an existing note is never overwritten): $($_.Exception.Message)"
+                }
             }
         }
 
@@ -399,17 +634,21 @@ try {
         }
         $totalCost += $ingestResult.CostUsd
 
-        # (h) ONLY NOW advance the watermark — the data-loss guard: anything
-        # that fails above leaves the watermark here, so next run retries it.
+        # (h) ONLY NOW record it in the ledger and advance the watermark — the
+        # data-loss guard: anything that fails above leaves both untouched, so
+        # next run retries it. Ledger first: a crash between the two leaves the
+        # file listed again next run, where the ledger skips it for free.
+        Add-IngestLedgerEntry -TranscriptName $file.Name -Sha256 $sha256 -Origin 'ingest'
         Set-Watermark -UtcTimestamp $file.LastWriteTimeUtc
 
         $ingestedCount += 1
 
         $tag = if ($DryRun) { '[DRYRUN] ' } else { '' }
-        Write-Log -Level INFO -Message "${tag}SUCCESS '$($file.Name)' — summarize cost `$$($summarizeResult.CostUsd), ingest cost `$$($ingestResult.CostUsd)."
+        $modeNote = if ($decision.Action -eq 'ingest-only') { ' (ingest-only: existing note not re-summarized or rewritten)' } else { '' }
+        Write-Log -Level INFO -Message "${tag}SUCCESS '$($file.Name)' — summarize cost `$$summarizeCost, ingest cost `$$($ingestResult.CostUsd).$modeNote"
     }
 
-    Write-Log -Level INFO -Message "=== nightly-ingest SUCCESS — files processed: $ingestedCount, total cost: `$$totalCost ==="
+    Write-Log -Level INFO -Message "=== nightly-ingest SUCCESS — files processed: $ingestedCount, skipped (already ingested): $skippedCount, total cost: `$$totalCost ==="
     Write-Log -Level INFO -Message "Lint/compile hygiene pass is NOT run here — see weekly-lint-compile.ps1 (runs weekly, separately, due to cost/latency)."
     exit 0
 

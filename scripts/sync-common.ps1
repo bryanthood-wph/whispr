@@ -45,8 +45,27 @@ $NeedsAttentionDir = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) 'tr
 # Logging
 # ---------------------------------------------------------------------------
 function Write-Utf8File {
-    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][AllowEmptyString()][string]$Content)
-    [System.IO.File]::WriteAllText($Path, $Content, $script:Utf8NoBom)
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Content,
+        # Throw instead of overwriting when $Path already exists — for writes
+        # into the vault, where an existing note must never be replaced. Also
+        # atomic: the content goes to a sibling temp file that is then moved into
+        # place, so an interrupted write never leaves a torn file at $Path (a
+        # later run would trust it, since it no longer rewrites existing notes).
+        [switch]$CreateNew
+    )
+    if (-not $CreateNew) {
+        [System.IO.File]::WriteAllText($Path, $Content, $script:Utf8NoBom)
+        return
+    }
+    $temp = Join-Path (Split-Path -Parent $Path) ('.{0}.{1}.tmp' -f (Split-Path -Leaf $Path), [guid]::NewGuid().ToString('N'))
+    try {
+        [System.IO.File]::WriteAllText($temp, $Content, $script:Utf8NoBom)
+        [System.IO.File]::Move($temp, $Path)   # no overwrite: throws if $Path exists
+    } finally {
+        if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+    }
 }
 
 function Add-Utf8Line {

@@ -99,14 +99,20 @@ else as a lower-priority, capped, backlog-persisted queue:
 
 ```
 NIGHTLY (nightly-ingest.ps1), Mon-Fri 22:00:
-  For each net-new, quiet, non-partial transcript (oldest first):
+  For each quiet, non-partial transcript newer than the watermark (oldest first):
+    0. gate       (PowerShell, deterministic, no API call) — see "Idempotency" below
+                   → SKIP if already ingested, INGEST-ONLY if an earlier run wrote the
+                     note but its /ingest never finished, otherwise continue
     1. summarize  (haiku)  → clean paraphrased prose
     2. write      (PowerShell, deterministic) → cohoodOBS/sources/<name>.md
-                   original whispr frontmatter carried over BYTE-FOR-BYTE + summary body
+                   original whispr frontmatter carried over BYTE-FOR-BYTE + summary body;
+                   create-only — an existing note is never overwritten
     3. /ingest    (sonnet) → topic tags + [[wiki-links]] + log.md entry
-    4. advance watermark   ← only after this file fully succeeds (data-loss guard)
+    4. append to the ingest ledger, then advance the watermark
+                   ← only after this file fully succeeds (data-loss guard)
   On ANY failure: stop, fire the durable trio (below). Watermark does NOT advance
-  past the failing/unresolved file. No lint/compile runs here.
+  past the failing file. An unresolvable file (no frontmatter, partial: true) is
+  parked in transcripts\_needs-attention\ instead. No lint/compile runs here.
 
 WEEKLY (weekly-lint-compile.ps1), Sunday 22:00:
   0. load backlog (PowerShell, deterministic) → logs/compile-backlog.txt
@@ -129,6 +135,43 @@ WEEKLY -BacklogOnly (on-demand, no schedule):
   from the persistent backlog only. Cheap — no ~$8 /lint.
 ```
 
+## Idempotency
+
+The watermark only decides which transcripts are *listed*. Until 2026-09-30,
+nothing decided whether a listed transcript had already been ingested, so a
+re-listed one was re-summarized and written over its vault note. The transcript's
+frontmatter always reads `status: raw` / `topic: [unsorted]`, so every rewrite put an
+already-integrated note back to raw with a new body. During the 2026-09-09..09-23
+watermark freeze that was 155 of 278 `/ingest` calls (~$75) and 9 integrated notes
+rewritten. The gate (step 0) closes this with two layers, both checked before any
+claude call:
+
+1. **Ingest ledger** (`logs/nightly-ingest-ledger.jsonl`, append-only, one
+   `{transcript, sha256, origin, recordedAt}` line per ingested transcript). A name
+   already in the ledger is skipped at zero cost. If its sha256 differs (the
+   transcript changed after ingest) it is still skipped, with a WARN line in the
+   daily log and no alert. The note stays as it was ingested. On first run the
+   ledger is seeded from every past `SUCCESS '<file>'` log line, which also covers
+   notes that were later deleted from the vault on purpose.
+2. **The vault note.** For a name missing from the ledger whose note already
+   exists, the note is compared with the transcript's own frontmatter rather than
+   any literal value. If `status` or `topic` differs, `/ingest` already ran, so the
+   file is skipped and backfilled into the ledger. If both are unchanged, an earlier
+   run wrote the note but its `/ingest` never finished, so only `/ingest` is re-run.
+   If the note's frontmatter does not parse, the file is skipped and reported
+   through `Invoke-JobFailure -NonFatal` (sentinel + Event Log). The note is left
+   untouched and the run continues.
+
+Result: a rewound, frozen or lost watermark now re-lists transcripts without
+re-ingesting any. Rehearse that any time with
+`-DryRun -WatermarkOverrideUtc 1970-01-01`: every transcript should come back
+`SKIP`, with no `Would run claude step` lines. To deliberately re-ingest one
+transcript, remove its ledger line **and** its vault note, then set the
+transcript's `LastWriteTimeUtc` to now
+(`(Get-Item <path>).LastWriteTimeUtc = (Get-Date).ToUniversalTime()`) so the
+watermark lists it again. Removing only one of the two is refused by the other
+layer, and without the mtime bump the watermark never lists the file at all.
+
 **Why summaries, not raw transcripts:** the vault's compile/synthesis steps expect
 clean prose source notes (see the existing `sources/*-transcript.md`), not raw
 `**[HH:MM:SS] Me:**` turns. The raw transcript stays untouched in
@@ -146,6 +189,7 @@ clean prose source notes (see the existing `sources/*-transcript.md`), not raw
 | `../logs/nightly-ingest-<date>.log` | Nightly job's per-day activity log. |
 | `../logs/weekly-lint-compile-<date>.log` | Weekly job's per-day activity log. |
 | `../logs/nightly-ingest-last-run.txt` | Nightly watermark (ISO-8601 UTC of the last fully-processed file). |
+| `../logs/nightly-ingest-ledger.jsonl` | Nightly ingest ledger: which transcripts have been ingested, with their sha256. It is the idempotency record, so don't delete it casually (see "Idempotency"). |
 | `../logs/compile-backlog.txt` | Weekly job's persistent generic-tier compile backlog (one concept name per line). Drained backlog-first on the next run (or via `-BacklogOnly` on demand). |
 | `../logs/FAILED-<timestamp>.txt` | Failure sentinel — written by either job only when a run fails. |
 
@@ -215,9 +259,11 @@ Run these once, in order:
   best-effort toast. The sentinel + event log are the reliable ones; the toast may
   not show if you're logged out.
 - **Data-loss safety (nightly):** the watermark only advances past a file after its
-  `/ingest` fully succeeds. A failure (or a malformed / `partial: true` transcript)
-  freezes the watermark for the rest of that run, so nothing is skipped permanently —
-  the next run retries from where it stopped.
+  `/ingest` fully succeeds. A failure stops the run there, so nothing is skipped
+  permanently: the next run retries from where it stopped. A malformed or
+  `partial: true` transcript is parked in `transcripts\_needs-attention\` rather than
+  freezing the watermark (freezing is only the fallback when the move itself fails).
+  Either way, the ingest ledger makes the retry free for everything already ingested.
 - **Spend guardrail (weekly):** `-MaxCompiles` (default 5) caps how many GENERIC-tier
   `/compile` calls run in a single weekly pass. Anything over the cap simply stays in
   the persistent backlog (`logs/compile-backlog.txt`) for next week's run rather than
@@ -232,7 +278,8 @@ Run these once, in order:
 - **Tunables:**
   - Nightly: `-QuietMinutes` (default 10) skips transcripts modified that recently
     (avoids racing whispr mid-write); `-TimeoutSeconds` (default 300) is the hard
-    per-claude-call kill timeout.
+    per-claude-call kill timeout; `-WatermarkOverrideUtc` (rehearsal only, requires
+    `-DryRun`) replaces the stored watermark for one dry run.
   - Weekly: `-LintTimeoutSeconds` (default 1800 / 30 min — comfortably above the
     measured ~19 min), `-CompileTimeoutSeconds` (default 900 / 15 min per compile),
     `-MaxCompiles` (default 5, generic tier), `-WorkstreamDays` (default 21, active-
