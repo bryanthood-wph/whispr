@@ -13,8 +13,8 @@ and the event stream on stdout. Before and during each call this module:
   to the run ledger for every launched call, including ones that fail or are killed
   (the money may be spent either way). A call with no result event is recorded at
   its budget cap, flagged as an upper bound, so the eval budget never undercounts,
-  unless the CLI exited without even an init event: init is the stream's first event
-  and precedes any API request, so such a call (rejected arguments, say) spent nothing.
+  unless the CLI exited on its own without emitting a single event: events start
+  before any API request, so such a call (rejected arguments, say) spent nothing.
 
 The API path is deferred (README §3) and would sit behind this same `call` function.
 """
@@ -189,23 +189,26 @@ def call(cfg: dict, role: str, prompt: str, *, max_budget_usd: float,
     drain = threading.Thread(target=lambda: stderr_chunks.append(proc.stderr.read()), daemon=True)
     drain.start()
     auth_source: Optional[str] = None
-    started_session = False           # an init event arrived: the CLI may have reached the API
+    streamed = False                  # any event arrived: the CLI got past its arguments and may have spent
     model = spec["model"]
     result: dict[str, Any] = {}
     failure: Optional[ModelCallError] = None
     try:
+        send_error: Optional[OSError] = None
         try:
             proc.stdin.write(prompt)
             proc.stdin.close()
-        except OSError as exc:  # the child exited before reading its prompt
-            failure = ModelCallError(f"{role} call: could not send the prompt ({exc})")
+        except OSError as exc:  # the child exited before reading its prompt (its stderr says why)
+            send_error = exc
         for line in proc.stdout:
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(event, dict):
+                continue
+            streamed = True
             if event.get("type") == "system" and event.get("subtype") == "init":
-                started_session = True
                 auth_source = event.get("apiKeySource")
                 model = event.get("model") or model
                 if auth_source not in approved:
@@ -224,13 +227,16 @@ def call(cfg: dict, role: str, prompt: str, *, max_budget_usd: float,
         proc.stdout.close()
         proc.stderr.close()
 
+    tail = "".join(stderr_chunks)[-500:]
+    if failure is None and send_error is not None:
+        failure = ModelCallError(f"{role} call: could not send the prompt ({send_error}) {tail!r}")
     if failure is None and timed_out.is_set():
         failure = ModelCallError(f"{role} call timed out after {cfg['cli']['timeout_s']}s")
     if failure is None and result and auth_source is None:
         failure = AuthError(f"{role} call reported no auth source (no init event); failing closed")
     usage = result.get("usage") or {}
     has_cost = "total_cost_usd" in result
-    spent_nothing = not result and not started_session
+    spent_nothing = not result and not streamed and not timed_out.is_set()
     out = CallResult(
         role=role, model=model, effort=spec["effort"], auth_source=auth_source,
         structured=result.get("structured_output"), text=result.get("result") or "",
@@ -249,7 +255,6 @@ def call(cfg: dict, role: str, prompt: str, *, max_budget_usd: float,
     if failure is not None:
         raise failure
     if out.is_error:
-        tail = "".join(stderr_chunks)[-500:]
         raise ModelCallError(f"{role} call failed (exit {proc.returncode}): {out.text[:300]!r} {tail!r}")
     if json_schema is not None and out.structured is None:
         raise ModelCallError(f"{role} call returned no structured_output")

@@ -1,7 +1,9 @@
 """Stand-in for the claude CLI in tests: emits a stream-json init + result.
 
 Behavior comes from FAKE_CLAUDE_MODE: ok | apikey | noinit | error | nostructured | hang |
-badargs (rejects its arguments: stderr only, no events, exit 1).
+badargs (rejects its arguments: stderr only, no events, exit 1) | hooksonly (one non-init
+event, then exit 1 with no result) | silenthang (no events, then hangs) | junk (a bare JSON
+value on stdout before the normal events).
 FAKE_CLAUDE_ARGS_OUT, if set, receives {"argv", "stdin", "env_keys"} as JSON.
 FAKE_CLAUDE_STRUCTURED, if set, is the structured_output JSON to return.
 FAKE_CLAUDE_BY_PROPERTY, if set, is {property: structured_output}: the first entry whose
@@ -23,6 +25,13 @@ if os.environ.get("FAKE_CLAUDE_ARGS_OUT"):
 if mode == "badargs":
     print("Error: --json-schema is not a valid JSON Schema (test)", file=sys.stderr)
     sys.exit(1)
+if mode == "hooksonly":
+    print(json.dumps({"type": "system", "subtype": "hook_started"}), flush=True)
+    sys.exit(1)
+if mode == "silenthang":
+    time.sleep(60)
+if mode == "junk":
+    print("true", flush=True)
 model = sys.argv[sys.argv.index("--model") + 1] if "--model" in sys.argv else "unknown"
 if mode != "noinit":
     print(json.dumps({"type": "system", "subtype": "init", "model": model,

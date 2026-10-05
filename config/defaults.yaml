@@ -155,7 +155,7 @@ eval:
       cap_usd: 3.75
       # #13 per-call --max-budget-usd for this stage (else eval.max_budget_per_call_usd). The
       # guard reserves the full per-call cap against the stage cap, so $1.50 would stop the
-      # $3 pilot after about $1.50 of real spend.
+      # pilot after about half its cap of real spend.
       max_budget_per_call_usd: 0.75
       judge_subjects: 3       # #13 judged items per decision per summary (present: plus every reference my-task)
       plants_per_kind: 1      # #13 planted errors per kind per transcript (calibration)

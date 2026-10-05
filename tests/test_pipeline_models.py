@@ -119,6 +119,29 @@ class TestModelsCall(unittest.TestCase):
         self.assertEqual((row["request_key"], row["cost_usd"], row["cost_is_upper_bound"], row["is_error"]),
                          ("k1", 0.0, False, True))
 
+    def test_any_event_keeps_the_upper_bound(self):
+        # Something ran (a hook, say) before the call died: it may have spent.
+        os.environ["FAKE_CLAUDE_MODE"] = "hooksonly"
+        with self.assertRaises(models.ModelCallError):
+            self._call()
+        row = self._ledger()[0]
+        self.assertEqual((row["cost_usd"], row["cost_is_upper_bound"]), (0.5, True))
+
+    def test_timeout_before_any_event_keeps_the_upper_bound(self):
+        os.environ["FAKE_CLAUDE_MODE"] = "silenthang"
+        self.cfg["cli"]["timeout_s"] = 2
+        with self.assertRaises(models.ModelCallError) as ctx:
+            self._call()
+        self.assertIn("timed out", str(ctx.exception))
+        row = self._ledger()[0]
+        self.assertEqual((row["cost_usd"], row["cost_is_upper_bound"]), (0.5, True))
+
+    def test_non_object_json_line_is_skipped(self):
+        os.environ["FAKE_CLAUDE_MODE"] = "junk"
+        out = self._call(json_schema={"type": "object"})
+        self.assertEqual(out.structured, {"ok": True})
+        self.assertEqual(len(self._ledger()), 1)
+
     def test_schema_dialect_is_not_sent_to_the_cli(self):
         schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object",
                   "properties": {"ok": {"type": "boolean"}}}
