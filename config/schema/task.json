@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Stored task (D.5 contract). Written by code from extract output, never by the model.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "owner", "owner_basis", "action", "due", "due_basis", "context", "quote", "source", "confidence", "status", "tools_allowed"],
+  "properties": {
+    "id": {"type": "string", "description": "sha1(episode + quote)"},
+    "owner": {"type": ["string", "null"]},
+    "owner_basis": {"enum": ["assigned", "volunteered", "others", "unclear"]},
+    "action": {"type": "string", "minLength": 1},
+    "due": {"type": ["string", "null"]},
+    "due_basis": {"enum": ["stated", "not_stated"]},
+    "context": {"type": "string"},
+    "quote": {"type": "string", "minLength": 1},
+    "source": {
+      "type": "object", "additionalProperties": false, "required": ["episode", "start"],
+      "properties": {"episode": {"type": "string"}, "start": {"type": ["string", "null"]}}
+    },
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "status": {"enum": ["captured", "confirmed", "ready", "in_progress", "done", "dropped"]},
+    "tools_allowed": {"type": "array", "items": {"type": "string"}}
+  }
+}

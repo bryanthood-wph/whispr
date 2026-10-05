@@ -1,0 +1,31 @@
+# Graph ontology (docs/plan/C-knowledge-graph.md C.4). Changes only by PR, with a
+# version bump; config/schema/extract.json must carry the same type names (a test checks).
+version: 1
+
+entity_types:
+  person: A named individual. Keyed by email when Outlook attendees supply one.
+  organization: A company, client, team or department.
+  project: An engagement, workstream or initiative.
+  system: A tool, platform, product, model or dataset.
+  topic: A recurring subject that is none of the above.
+
+fact_types:
+  decision: Something the call decided or agreed.
+  number: A figure, date, amount or metric stated on the call.
+  risk: A stated risk, blocker or concern.
+  open_question: A question raised and left unanswered.
+  fact: Any other stated fact worth keeping.
+
+relations:
+  works_on: person -> project
+  member_of: person -> organization
+  responsible_for: person -> project | system
+  uses: project | organization -> system
+  part_of: project | organization -> project | organization
+  related_to: any -> any (fallback when no specific relation fits)
+
+owner_basis:
+  assigned: The call gives the task to the owner.
+  volunteered: The owner offers or commits to do it.
+  others: Someone else owns it.
+  unclear: Ownership can't be settled from the transcript; shown as "confirm?".
