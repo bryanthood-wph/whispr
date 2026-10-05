@@ -52,6 +52,7 @@ prompts:
 schemas:
   extract: schema/extract.json
   task: schema/task.json
+  scorecard: schema/scorecard.json   # B.7: every scored run's results/<run-tag>/scorecard.json
 
 ontology: ontology.yaml
 
@@ -141,6 +142,11 @@ eval:
   # Hard spend cap per stage (B.9); the overall limit is budget_usd - stop_margin_usd.
   stages:
     pilot: {cap_usd: 3}
+  scoring:
+    # B.6: "Wilson intervals are used only for unweighted small cells." A stratum whose
+    # units all sit in one cell (so equal design weights) and number at most this many
+    # gets a Wilson interval; everything else gets the cluster bootstrap.
+    wilson_max_units: 5
   regress:
     n: 10
     budget_usd: 3

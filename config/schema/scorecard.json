@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Scorecard (docs/plan/B-eval.md B.7): the same keys on every scored run, written by eval/scoring.py write_scorecard",
+  "$comment": "Maps keyed by run data (config names, metric names, stratum values, decision and error types, simplicity rows) cannot list required keys; every fixed key is required and no unknown key is allowed. Validated by pipeline/jsonschema_lite.py, so only its keywords are used.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["metrics", "strata", "comparisons", "my_task_bar", "miss_phantom_ledger", "escalation_rate", "calibration", "simplicity", "cost", "latency", "run", "hashes"],
+  "$defs": {
+    "str": {"type": "string", "minLength": 1},
+    "frac": {"type": "number", "minimum": 0, "maximum": 1},
+    "opt_frac": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "money": {"type": "number", "minimum": 0},
+    "count": {"type": "integer", "minimum": 0},
+    "estimate": {"type": ["number", "null"], "minimum": 0, "description": "null when the metric has no items in scope"},
+    "interval": {
+      "type": "array", "minItems": 2, "maxItems": 2,
+      "items": {"type": ["number", "null"]},
+      "description": "[lo, hi]; [null, null] when undefined"
+    },
+    "metric": {
+      "type": "object", "additionalProperties": false,
+      "required": ["raw", "corrected", "unreliable", "ci_method", "n_units", "n_units_with_items", "n_items", "nan_replicate_share"],
+      "properties": {
+        "raw": {
+          "type": "object", "additionalProperties": false, "required": ["estimate", "ci"],
+          "properties": {"estimate": {"$ref": "#/$defs/estimate"}, "ci": {"$ref": "#/$defs/interval"}}
+        },
+        "corrected": {
+          "type": ["object", "null"], "additionalProperties": false, "required": ["estimate", "ci"],
+          "description": "Rogan-Gladen corrected (B.5); null when the metric has no calibrated error type. Its CI ignores uncertainty in the calibration figures",
+          "properties": {"estimate": {"$ref": "#/$defs/estimate"}, "ci": {"$ref": "#/$defs/interval"}}
+        },
+        "unreliable": {"type": "boolean", "description": "B.5: calibration given but unusable (no specificity, sens + spec <= 1, or sensitivity below eval.calibration_min_sensitivity); corrected is then null"},
+        "ci_method": {"enum": ["bootstrap", "wilson", "insufficient_units"], "description": "insufficient_units: fewer than 2 units of the domain carry items (counting only units in cells of 2 or more, which the bootstrap can resample), so the CI is [null, null]"},
+        "n_units": {"$ref": "#/$defs/count"},
+        "n_units_with_items": {"$ref": "#/$defs/count"},
+        "n_items": {"$ref": "#/$defs/count"},
+        "nan_replicate_share": {"$ref": "#/$defs/opt_frac", "description": "share of bootstrap replicates undefined (no items drawn) and dropped; null unless ci_method is bootstrap"}
+      }
+    },
+    "metric_table": {
+      "type": "object",
+      "description": "config name -> metric name -> metric",
+      "additionalProperties": {"type": "object", "additionalProperties": {"$ref": "#/$defs/metric"}}
+    },
+    "by_value": {
+      "type": "object",
+      "description": "stratum value -> metric_table",
+      "additionalProperties": {"$ref": "#/$defs/metric_table"}
+    }
+  },
+  "properties": {
+    "metrics": {"$ref": "#/$defs/metric_table"},
+    "strata": {
+      "type": "object", "additionalProperties": false, "required": ["cell", "device", "low_mic"],
+      "properties": {
+        "cell": {"$ref": "#/$defs/by_value"},
+        "device": {"$ref": "#/$defs/by_value"},
+        "low_mic": {"$ref": "#/$defs/by_value"}
+      }
+    },
+    "comparisons": {
+      "type": "object",
+      "description": "pre-registered family (B.6), comparison name 'A-B' (newer minus older) -> paired, Holm-adjusted result from compare_family",
+      "additionalProperties": {
+        "type": "object", "additionalProperties": false,
+        "required": ["estimate", "ci_lo", "ci_hi", "ci_level", "p", "p_holm", "win", "loss", "undefined"],
+        "properties": {
+          "estimate": {"type": ["number", "null"]},
+          "ci_lo": {"type": ["number", "null"]},
+          "ci_hi": {"type": ["number", "null"]},
+          "ci_level": {"$ref": "#/$defs/frac"},
+          "p": {"$ref": "#/$defs/frac"},
+          "p_holm": {"$ref": "#/$defs/frac"},
+          "win": {"type": "boolean"},
+          "loss": {"type": "boolean"},
+          "undefined": {"type": "boolean"}
+        }
+      }
+    },
+    "my_task_bar": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pass", "recall", "recall_lower_bound", "precision", "misses_root_caused", "recall_lb_method", "reasons"],
+      "properties": {
+        "pass": {"type": "boolean"},
+        "recall": {"type": "boolean"},
+        "recall_lower_bound": {"type": "boolean"},
+        "precision": {"type": "boolean"},
+        "misses_root_caused": {"type": "boolean"},
+        "recall_lb_method": {"enum": ["bootstrap", "wilson", "insufficient_units"], "description": "ci_method of the recall entry that supplied the lower bound; only bootstrap can pass"},
+        "reasons": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "miss_phantom_ledger": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["item_id", "unit_id", "config", "kind", "root_cause", "quote"],
+        "properties": {
+          "item_id": {"$ref": "#/$defs/str"},
+          "unit_id": {"$ref": "#/$defs/str"},
+          "config": {"$ref": "#/$defs/str"},
+          "kind": {"enum": ["miss", "phantom"]},
+          "root_cause": {
+            "type": ["string", "null"],
+            "enum": ["capture", "asr", "prompt", "model", "reference_error", null],
+            "description": "B.6 tree, first match wins; null = not yet root-caused (counts against my-task bar criterion 4)"
+          },
+          "quote": {"type": "string"}
+        }
+      }
+    },
+    "escalation_rate": {
+      "type": "object",
+      "description": "B.5 decision type -> share of decisions escalated past the Haiku vote",
+      "additionalProperties": {"$ref": "#/$defs/frac"}
+    },
+    "calibration": {
+      "type": "object",
+      "description": "planted error type (B.5) -> calibration; the matcher is always present",
+      "required": ["matcher"],
+      "additionalProperties": {
+        "type": "object", "additionalProperties": false,
+        "required": ["sensitivity", "specificity", "n_planted", "reliable"],
+        "properties": {
+          "sensitivity": {"$ref": "#/$defs/opt_frac"},
+          "specificity": {"$ref": "#/$defs/opt_frac"},
+          "n_planted": {"$ref": "#/$defs/count"},
+          "reliable": {"type": "boolean", "description": "sensitivity >= eval.calibration_min_sensitivity"}
+        }
+      }
+    },
+    "simplicity": {
+      "type": "object",
+      "description": "README section 8 row -> measured value",
+      "additionalProperties": {"type": ["number", "string", "null"]}
+    },
+    "cost": {
+      "type": "object", "additionalProperties": false, "required": ["total_usd", "per_transcript_usd"],
+      "properties": {
+        "total_usd": {"$ref": "#/$defs/money"},
+        "per_transcript_usd": {"type": "object", "description": "config name -> USD", "additionalProperties": {"$ref": "#/$defs/money"}}
+      }
+    },
+    "latency": {
+      "type": "object", "additionalProperties": false, "required": ["per_transcript_s"],
+      "properties": {
+        "per_transcript_s": {"type": "object", "description": "config name -> seconds per transcript", "additionalProperties": {"type": "number", "minimum": 0}}
+      }
+    },
+    "run": {
+      "type": "object", "additionalProperties": false, "required": ["commit_sha", "tag"],
+      "properties": {
+        "commit_sha": {"type": "string", "minLength": 7},
+        "tag": {"$ref": "#/$defs/str"}
+      }
+    },
+    "hashes": {
+      "type": "object", "additionalProperties": false, "required": ["config", "prompts", "schemas"],
+      "properties": {
+        "config": {"$ref": "#/$defs/str"},
+        "prompts": {"$ref": "#/$defs/str"},
+        "schemas": {"$ref": "#/$defs/str"}
+      }
+    }
+  }
+}

@@ -69,8 +69,8 @@
       "properties": {"extract": {"$ref": "#/$defs/str"}, "system_minimal": {"$ref": "#/$defs/str"}}
     },
     "schemas": {
-      "type": "object", "additionalProperties": false, "required": ["extract", "task"],
-      "properties": {"extract": {"$ref": "#/$defs/str"}, "task": {"$ref": "#/$defs/str"}}
+      "type": "object", "additionalProperties": false, "required": ["extract", "task", "scorecard"],
+      "properties": {"extract": {"$ref": "#/$defs/str"}, "task": {"$ref": "#/$defs/str"}, "scorecard": {"$ref": "#/$defs/str"}}
     },
     "ontology": {"$ref": "#/$defs/str"},
     "prepare": {
@@ -103,7 +103,7 @@
     },
     "eval": {
       "type": "object", "additionalProperties": false,
-      "required": ["budget_usd", "stop_margin_usd", "max_budget_per_call_usd", "cost_overrun_factor", "min_effective_tasks", "stability_n", "stability_min_jaccard", "seed", "bootstrap_replicates", "alpha", "judge", "calibration_min_sensitivity", "bar", "sample", "run_tag", "stages", "regress"],
+      "required": ["budget_usd", "stop_margin_usd", "max_budget_per_call_usd", "cost_overrun_factor", "min_effective_tasks", "stability_n", "stability_min_jaccard", "seed", "bootstrap_replicates", "alpha", "judge", "calibration_min_sensitivity", "bar", "sample", "run_tag", "stages", "scoring", "regress"],
       "properties": {
         "budget_usd": {"$ref": "#/$defs/money"},
         "stop_margin_usd": {"$ref": "#/$defs/money"},
@@ -151,6 +151,10 @@
           "type": "object", "additionalProperties": false, "required": ["pilot"],
           "properties": {"pilot": {"type": "object", "additionalProperties": false, "required": ["cap_usd"],
                                    "properties": {"cap_usd": {"$ref": "#/$defs/money"}}}}
+        },
+        "scoring": {
+          "type": "object", "additionalProperties": false, "required": ["wilson_max_units"],
+          "properties": {"wilson_max_units": {"type": "integer", "minimum": 0}}
         },
         "regress": {
           "type": "object", "additionalProperties": false, "required": ["n", "budget_usd", "tolerance"],

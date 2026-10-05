@@ -212,6 +212,7 @@ fails until it is re-registered or reported as exploratory.
 | `config/prompts/system-minimal.md` | `4633e13eded939eb8af93c2154a6adcbd899f9c95c08cc3e30e2243023cfea1f` |
 | `config/schema/extract.json` | `b196eff61ccf9a701e563a8759c8457ad2feb5e349e7ef92ba8ae5c620d68ad8` |
 | `config/schema/task.json` | `67584bfc005327eb68052234065553289cfaba5415a1928d5e200a602f67e635` |
+| `config/schema/scorecard.json` | `2708d61e1dbd3655023d2d1be75b520bbcd85039bf5df25a3e46a57e159757a0` |
 | `config/ontology.yaml` | `d76e3c0161ca49466bf5c167043e3062bfa11b41ccd4dad456897d9e36efa748` |
 
 Baseline (configuration A) summarizer prompt, recorded outside the table
