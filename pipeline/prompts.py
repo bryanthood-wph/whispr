@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-from pathlib import Path
 
 from pipeline.config import config_file
 
@@ -20,12 +19,14 @@ class PromptError(ValueError):
     pass
 
 
-def sha256_file(path: Path) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def load(relative: str) -> str:
-    return config_file(relative).read_text(encoding="utf-8")
+    """Template text with line endings normalized to LF, so git's CRLF conversion on
+    checkout never changes a prompt's hash or a request's cache key."""
+    return config_file(relative).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
 def placeholders(template: str) -> set[str]:
