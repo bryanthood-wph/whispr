@@ -201,10 +201,11 @@ class TestLedger(_Base):
             fh.write(json.dumps({"cost_usd": usd, "request_key": key}) + "\n")
 
     def test_stage_cap_accumulates_across_runs(self):
+        used = self.cfg["eval"]["stages"]["pilot"]["cap_usd"] - 0.5
         L.guard(self.cfg, "pilot")("k1", 1.0)
-        self._row(2.5, "k1")                               # settles k1's reservation
-        self.assertEqual(L.tally(self.cfg), (2.5, {"pilot": 2.5}))
-        with self.assertRaisesRegex(L.BudgetStop, "cap"):  # a fresh guard (next run) still sees 2.5
+        self._row(used, "k1")                              # settles k1's reservation
+        self.assertEqual(L.tally(self.cfg), (used, {"pilot": used}))
+        with self.assertRaisesRegex(L.BudgetStop, "cap"):  # a fresh guard (next run) still sees it
             L.guard(self.cfg, "pilot")("k2", 1.0)
 
     def test_overall_limit(self):
