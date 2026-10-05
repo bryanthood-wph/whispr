@@ -1,0 +1,34 @@
+"""Shared fixtures for pipeline/eval tests. No model calls, no real user data."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+
+def overlay(root: Path) -> dict:
+    """A complete, fake per-user overlay rooted in a temp dir."""
+    (root / "transcripts").mkdir(exist_ok=True)
+    return {
+        "owner": {"name": "Pat Example", "email": "pat@example.com", "tenant": "Example (TEN)"},
+        "paths": {"transcripts": str(root / "transcripts"), "data_dir": str(root / "data")},
+    }
+
+
+def transcript(start: str, turns: list[tuple[str, str, str]], *, call_title: str = "Weekly Sync",
+               metadata_source: str = "outlook", duration_min: int = 30,
+               output_device: str = "Speakers (Realtek)", attendees: list[str] | None = None,
+               extra_frontmatter: str = "") -> str:
+    """Render a transcript in the recorder's format: YAML frontmatter + turn lines.
+    turns: (hh:mm:ss, Me|Others, text)."""
+    people = attendees if attendees is not None else ["Example, Pat", "Doe, Jane"]
+    attendee_yaml = "".join(f"- {name}\n" for name in people) if people else "[]\n"
+    front = (
+        "---\n"
+        f"date: '{start[:10]}'\nsource: meeting\ntopic: [unsorted]\nstatus: raw\nconfidence: working\n"
+        f"call_title: {call_title}\ncall_type: meeting\nstart: '{start}'\nend: '{start}'\n"
+        f"duration_min: {duration_min}\norganizer: Doe, Jane\nattendees:\n{attendee_yaml}"
+        f"metadata_source: {metadata_source}\noutput_device: {output_device}\npartial: false\n"
+        f"{extra_frontmatter}---\n\n> _Summary pending._\n\n"
+    )
+    body = "\n\n".join(f"**[{ts}] {who}:** {text}" for ts, who, text in turns)
+    return front + body + "\n"

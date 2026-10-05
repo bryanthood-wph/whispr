@@ -1,0 +1,124 @@
+# whispr pipeline + eval defaults — the only home for tunables (docs/plan/D-architecture-and-ops.md D.2).
+#
+# Per-user values come from the overlay %APPDATA%\whispr\config.yaml (written by
+# /whispr-setup). The overlay may only set keys that exist here; an unknown key, a
+# missing key, or a wrong type fails at load (config/config.schema.json).
+# Keys marked "overlay" are null here and must be set by the overlay.
+# Paths under prompts/, schemas/ and ontology are relative to this config/ folder.
+
+config_version: 1
+
+owner:
+  name: null            # overlay: the person whose microphone is "Me"
+  email: null           # overlay
+  tenant: null          # overlay: tenant string that leaks into Teams window titles (rejected as an attendee)
+
+paths:
+  transcripts: null     # overlay: folder the recorder writes transcripts to
+  data_dir: null        # overlay: per-user data outside git (results, cache, ledger, database, backups)
+
+auth:
+  # Accepted values of the CLI's init-event `apiKeySource`. "none" = the user's
+  # Claude Code (claude.ai / enterprise) sign-in, not an API key (decision 2026-10-04).
+  approved_sources: [none]
+  # Environment variables removed from every child claude process, by prefix, so a
+  # call never inherits a parent session (CLAUDECODE, ...) or an API key.
+  strip_env_prefixes: [CLAUDE, ANTHROPIC]
+  # A call refuses to start while any of these is set in our own environment (lesson L3).
+  refuse_if_set: [CLAUDECODE]
+
+cli:
+  executable: claude
+  # Arguments for every call: print mode, machine-readable events, no tools, no MCP,
+  # nothing persisted. The prompt goes over stdin; model/effort/schema/budget are added per call.
+  base_args: ["-p", "--output-format", "stream-json", "--verbose", "--tools", "", "--strict-mcp-config", "--no-session-persistence"]
+  timeout_s: 900
+
+models:
+  # Role -> model and effort (null effort = CLI default). Rosters: B.10 (eval), D.3 (production).
+  extractor:        {model: haiku, effort: null}
+  reference_a:      {model: claude-opus-5-5, effort: high}
+  reference_b:      {model: claude-sonnet-5-5, effort: high}
+  matcher:          {model: haiku, effort: null}
+  judge:            {model: haiku, effort: null}
+  judge_escalate_1: {model: claude-sonnet-5-5, effort: null}
+  judge_escalate_2: {model: claude-opus-5-5, effort: null}
+
+prompts:
+  extract: prompts/extract.md
+  system_minimal: prompts/system-minimal.md   # H-S2: minimal --system-prompt vs the CLI default
+
+schemas:
+  extract: schema/extract.json
+  task: schema/task.json
+
+ontology: ontology.yaml
+
+prepare:
+  version: 1
+  min_words: 50                 # stub gate (L25): fewer words than this -> no model call
+  echo_window_s: 3.0            # echo removal (L4): a Me line within this many seconds of an Others line...
+  echo_overlap: 0.8             # ...sharing at least this fraction of its words is dropped as echo
+  merge_gap_min: 10             # episode merge (L13): same calendar item or title, gap under this
+  # Redaction (L10): stripped from transcript text and metadata before any model sees it.
+  redaction_patterns:
+    - 'https?://\S*(teams\.microsoft\.com|teams\.live\.com|safelinks\.protection\.outlook\.com|aka\.ms/JoinTeamsMeeting)\S*'
+    - '(?i)\b(meeting|conference)\s*id\s*[:#]?\s*[\d ]{6,}'
+    - '(?i)\bpass\s*code\s*[:#]?\s*\S+'
+    - '(?i)\bphone\s+conference\s+id\s*[:#]?\s*[\d ]+#?'
+    - '\+?\d[\d\s().-]{8,}\d,,\d+#?'
+  redaction_token: '[redacted]'
+  # Metadata re-derivation (L15): attendee strings matching any of these are not people.
+  attendee_reject_patterns:
+    - '@'
+    - '(?i)microsoft teams'
+    - '(?i)^meeting\b'
+    - '(?i)\(o365d\)'
+  # Encoding (L9): any text containing one of these is rejected as mojibake.
+  mojibake_markers: ["Γ", "�"]
+
+pipeline:
+  max_attempts: 3
+  max_budget_per_call_usd: 1.00
+
+eval:
+  budget_usd: 100
+  stop_margin_usd: 5            # stop and write RESUME.md once spend is within this of the cap (G.5)
+  max_budget_per_call_usd: 1.50
+  cost_overrun_factor: 1.25
+  min_effective_tasks: 140
+  stability_n: 10
+  stability_min_jaccard: 0.8
+  seed: 20261004
+  bootstrap_replicates: 10000
+  alpha: 0.05
+  judge:
+    samples: 3
+    escalate_below: 0.7
+  calibration_min_sensitivity: 0.90
+  bar:
+    my_task_recall: 0.95
+    my_task_recall_lower_bound: 0.90
+    my_task_precision: 0.90
+  sample:
+    frame_cutoff: '2026-10-04'  # the frame is every transcript dated on or before this (B.3: 281)
+    pilot_n: 3
+    # B.3 cells. "meeting" = Outlook-matched metadata, "call" = anything else.
+    # Duration bounds in minutes: min_exclusive < duration <= max_inclusive (null = open).
+    cells:
+      - {name: call_le15,     kind: call,    min_exclusive: null, max_inclusive: 15,   core: 9,  task_only: 15}
+      - {name: call_15_30,    kind: call,    min_exclusive: 15,   max_inclusive: 30,   core: 7,  task_only: 10}
+      - {name: call_gt30,     kind: call,    min_exclusive: 30,   max_inclusive: null, core: 4,  task_only: 6}
+      - {name: meeting_le15,  kind: meeting, min_exclusive: null, max_inclusive: 15,   core: 4,  task_only: 6}
+      - {name: meeting_15_30, kind: meeting, min_exclusive: 15,   max_inclusive: 30,   core: 11, task_only: 17}
+      - {name: meeting_30_60, kind: meeting, min_exclusive: 30,   max_inclusive: 60,   core: 9,  task_only: 13}
+      - {name: meeting_gt60,  kind: meeting, min_exclusive: 60,   max_inclusive: null, core: 3,  task_only: 3}
+      - {name: stub,          kind: stub,    min_exclusive: null, max_inclusive: null, core: 3,  task_only: 0}
+    # Second stratum (B.3): output devices matching this are "speakers" (echo-prone).
+    speaker_device_pattern: '(?i)speaker'
+  regress:
+    n: 10
+    budget_usd: 3
+    tolerance:
+      my_task_recall: 0.02
+      my_task_precision: 0.02

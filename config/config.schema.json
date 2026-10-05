@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "whispr pipeline config (defaults.yaml merged with the user overlay)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["config_version", "owner", "paths", "auth", "cli", "models", "prompts", "schemas", "ontology", "prepare", "pipeline", "eval"],
+  "$defs": {
+    "str": {"type": "string", "minLength": 1},
+    "strs": {"type": "array", "items": {"type": "string"}},
+    "money": {"type": "number", "minimum": 0},
+    "frac": {"type": "number", "minimum": 0, "maximum": 1},
+    "role": {
+      "type": "object", "additionalProperties": false, "required": ["model", "effort"],
+      "properties": {
+        "model": {"$ref": "#/$defs/str"},
+        "effort": {"type": ["string", "null"], "enum": [null, "low", "medium", "high", "xhigh", "max"]}
+      }
+    },
+    "cell": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "kind", "min_exclusive", "max_inclusive", "core", "task_only"],
+      "properties": {
+        "name": {"$ref": "#/$defs/str"},
+        "kind": {"enum": ["call", "meeting", "stub"]},
+        "min_exclusive": {"type": ["number", "null"]},
+        "max_inclusive": {"type": ["number", "null"]},
+        "core": {"type": "integer", "minimum": 0},
+        "task_only": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "properties": {
+    "config_version": {"type": "integer", "enum": [1]},
+    "owner": {
+      "type": "object", "additionalProperties": false, "required": ["name", "email", "tenant"],
+      "properties": {
+        "name": {"$ref": "#/$defs/str"},
+        "email": {"$ref": "#/$defs/str"},
+        "tenant": {"type": ["string", "null"]}
+      }
+    },
+    "paths": {
+      "type": "object", "additionalProperties": false, "required": ["transcripts", "data_dir"],
+      "properties": {"transcripts": {"$ref": "#/$defs/str"}, "data_dir": {"$ref": "#/$defs/str"}}
+    },
+    "auth": {
+      "type": "object", "additionalProperties": false, "required": ["approved_sources", "strip_env_prefixes", "refuse_if_set"],
+      "properties": {
+        "approved_sources": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "strip_env_prefixes": {"$ref": "#/$defs/strs"},
+        "refuse_if_set": {"$ref": "#/$defs/strs"}
+      }
+    },
+    "cli": {
+      "type": "object", "additionalProperties": false, "required": ["executable", "base_args", "timeout_s"],
+      "properties": {
+        "executable": {"$ref": "#/$defs/str"},
+        "base_args": {"$ref": "#/$defs/strs"},
+        "timeout_s": {"type": "number", "minimum": 1}
+      }
+    },
+    "models": {
+      "type": "object", "additionalProperties": {"$ref": "#/$defs/role"},
+      "required": ["extractor", "reference_a", "reference_b", "matcher", "judge", "judge_escalate_1", "judge_escalate_2"]
+    },
+    "prompts": {
+      "type": "object", "additionalProperties": false, "required": ["extract", "system_minimal"],
+      "properties": {"extract": {"$ref": "#/$defs/str"}, "system_minimal": {"$ref": "#/$defs/str"}}
+    },
+    "schemas": {
+      "type": "object", "additionalProperties": false, "required": ["extract", "task"],
+      "properties": {"extract": {"$ref": "#/$defs/str"}, "task": {"$ref": "#/$defs/str"}}
+    },
+    "ontology": {"$ref": "#/$defs/str"},
+    "prepare": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "min_words", "echo_window_s", "echo_overlap", "merge_gap_min", "redaction_patterns", "redaction_token", "attendee_reject_patterns", "mojibake_markers"],
+      "properties": {
+        "version": {"type": "integer", "minimum": 1},
+        "min_words": {"type": "integer", "minimum": 0},
+        "echo_window_s": {"type": "number", "minimum": 0},
+        "echo_overlap": {"$ref": "#/$defs/frac"},
+        "merge_gap_min": {"type": "number", "minimum": 0},
+        "redaction_patterns": {"$ref": "#/$defs/strs"},
+        "redaction_token": {"type": "string"},
+        "attendee_reject_patterns": {"$ref": "#/$defs/strs"},
+        "mojibake_markers": {"$ref": "#/$defs/strs"}
+      }
+    },
+    "pipeline": {
+      "type": "object", "additionalProperties": false, "required": ["max_attempts", "max_budget_per_call_usd"],
+      "properties": {
+        "max_attempts": {"type": "integer", "minimum": 1},
+        "max_budget_per_call_usd": {"$ref": "#/$defs/money"}
+      }
+    },
+    "eval": {
+      "type": "object", "additionalProperties": false,
+      "required": ["budget_usd", "stop_margin_usd", "max_budget_per_call_usd", "cost_overrun_factor", "min_effective_tasks", "stability_n", "stability_min_jaccard", "seed", "bootstrap_replicates", "alpha", "judge", "calibration_min_sensitivity", "bar", "sample", "regress"],
+      "properties": {
+        "budget_usd": {"$ref": "#/$defs/money"},
+        "stop_margin_usd": {"$ref": "#/$defs/money"},
+        "max_budget_per_call_usd": {"$ref": "#/$defs/money"},
+        "cost_overrun_factor": {"type": "number", "minimum": 1},
+        "min_effective_tasks": {"type": "integer", "minimum": 1},
+        "stability_n": {"type": "integer", "minimum": 1},
+        "stability_min_jaccard": {"$ref": "#/$defs/frac"},
+        "seed": {"type": "integer"},
+        "bootstrap_replicates": {"type": "integer", "minimum": 100},
+        "alpha": {"$ref": "#/$defs/frac"},
+        "judge": {
+          "type": "object", "additionalProperties": false, "required": ["samples", "escalate_below"],
+          "properties": {"samples": {"type": "integer", "minimum": 1}, "escalate_below": {"$ref": "#/$defs/frac"}}
+        },
+        "calibration_min_sensitivity": {"$ref": "#/$defs/frac"},
+        "bar": {
+          "type": "object", "additionalProperties": false,
+          "required": ["my_task_recall", "my_task_recall_lower_bound", "my_task_precision"],
+          "properties": {
+            "my_task_recall": {"$ref": "#/$defs/frac"},
+            "my_task_recall_lower_bound": {"$ref": "#/$defs/frac"},
+            "my_task_precision": {"$ref": "#/$defs/frac"}
+          }
+        },
+        "sample": {
+          "type": "object", "additionalProperties": false,
+          "required": ["frame_cutoff", "pilot_n", "cells", "speaker_device_pattern"],
+          "properties": {
+            "frame_cutoff": {"$ref": "#/$defs/str"},
+            "pilot_n": {"type": "integer", "minimum": 1},
+            "cells": {"type": "array", "items": {"$ref": "#/$defs/cell"}, "minItems": 1},
+            "speaker_device_pattern": {"$ref": "#/$defs/str"}
+          }
+        },
+        "regress": {
+          "type": "object", "additionalProperties": false, "required": ["n", "budget_usd", "tolerance"],
+          "properties": {
+            "n": {"type": "integer", "minimum": 1},
+            "budget_usd": {"$ref": "#/$defs/money"},
+            "tolerance": {"type": "object", "additionalProperties": {"$ref": "#/$defs/frac"}}
+          }
+        }
+      }
+    }
+  }
+}
