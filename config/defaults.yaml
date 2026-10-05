@@ -179,8 +179,9 @@ eval:
       # to $15 on 2026-10-05 (the $3.75 run stopped inside unit 1's judge step, before
       # judge, calibration or sizing were measured), then to $25 the same day: adding
       # --setting-sources changes every request key, so the rerun repeats the cached
-      # calls. See the preregistration amendments.
-      cap_usd: 25
+      # calls. Then $30 (your OK, 2026-10-05): the judge thinking-off A/B needs ~$3 and $2.59
+      # was left. See the preregistration amendments.
+      cap_usd: 30
       # #13 per-call --max-budget-usd for this stage (else eval.max_budget_per_call_usd). The
       # guard reserves the full per-call cap against the stage cap, so $1.50 would stop the
       # pilot after about half its cap of real spend.
