@@ -2,7 +2,10 @@
 (extract here; reference, matcher and judges in the eval).
 
 Cache key (D.1, B.9): sha256 of the exact request: model, effort, system prompt,
-schema hash and the prompt actually sent. The model is the configured name; an alias
+schema hash and the prompt actually sent, plus a replicate index when it is nonzero.
+Repeated samples of one request (judge votes, the reference stability rerun) use
+replicate 1, 2, ... so each is a real call rather than a cache hit of the first;
+replicate 0 leaves the key exactly as it was. The model is the configured name; an alias
 such as "haiku" can resolve to a newer model later, so each entry records the model
 the CLI actually ran. Only output that passes the schema is returned or cached.
 
@@ -48,12 +51,14 @@ def schema_sha(schema: dict) -> str:
     return sha256_text(canonical(schema))
 
 
-def request_key(cfg: dict, role: str, prompt: str, schema: dict, system_prompt: Optional[str]) -> str:
+def request_key(cfg: dict, role: str, prompt: str, schema: dict, system_prompt: Optional[str],
+                replicate: int = 0) -> str:
     spec = cfg["models"][role]
-    return sha256_text(canonical({
-        "model": spec["model"], "effort": spec["effort"], "system_prompt": system_prompt,
-        "schema": schema_sha(schema), "prompt": prompt,
-    }))
+    request = {"model": spec["model"], "effort": spec["effort"], "system_prompt": system_prompt,
+               "schema": schema_sha(schema), "prompt": prompt}
+    if replicate:
+        request["replicate"] = replicate
+    return sha256_text(canonical(request))
 
 
 def cache_path(cache_dir: Path, key: str) -> Path:
@@ -76,10 +81,10 @@ def cached_entry(cache_dir: Optional[Path], key: str, schema: dict) -> Optional[
 def cached_call(cfg: dict, role: str, prompt: str, *, schema: dict, max_budget_usd: float, ledger: Path,
                 cache_dir: Optional[Path] = None, system_prompt: Optional[str] = None,
                 before_call: Optional[Callable[[str, float], None]] = None,
-                provenance: Optional[dict] = None) -> Cached:
+                provenance: Optional[dict] = None, replicate: int = 0) -> Cached:
     """One structured call, served from the cache when possible. Raises OutputError for
     schema-invalid output; models.AuthError / ModelCallError propagate."""
-    key = request_key(cfg, role, prompt, schema, system_prompt)
+    key = request_key(cfg, role, prompt, schema, system_prompt, replicate)
     entry = cached_entry(cache_dir, key, schema)
     if entry:
         return Cached(key, entry["output"], True, entry["model"], entry["auth_source"], 0.0)
