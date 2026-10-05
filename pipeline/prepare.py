@@ -21,7 +21,9 @@ from typing import Any, Optional
 
 import yaml
 
-_TURN = re.compile(r"^\*\*\[(\d+):(\d\d):(\d\d)\] (Me|Others):\*\* ?(.*)$")
+ME = "Me"            # the recorder's label for the recording owner's microphone
+OTHERS = "Others"    # the recorder's label for the combined far-end channel
+_TURN = re.compile(rf"^\*\*\[(\d+):(\d\d):(\d\d)\] ({re.escape(ME)}|{re.escape(OTHERS)}):\*\* ?(.*)$")
 _WORD = re.compile(r"[a-z0-9']+")
 
 
@@ -85,7 +87,9 @@ def parse(path: Path) -> Transcript:
     return Transcript(Path(path), hashlib.sha256(raw).hexdigest(), meta, turns)
 
 
-def _words(text: str) -> list[str]:
+def word_tokens(text: str) -> list[str]:
+    """Lowercase word tokens: the one tokenizer for echo removal, the stub gate and the
+    eval's quote check."""
     return _WORD.findall(text.lower())
 
 
@@ -206,11 +210,11 @@ def redact_tree(value: Any, patterns: list[re.Pattern], token: str) -> tuple[Any
 
 def remove_echo(turns: list[Turn], window_s: float, overlap: float, min_words: int) -> tuple[list[Turn], list[Turn]]:
     """Drop Me lines that repeat a nearby Others line (laptop speakers bleeding into the mic)."""
-    others = [(t.seconds, set(_words(t.text))) for t in turns if t.speaker == "Others"]
+    others = [(t.seconds, set(word_tokens(t.text))) for t in turns if t.speaker == OTHERS]
     kept, dropped = [], []
     for t in turns:
-        mine = set(_words(t.text))
-        if t.speaker == "Me" and len(_words(t.text)) >= min_words and any(
+        mine = set(word_tokens(t.text))
+        if t.speaker == ME and len(word_tokens(t.text)) >= min_words and any(
             abs(t.seconds - s) <= window_s and len(mine & ws) / len(mine) >= overlap for s, ws in others
         ):
             dropped.append(t)
@@ -293,7 +297,7 @@ def prepare(group: list[Transcript], cfg: dict, aliases: Optional[dict] = None) 
     redactions += n
 
     kept, dropped = remove_echo(cleaned, p["echo_window_s"], p["echo_overlap"], p["echo_min_words"])
-    words = sum(len(_words(x.text)) for x in kept)
+    words = sum(len(word_tokens(x.text)) for x in kept)
     return Prepared(
         sources=[str(t.path) for t in group], meta=meta, turns=kept,
         is_stub=not kept or words < p["min_words"], words=words, echo_dropped=dropped,

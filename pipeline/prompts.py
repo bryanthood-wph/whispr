@@ -3,6 +3,9 @@
 Placeholders are {{NAME}}. Rendering fails if any placeholder is left unfilled or a
 supplied value matches no placeholder, so a renamed field can't silently send a
 prompt with a literal "{{...}}" in it. Every run records the template's hash.
+
+A template may open with one `<!-- ... -->` author note for whoever edits the file;
+the loader strips it, so it never reaches a model.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ import re
 from pipeline.config import config_file
 
 _PLACEHOLDER = re.compile(r"\{\{([A-Z_]+)\}\}")
+_AUTHOR_NOTE = re.compile(r"\A\s*<!--.*?-->[ \t]*\n?", re.DOTALL)
 
 
 class PromptError(ValueError):
@@ -25,8 +29,10 @@ def sha256_text(text: str) -> str:
 
 def load(relative: str) -> str:
     """Template text with line endings normalized to LF, so git's CRLF conversion on
-    checkout never changes a prompt's hash or a request's cache key."""
-    return config_file(relative).read_text(encoding="utf-8").replace("\r\n", "\n")
+    checkout never changes a prompt's hash or a request's cache key, and a leading
+    author note removed."""
+    text = config_file(relative).read_text(encoding="utf-8").replace("\r\n", "\n")
+    return _AUTHOR_NOTE.sub("", text, count=1)
 
 
 def placeholders(template: str) -> set[str]:

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Reference item matcher output (B.4): pairs of the same item across the two families' lists.",
+  "description": "Ids are checked in code: each pair must hold one id from list A and one from list B, and each id pairs at most once.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pairs"],
+  "properties": {
+    "pairs": {
+      "type": "array",
+      "description": "One entry per pair of items that are the same item. Empty when none match.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["a", "b"],
+        "properties": {
+          "a": {"type": "string", "description": "An id from LIST A, exactly as given"},
+          "b": {"type": "string", "description": "An id from LIST B, exactly as given"}
+        }
+      }
+    }
+  }
+}

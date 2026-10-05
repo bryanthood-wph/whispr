@@ -48,11 +48,17 @@ models:
 prompts:
   extract: prompts/extract.md
   system_minimal: prompts/system-minimal.md   # H-S2: minimal --system-prompt vs the CLI default
+  reference: prompts/reference.md   # #15 B.4
+  matcher: prompts/matcher.md   # #15 B.4
+  presence: prompts/presence.md   # #15 B.4
 
 schemas:
   extract: schema/extract.json
   task: schema/task.json
   scorecard: schema/scorecard.json   # B.7: every scored run's results/<run-tag>/scorecard.json
+  reference: schema/reference.json   # #15 B.4
+  matcher: schema/matcher.json   # #15 B.4
+  presence: schema/presence.json   # #15 B.4
 
 ontology: ontology.yaml
 
@@ -153,3 +159,7 @@ eval:
     tolerance:
       my_task_recall: 0.02
       my_task_precision: 0.02
+  reference:                    # #15 B.4
+    min_quote_words: 3          # #15 B.4: a quote shorter than this many word tokens proves nothing ("ok", "on")
+    near_miss_max_turns: 2      # #15 B.4: a calibration near miss quotes turns at most this far apart
+    overlap_min_tokens: 2       # #15 B.4: two same-turn quotes sharing an edge of at least this many tokens may be one statement

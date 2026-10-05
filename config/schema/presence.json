@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Reference escalation output (B.4): is a one-family item really in the call, as written?",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict"],
+  "properties": {
+    "verdict": {"enum": ["present", "absent"]}
+  }
+}

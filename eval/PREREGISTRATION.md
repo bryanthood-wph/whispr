@@ -213,6 +213,12 @@ fails until it is re-registered or reported as exploratory.
 | `config/schema/extract.json` | `b196eff61ccf9a701e563a8759c8457ad2feb5e349e7ef92ba8ae5c620d68ad8` |
 | `config/schema/task.json` | `67584bfc005327eb68052234065553289cfaba5415a1928d5e200a602f67e635` |
 | `config/schema/scorecard.json` | `2708d61e1dbd3655023d2d1be75b520bbcd85039bf5df25a3e46a57e159757a0` |
+| `config/prompts/reference.md` | `e3ba143f462c75c582c14c8864052e27c42436ec84e27edda5b072aff24b1f14` |
+| `config/prompts/matcher.md` | `b2b49cbebc20629710a363a84f9d29a0fed77b3fe640524dec6cdd24726994a1` |
+| `config/prompts/presence.md` | `eca8a57b8c003ac0c5b741b4f5ae515c7fc79b0882b3160ac8a1ecbd2638f874` |
+| `config/schema/reference.json` | `6e1da40e93483c69a21c54b425ed232306dd83c14c885117b12cdefa35f109e3` |
+| `config/schema/matcher.json` | `019785f404444098900ad6f2d7b9bdce6b83a959872874d86ecbd1734fc4672a` |
+| `config/schema/presence.json` | `3454e2eb5981a112d1558dafb757368305ff5c2f7fc0fba0911a0d0c7b71e69f` |
 | `config/ontology.yaml` | `d76e3c0161ca49466bf5c167043e3062bfa11b41ccd4dad456897d9e36efa748` |
 
 Baseline (configuration A) summarizer prompt, recorded outside the table
