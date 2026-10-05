@@ -22,7 +22,6 @@ only listed, since it can't be screened either way.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import random
 import re
@@ -119,7 +118,7 @@ def load_frame(cfg: dict, today: Optional[date] = None) -> tuple[list[FrameItem]
     items = [FrameItem(**d) for d in json.loads(path.read_text(encoding="utf-8"))]
     for item in items:
         p = Path(item.path)
-        if not p.exists() or hashlib.sha256(p.read_bytes()).hexdigest() != item.sha256:
+        if not p.exists() or prepare.file_sha256(p) != item.sha256:
             raise FrameError(f"{item.id} changed or vanished since the frame was frozen ({path})")
     return items, VERIFIED
 

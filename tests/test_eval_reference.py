@@ -14,7 +14,7 @@ import yaml
 from eval import reference as R
 from pipeline import prepare, prompts
 from pipeline.config import config_file, load_config
-from pipeline_helpers import overlay, transcript
+from pipeline_helpers import overlay, prepared
 
 TURNS = [
     ("00:00:05", "Others", "Okay so the decision is we ship the Oracle forms deck on Friday."),
@@ -41,11 +41,8 @@ def ref(id, family, text, quote, **kw):
 class _Base(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        root = Path(self._tmp.name)
-        self.cfg = load_config(overlay=overlay(root))
-        path = root / "transcripts" / "2026-09-01-0900-t.md"
-        path.write_text(transcript("2026-09-01T09:00:00-04:00", TURNS), encoding="utf-8")
-        self.prep = prepare.prepare([prepare.parse(path)], self.cfg)
+        self.cfg = load_config(overlay=overlay(Path(self._tmp.name)))
+        self.prep = prepared(self.cfg, "2026-09-01T09:00:00-04:00", TURNS)
         self.asked = []
 
     def tearDown(self):

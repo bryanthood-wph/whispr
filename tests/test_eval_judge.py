@@ -11,9 +11,9 @@ from pathlib import Path
 from unittest import mock
 
 from eval import judge as J
-from pipeline import prepare, render
+from pipeline import render
 from pipeline.config import DEFAULTS_PATH, ConfigError, config_file, load_config
-from pipeline_helpers import EXTRACT_SAMPLE, overlay, transcript
+from pipeline_helpers import EXTRACT_SAMPLE, overlay, prepared
 
 
 class TestBuildPrompt(unittest.TestCase):
@@ -100,11 +100,7 @@ class _Asking(unittest.TestCase):
 def _prep(turns):
     """A Prepared transcript of `turns`, each repeated so the stub gate never trips."""
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        cfg = load_config(overlay=overlay(root))
-        path = root / "transcripts" / "2026-09-01-0900-t.md"
-        path.write_text(transcript("2026-09-01T09:00:00-04:00", turns * 5), encoding="utf-8")
-        return prepare.prepare([prepare.parse(path)], cfg)
+        return prepared(load_config(overlay=overlay(Path(tmp))), "2026-09-01T09:00:00-04:00", turns * 5)
 
 
 def ans(answer, confidence=0.9, **extra):

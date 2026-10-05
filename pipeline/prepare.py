@@ -12,14 +12,16 @@ Outlook and belongs to the recorder's metadata step; it is not done here.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 import yaml
+
+from pipeline import prompts
+from pipeline.config import read_yaml
 
 ME = "Me"            # the recorder's label for the recording owner's microphone
 OTHERS = "Others"    # the recorder's label for the combined far-end channel
@@ -68,9 +70,13 @@ class Prepared:
         return "\n".join(f"[{t.stamp}] {t.speaker}: {t.text}" for t in self.turns)
 
 
+def file_sha256(path: Path) -> str:
+    """sha256 of a file's raw bytes: a transcript's identity, frozen into the eval frame."""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
 def parse(path: Path) -> Transcript:
-    raw = Path(path).read_bytes()
-    text = raw.decode("utf-8").replace("\r\n", "\n")
+    text = Path(path).read_bytes().decode("utf-8").replace("\r\n", "\n")
     if not text.startswith("---\n"):
         raise PrepareError(f"{path}: no frontmatter")
     try:
@@ -84,7 +90,7 @@ def parse(path: Path) -> Transcript:
         if m:
             h, mi, s, who, said = m.groups()
             turns.append(Turn(int(h) * 3600 + int(mi) * 60 + int(s), who, said.strip()))
-    return Transcript(Path(path), hashlib.sha256(raw).hexdigest(), meta, turns)
+    return Transcript(Path(path), file_sha256(path), meta, turns)
 
 
 def word_tokens(text: str) -> list[str]:
@@ -177,11 +183,17 @@ def load_aliases(path: Optional[Path]) -> dict[str, list[str]]:
     """canonical -> [ASR variants]. The table lives in the user's data dir."""
     if not path or not Path(path).exists():
         return {}
-    with open(path, encoding="utf-8") as fh:
-        table = yaml.safe_load(fh) or {}
-    if not isinstance(table, dict) or not all(isinstance(v, list) for v in table.values()):
+    table = read_yaml(path)
+    if not all(isinstance(v, list) for v in table.values()):
         raise PrepareError(f"{path}: alias table must map a canonical name to a list of variants")
     return table
+
+
+def whole_words(words: Iterable[str]) -> str:
+    """A regex matching any of `words` as whole words (never inside another word).
+    Lookarounds rather than \\b, so a word that starts or ends with punctuation ("J.")
+    still matches."""
+    return r"(?<!\w)(?:" + "|".join(map(re.escape, words)) + r")(?!\w)"
 
 
 def compile_aliases(aliases: dict[str, list[str]]) -> list[tuple[str, re.Pattern]]:
@@ -191,7 +203,7 @@ def compile_aliases(aliases: dict[str, list[str]]) -> list[tuple[str, re.Pattern
     compiled = []
     for canonical, variants in aliases.items():
         alts = sorted({canonical, *variants}, key=len, reverse=True)
-        compiled.append((canonical, re.compile(r"\b(?:" + "|".join(map(re.escape, alts)) + r")\b", re.IGNORECASE)))
+        compiled.append((canonical, re.compile(whole_words(alts), re.IGNORECASE)))
     return compiled
 
 
@@ -272,7 +284,7 @@ def idempotency_key(group: list[Transcript], cfg: dict, aliases: dict) -> str:
         "aliases": aliases,
         "owner_tenant": cfg["owner"].get("tenant"),
     }
-    return hashlib.sha256(json.dumps(material, sort_keys=True).encode("utf-8")).hexdigest()
+    return prompts.sha256_text(prompts.canonical(material))
 
 
 def prepare(group: list[Transcript], cfg: dict, aliases: Optional[dict] = None) -> Prepared:

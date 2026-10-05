@@ -24,10 +24,8 @@ from eval import lowmic, preflight
 from eval.records import DEVICE_OTHER, DEVICE_SPEAKER
 from pipeline import calls, prompts
 from pipeline.config import config_file, load_config
-from pipeline_helpers import EXTRACT_SAMPLE, overlay, transcript
+from pipeline_helpers import EXTRACT_SAMPLE, FILLER, fake_cli, overlay, scrubbed_env, transcript
 
-FAKE = str(Path(__file__).with_name("fake_claude.py"))
-FILLER = "we walked through the quarterly plan and the staffing model in detail today"
 TURNS = [("00:00:01", "Others", FILLER)] * 5
 AFTER_CUTOFF = date(2026, 12, 31)
 SPEAKERS, HEADSET = "Speakers (Realtek)", "Headset (USB)"
@@ -38,13 +36,12 @@ class _Base(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         self.ov = overlay(self.root)
-        self.ov["cli"] = {"executable": sys.executable, "base_args": [FAKE], "timeout_s": 20}
+        self.ov["cli"] = fake_cli()
         self.cfg = load_config(overlay=self.ov)
         self.tdir = Path(self.ov["paths"]["transcripts"])
         self.log_lines: list[str] = []
         self.clock = datetime(2026, 9, 1, 9, 0)
-        env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("CLAUDE", "ANTHROPIC"))}
-        env["FAKE_CLAUDE_STRUCTURED"] = json.dumps(EXTRACT_SAMPLE)
+        env = scrubbed_env(self.cfg, FAKE_CLAUDE_STRUCTURED=json.dumps(EXTRACT_SAMPLE))
         self._env = mock.patch.dict(os.environ, env, clear=True)
         self._env.start()
 

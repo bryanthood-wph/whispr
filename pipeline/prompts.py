@@ -11,7 +11,9 @@ the loader strips it, so it never reaches a model.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+from typing import Any
 
 from pipeline.config import config_file
 
@@ -25,6 +27,11 @@ class PromptError(ValueError):
 
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def canonical(obj: Any) -> str:
+    """The one canonical JSON form hashed for keys and registered schema hashes."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def load(relative: str) -> str:

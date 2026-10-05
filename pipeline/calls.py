@@ -23,11 +23,11 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from pipeline import models
 from pipeline.config import config_file
-from pipeline.prompts import sha256_text
+from pipeline.prompts import canonical, sha256_text  # canonical re-exported: callers import it from here
 from pipeline.jsonschema_lite import validate
 from whispr.fileio import atomic_write_text
 
@@ -44,10 +44,6 @@ class Cached:
     model: str
     auth_source: Optional[str]
     cost_usd: float
-
-
-def canonical(obj: Any) -> str:
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def schema_sha(schema: dict) -> str:

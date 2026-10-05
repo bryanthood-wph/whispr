@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from pipeline import models, prepare
+
+# Stands in for the claude CLI (see fake_claude.py).
+FAKE_CLAUDE = str(Path(__file__).with_name("fake_claude.py"))
+# A filler turn for synthetic transcripts; tests repeat it to clear the stub gate.
+FILLER = "we walked through the quarterly plan and the staffing model in detail today"
 
 # A valid config/schema/extract.json output.
 EXTRACT_SAMPLE = {
@@ -54,3 +62,23 @@ def transcript(start: str, turns: list[tuple[str, str, str]], *, call_title: str
     )
     body = "\n\n".join(f"**[{ts}] {who}:** {text}" for ts, who, text in turns)
     return front + body + "\n"
+
+
+def prepared(cfg: dict, start: str, turns: list[tuple[str, str, str]], **kw) -> prepare.Prepared:
+    """Write a transcript (arguments as for `transcript`) into cfg's transcripts dir,
+    named after its start, then parse and prepare it."""
+    path = Path(cfg["paths"]["transcripts"]) / f"{start[:10]}-{start[11:13]}{start[14:16]}-t.md"
+    path.write_text(transcript(start, turns, **kw), encoding="utf-8")
+    return prepare.prepare([prepare.parse(path)], cfg)
+
+
+def fake_cli() -> dict:
+    """The `cli` overlay section that runs fake_claude.py in place of the claude CLI."""
+    return {"executable": sys.executable, "base_args": [FAKE_CLAUDE], "timeout_s": 20}
+
+
+def scrubbed_env(cfg: dict, **extra: str) -> dict[str, str]:
+    """os.environ without the auth.strip_env_prefixes variables, plus `extra`: for
+    mock.patch.dict(os.environ, ..., clear=True), since the test process may itself
+    run inside a Claude session."""
+    return {**models.child_env(cfg), **extra}

@@ -5,19 +5,17 @@ from __future__ import annotations
 import copy
 import json
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from pipeline import extract as X
-from pipeline import prepare as P
 from pipeline.config import load_config
-from pipeline_helpers import EXTRACT_SAMPLE, overlay, transcript
+from pipeline_helpers import EXTRACT_SAMPLE, FILLER, fake_cli, overlay, prepared, scrubbed_env
 
-FAKE = str(Path(__file__).with_name("fake_claude.py"))
-FILLER = "we walked through the quarterly plan and the staffing model in detail today"
+START = "2026-10-01T10:00:00-04:00"
+TURNS = [("00:00:01", "Others", FILLER)] * 5
 
 
 class TestExtract(unittest.TestCase):
@@ -25,14 +23,13 @@ class TestExtract(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         ov = overlay(self.root)
-        ov["cli"] = {"executable": sys.executable, "base_args": [FAKE], "timeout_s": 20}
+        ov["cli"] = fake_cli()
         self.cfg = load_config(overlay=ov)
         self.ledger = self.root / "ledger.jsonl"
         self.cache = self.root / "cache"
         self.args_out = self.root / "args.json"
-        env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("CLAUDE", "ANTHROPIC"))}
-        env.update({"FAKE_CLAUDE_ARGS_OUT": str(self.args_out),
-                    "FAKE_CLAUDE_STRUCTURED": json.dumps(EXTRACT_SAMPLE)})
+        env = scrubbed_env(self.cfg, FAKE_CLAUDE_ARGS_OUT=str(self.args_out),
+                           FAKE_CLAUDE_STRUCTURED=json.dumps(EXTRACT_SAMPLE))
         self._env = mock.patch.dict(os.environ, env, clear=True)
         self._env.start()
 
@@ -40,23 +37,16 @@ class TestExtract(unittest.TestCase):
         self._env.stop()
         self._tmp.cleanup()
 
-    def prepared(self, turns=None, **kw) -> P.Prepared:
-        path = self.root / "t.md"
-        path.write_text(transcript("2026-10-01T10:00:00-04:00",
-                                   turns if turns is not None else [("00:00:01", "Others", FILLER)] * 5, **kw),
-                        encoding="utf-8")
-        return P.prepare([P.parse(path)], self.cfg)
-
     def run_extract(self, prep=None, **kw):
         kw.setdefault("cache_dir", self.cache)
-        return X.extract(prep or self.prepared(), self.cfg, role="extractor", max_budget_usd=0.5,
-                         ledger=self.ledger, **kw)
+        return X.extract(prep or prepared(self.cfg, START, TURNS), self.cfg, role="extractor",
+                         max_budget_usd=0.5, ledger=self.ledger, **kw)
 
     def ledger_rows(self):
         return self.ledger.read_text(encoding="utf-8").splitlines() if self.ledger.exists() else []
 
     def test_prompt_is_filled_from_episode_and_config(self):
-        req = X.build_request(self.prepared(attendees=[]), self.cfg, role="extractor")
+        req = X.build_request(prepared(self.cfg, START, TURNS, attendees=[]), self.cfg, role="extractor")
         self.assertNotIn("{{", req.prompt)
         self.assertIn("Pat Example", req.prompt)              # owner name from the overlay
         self.assertIn("Weekly Sync", req.prompt)
@@ -96,11 +86,11 @@ class TestExtract(unittest.TestCase):
 
     def test_stub_is_refused_without_a_call(self):
         with self.assertRaises(X.ExtractError):
-            self.run_extract(self.prepared(turns=[]))
+            self.run_extract(prepared(self.cfg, START, []))
         self.assertFalse(self.args_out.exists())
 
     def test_key_covers_model_effort_system_prompt_and_input(self):
-        prep = self.prepared()
+        prep = prepared(self.cfg, START, TURNS)
         base = X.build_request(prep, self.cfg, role="extractor").key
         self.assertEqual(base, X.build_request(prep, self.cfg, role="extractor").key)
         self.assertNotEqual(base, X.build_request(prep, self.cfg, role="reference_a").key)
@@ -108,7 +98,7 @@ class TestExtract(unittest.TestCase):
         cfg2 = copy.deepcopy(self.cfg)
         cfg2["models"]["extractor"]["effort"] = "high"
         self.assertNotEqual(base, X.build_request(prep, cfg2, role="extractor").key)
-        other = self.prepared(turns=[("00:00:02", "Others", FILLER)] * 5)
+        other = prepared(self.cfg, START, [("00:00:02", "Others", FILLER)] * 5)
         self.assertNotEqual(base, X.build_request(other, self.cfg, role="extractor").key)
 
     def test_system_prompt_is_passed_through(self):

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,9 +12,8 @@ from unittest import mock
 from eval.ask import make_ask
 from pipeline import calls
 from pipeline.config import load_config
-from pipeline_helpers import overlay
+from pipeline_helpers import fake_cli, overlay, scrubbed_env
 
-FAKE = str(Path(__file__).with_name("fake_claude.py"))
 SCHEMA = {"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean"}}}
 
 
@@ -24,11 +22,10 @@ class TestAsk(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         ov = overlay(self.root)
-        ov["cli"] = {"executable": sys.executable, "base_args": [FAKE], "timeout_s": 20}
+        ov["cli"] = fake_cli()
         self.cfg = load_config(overlay=ov)
         self.ledger = self.root / "ledger.jsonl"
-        env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("CLAUDE", "ANTHROPIC"))}
-        self._env = mock.patch.dict(os.environ, env, clear=True)
+        self._env = mock.patch.dict(os.environ, scrubbed_env(self.cfg), clear=True)
         self._env.start()
 
     def tearDown(self):

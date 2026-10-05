@@ -9,9 +9,7 @@ from pathlib import Path
 
 from pipeline import prepare as P
 from pipeline.config import load_config
-from pipeline_helpers import overlay, transcript
-
-FILLER = "we walked through the quarterly plan and the staffing model in detail today"
+from pipeline_helpers import FILLER, overlay, prepared, transcript
 
 
 class _Base(unittest.TestCase):
@@ -30,9 +28,6 @@ class _Base(unittest.TestCase):
         path.write_text(transcript(*args, **kw), encoding="utf-8")
         return P.parse(path)
 
-    def prep(self, *args, **kw) -> P.Prepared:
-        return P.prepare([self.write(*args, **kw)], self.cfg)
-
 
 class TestParseAndStub(_Base):
     def test_parse_turns_and_meta(self):
@@ -41,14 +36,14 @@ class TestParseAndStub(_Base):
         self.assertEqual(t.meta["call_title"], "Weekly Sync")
 
     def test_zero_turns_is_stub(self):
-        self.assertTrue(self.prep("2026-10-01T10:00:00-04:00", []).is_stub)
+        self.assertTrue(prepared(self.cfg, "2026-10-01T10:00:00-04:00", []).is_stub)
 
     def test_few_words_is_stub(self):
-        self.assertTrue(self.prep("2026-10-01T10:00:00-04:00", [("00:00:01", "Me", "hello?")]).is_stub)
+        self.assertTrue(prepared(self.cfg, "2026-10-01T10:00:00-04:00", [("00:00:01", "Me", "hello?")]).is_stub)
 
     def test_enough_words_is_not_stub(self):
         turns = [("00:00:01", "Others", FILLER)] * 5
-        out = self.prep("2026-10-01T10:00:00-04:00", turns)
+        out = prepared(self.cfg, "2026-10-01T10:00:00-04:00", turns)
         self.assertFalse(out.is_stub)
         self.assertEqual(out.render().splitlines()[0], f"[00:00:01] Others: {FILLER}")
 
@@ -61,7 +56,7 @@ class TestEcho(_Base):
             ("00:00:12", "Me", "yes"),                                         # too short -> kept
             ("00:05:00", "Me", "send the revised deck to finance by friday"),   # outside window -> kept
         ]
-        out = self.prep("2026-10-01T10:00:00-04:00", turns)
+        out = prepared(self.cfg, "2026-10-01T10:00:00-04:00", turns)
         self.assertEqual([t.stamp for t in out.echo_dropped], ["00:00:11"])
         self.assertEqual([t.text for t in out.turns if t.speaker == "Me"],
                          ["yes", "send the revised deck to finance by friday"])
@@ -75,7 +70,7 @@ class TestRedaction(_Base):
             ("00:00:03", "Others", "Dial in by phone +1 470-555-0100,,123456789# United States"),
             ("00:00:04", "Me", "I had to change passcode on my phone"),
         ]
-        out = self.prep("2026-10-01T10:00:00-04:00", turns)
+        out = prepared(self.cfg, "2026-10-01T10:00:00-04:00", turns)
         text = out.render()
         for leak in ("teams.microsoft.com", "pBlBbv3", "qJ7xK2", "361 646", "123456789"):
             self.assertNotIn(leak, text)
@@ -83,28 +78,28 @@ class TestRedaction(_Base):
         self.assertGreaterEqual(out.redactions, 4)
 
     def test_new_domain_upper_case_and_attendee_dial_in_redacted(self):
-        out = self.prep("2026-10-01T10:00:00-04:00",
-                        [("00:00:01", "Others", "HTTPS://Teams.Cloud.Microsoft/meet/3616?p=pBlBbv3 ok")],
-                        attendees=["Doe, Jane", "+1 470-555-0100,,123456789#"])
+        out = prepared(self.cfg, "2026-10-01T10:00:00-04:00",
+                       [("00:00:01", "Others", "HTTPS://Teams.Cloud.Microsoft/meet/3616?p=pBlBbv3 ok")],
+                       attendees=["Doe, Jane", "+1 470-555-0100,,123456789#"])
         self.assertNotIn("pBlBbv3", out.render())
         self.assertNotIn("123456789", str(out.meta["attendees"]))
         self.assertIn("Jane Doe", out.meta["attendees"])
 
     def test_invite_notes_never_reach_meta(self):
-        out = self.prep("2026-10-01T10:00:00-04:00", [], extra_frontmatter="invite_notes: 'Passcode: x1'\n")
+        out = prepared(self.cfg, "2026-10-01T10:00:00-04:00", [], extra_frontmatter="invite_notes: 'Passcode: x1'\n")
         self.assertNotIn("invite_notes", out.meta)
         self.assertNotIn("x1", str(out.meta))
 
 
 class TestMetadata(_Base):
     def test_attendees_are_people(self):
-        out = self.prep("2026-10-01T10:00:00-04:00", [], attendees=[
+        out = prepared(self.cfg, "2026-10-01T10:00:00-04:00", [], attendees=[
             "Doe, Jane", "cohood@example.com", "Example (TEN)", "Microsoft Teams", "Doe, Jane", "Sam Lee"])
         self.assertEqual(out.meta["attendees"], ["Jane Doe", "Sam Lee"])
 
     def _title(self, raw):
-        return self.prep("2026-10-01T10:00:00-04:00", [], metadata_source="window-title",
-                         call_title=f"'{raw}'").meta
+        return prepared(self.cfg, "2026-10-01T10:00:00-04:00", [], metadata_source="window-title",
+                        call_title=f"'{raw}'").meta
 
     def test_all_generic_window_title_becomes_null(self):
         meta = self._title("Meeting join | Microsoft Teams meeting | Example (TEN) | pat@example.com | Microsoft Teams")
@@ -117,7 +112,7 @@ class TestMetadata(_Base):
                          "Project Kickoff")
 
     def test_real_title_kept(self):
-        self.assertEqual(self.prep("2026-10-01T10:00:00-04:00", []).meta["call_title"], "Weekly Sync")
+        self.assertEqual(prepared(self.cfg, "2026-10-01T10:00:00-04:00", []).meta["call_title"], "Weekly Sync")
 
 
 class TestAliases(_Base):
@@ -138,6 +133,11 @@ class TestAliases(_Base):
                          ("Jamie Doe said, then Jamie Doe left", 1))
         self.assertEqual(rewrite("the r and d team", {r"R\D": ["r and d"]}), (r"the R\D team", 1))
         self.assertEqual(rewrite("Jamieson spoke", {"Jamie Doe": ["Jamie"]}), ("Jamieson spoke", 0))  # whole words only
+
+    def test_a_variant_ending_in_punctuation_is_a_whole_word(self):
+        rewrite = lambda text: P.rewrite_aliases(text, P.compile_aliases({"Jay Doe": ["J."]}))
+        self.assertEqual(rewrite("then J. left"), ("then Jay Doe left", 1))
+        self.assertEqual(rewrite("see J.R today"), ("see J.R today", 0))   # still never inside a word
 
 
 class TestEpisodes(_Base):
@@ -164,7 +164,7 @@ class TestEpisodes(_Base):
 class TestEncodingAndKey(_Base):
     def test_mojibake_rejected(self):
         with self.assertRaises(P.PrepareError):
-            self.prep("2026-10-01T10:00:00-04:00", [("00:00:01", "Me", "itΓÇÖs broken")])
+            prepared(self.cfg, "2026-10-01T10:00:00-04:00", [("00:00:01", "Me", "itΓÇÖs broken")])
 
     def test_key_stable_and_config_sensitive(self):
         t = self.write("2026-10-01T10:00:00-04:00", [("00:00:01", "Me", "hello")])

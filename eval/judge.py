@@ -31,9 +31,9 @@ from types import MappingProxyType
 from typing import Callable, Iterable, Mapping, Optional
 
 from pipeline import prompts, render
-from pipeline.config import PLANTING_PATH, _read_yaml, load_schema
+from pipeline.config import PLANTING_PATH, load_schema, read_yaml
 from pipeline.jsonschema_lite import validate
-from pipeline.prepare import Prepared
+from pipeline.prepare import Prepared, owner_name, whole_words, word_tokens
 
 # B.5's decisions and their answer vocabularies. The owner/due row is two decisions,
 # as B.6 scores owner and due accuracy apart.
@@ -132,7 +132,7 @@ def build_prompt(decision: str, cfg: dict, *, transcript: str, summary: str, sub
     labels, question = render.labels(), questions[decision]
     # The question is filled first: prompts.render never re-expands a substituted value.
     values = {
-        "OWNER_NAME": cfg["owner"]["name"], "TRANSCRIPT": transcript.rstrip("\n"), "SUMMARY": summary.rstrip("\n"),
+        "OWNER_NAME": owner_name(cfg), "TRANSCRIPT": transcript.rstrip("\n"), "SUMMARY": summary.rstrip("\n"),
         "QUESTION": prompts.render(question, _used(labels, question)), "SUBJECT": subject,
         "ANSWERS": " | ".join(vocab),
     }
@@ -245,25 +245,20 @@ def summary_claims(doc: dict) -> list[str]:
 @lru_cache(maxsize=1)
 def planting() -> dict:
     """config/planting.yaml (PLANTING_PATH). Treat as read-only."""
-    return _read_yaml(PLANTING_PATH)
-
-
-def _words(words: Iterable[str]) -> str:
-    """A regex matching any of `words` as whole words (never inside another word)."""
-    return r"(?<!\w)(?:" + "|".join(map(re.escape, words)) + r")(?!\w)"
+    return read_yaml(PLANTING_PATH)
 
 
 @lru_cache(maxsize=1)
 def _unnamed_speaker() -> re.Pattern:
     m = planting()["unnamed_speaker"]
     return re.compile(
-        rf"^(?P<subject>{_words(m['determiners'])}(?:\s+[\w'-]+){{0,{int(m['subject_extra_words'])}}}?)\s+"
-        rf"(?P<rest>{_words(m['speech_verbs'])}.*)$", re.IGNORECASE)
+        rf"^(?P<subject>{whole_words(m['determiners'])}(?:\s+[\w'-]+){{0,{int(m['subject_extra_words'])}}}?)\s+"
+        rf"(?P<rest>{whole_words(m['speech_verbs'])}.*)$", re.IGNORECASE)
 
 
 @lru_cache(maxsize=1)
 def _pronoun() -> re.Pattern:
-    return re.compile(_words(planting()["pronouns"]), re.IGNORECASE)
+    return re.compile(whole_words(planting()["pronouns"]), re.IGNORECASE)
 
 
 class _People:
@@ -275,7 +270,7 @@ class _People:
         persons = [e for e in doc["entities"] if e["type"] == "person"]
         self._canon = {s.lower(): e["name"] for e in persons for s in (*e["aliases"], e["name"])}
         spellings = sorted({s.lower() for s in (*self._canon, *exclude)})
-        self._named = re.compile(_words(spellings), re.IGNORECASE) if spellings else None
+        self._named = re.compile(whole_words(spellings), re.IGNORECASE) if spellings else None
         excluded = {self.canon(x).lower() for x in exclude}
         names = {e["name"] for e in persons} | {self.canon(t["owner"]) for t in doc["other_tasks"] if t["owner"]}
         self.allowed = sorted(n for n in names if n.lower() not in excluded)
@@ -322,10 +317,9 @@ def _held_elsewhere(doc: dict, phrase: str, skip: Optional[dict] = None) -> bool
     """`phrase` occurs, as whole words in any case, in some free text of the summary
     other than task `skip`'s: a claim-bearing field or a task's action or context."""
     texts = [_get(doc, p) for p in _text_slots(doc)]
-    for t in (*doc["my_actions"], *doc["other_tasks"]):
-        if t is not skip:
-            texts += [t["action"], t["context"]]
-    rx = re.compile(_words([phrase]), re.IGNORECASE)
+    for lst, _ in render.TASK_LISTS:
+        texts += [x for t in doc[lst] if t is not skip for x in (t["action"], t["context"])]
+    rx = re.compile(whole_words([phrase]), re.IGNORECASE)
     return any(rx.search(text) for text in texts)
 
 
@@ -354,7 +348,7 @@ def _insert_point(doc: dict, rng: random.Random, text_for: Callable[[dict, rando
 def _owner_swap(doc: dict, rng: random.Random, people: _People) -> str:
     """Give a task to a different named person; a my-task moves to Other Tasks."""
     candidates = [(lst, i, options)
-                  for lst in ("my_actions", "other_tasks") for i, t in enumerate(doc[lst])
+                  for lst, _ in render.TASK_LISTS for i, t in enumerate(doc[lst])
                   for current in [t.get("owner") and people.canon(t["owner"])]     # my-tasks: None
                   if (options := [p for p in people.allowed if p != current])]
     lst, i, options = _pick(rng, candidates, "no task with another named person to give it to")
@@ -424,7 +418,7 @@ def _dropped_due(doc: dict, rng: random.Random) -> str:
     """Drop a stated due date that no other text in the summary repeats, the task's
     own wording included (otherwise the date would still show and the plant be
     undetectable)."""
-    tasks = [t for lst in ("my_actions", "other_tasks") for t in doc[lst]
+    tasks = [t for lst, _ in render.TASK_LISTS for t in doc[lst]
              if t["due"]["text"] and not _held_elsewhere(doc, t["due"]["text"])]
     item = _pick(rng, tasks, "no task with a due date only its Due line shows")
     item["due"] = {"text": None, "basis": _NOT_STATED}
@@ -463,7 +457,7 @@ def plant_positives(prep: Prepared, seed: int, n: int) -> list[str]:
     second-person pronouns."""
     min_words = planting()["positive_min_words"]
     claims = dict.fromkeys(c for t in prep.turns for c in split_claims(t.text)
-                           if len(c.split()) >= min_words and not _QUESTION.search(c)
+                           if len(word_tokens(c)) >= min_words and not _QUESTION.search(c)
                            and not _pronoun().search(c))
     if len(claims) < n:
         raise NotApplicable(f"only {len(claims)} transcript claims, {n} wanted")

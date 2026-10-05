@@ -47,7 +47,8 @@ def _merge(base: dict, overlay: dict, path: str = "") -> dict:
     return merged
 
 
-def _read_yaml(path: Path) -> dict:
+def read_yaml(path: Path) -> dict:
+    """A YAML file that must hold a mapping (an empty file reads as {})."""
     with open(path, encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}
     if not isinstance(data, dict):
@@ -55,13 +56,17 @@ def _read_yaml(path: Path) -> dict:
     return data
 
 
+# Transitional alias for eval/scoring.py, which still imports the old private name.
+_read_yaml = read_yaml
+
+
 def load_config(overlay_path: Optional[Path] = None, overlay: Optional[dict] = None) -> dict[str, Any]:
     """Return the validated config. `overlay` (a dict) is for tests; otherwise the
     overlay file is read from `overlay_path` or the default %APPDATA% location."""
-    cfg = _read_yaml(DEFAULTS_PATH)
+    cfg = read_yaml(DEFAULTS_PATH)
     if overlay is None:
         path = overlay_path or default_overlay_path()
-        overlay = _read_yaml(path) if path.exists() else {}
+        overlay = read_yaml(path) if path.exists() else {}
     cfg = _merge(cfg, overlay)
     with open(SCHEMA_PATH, encoding="utf-8") as fh:
         schema = json.load(fh)

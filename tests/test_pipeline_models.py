@@ -12,9 +12,7 @@ from unittest import mock
 
 from pipeline import models
 from pipeline.config import load_config
-from pipeline_helpers import overlay
-
-FAKE = str(Path(__file__).with_name("fake_claude.py"))
+from pipeline_helpers import fake_cli, overlay, scrubbed_env
 
 
 class TestModelsCall(unittest.TestCase):
@@ -22,15 +20,13 @@ class TestModelsCall(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         ov = overlay(self.root)
-        ov["cli"] = {"executable": sys.executable, "base_args": [FAKE], "timeout_s": 20}
+        ov["cli"] = fake_cli()
         self.cfg = load_config(overlay=ov)
         self.ledger = self.root / "ledger.jsonl"
         self.args_out = self.root / "args.json"
-        # The test process may itself run inside a Claude session; clear its markers
-        # and plant an API key that must never reach the child.
-        env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("CLAUDE", "ANTHROPIC"))}
-        env.update({"ANTHROPIC_API_KEY": "sk-test", "CLAUDE_CODE_CHILD_SESSION": "1",
-                    "FAKE_CLAUDE_ARGS_OUT": str(self.args_out)})
+        # Plant an API key and a session marker that must never reach the child.
+        env = scrubbed_env(self.cfg, ANTHROPIC_API_KEY="sk-test", CLAUDE_CODE_CHILD_SESSION="1",
+                           FAKE_CLAUDE_ARGS_OUT=str(self.args_out))
         self._env = mock.patch.dict(os.environ, env, clear=True)
         self._env.start()
 
@@ -63,7 +59,8 @@ class TestModelsCall(unittest.TestCase):
         self.assertEqual(argv[argv.index("--system-prompt") + 1], "SYS")
         self.assertIn("--json-schema", argv)
         self.assertNotIn("--effort", argv)  # extractor effort is null in defaults
-        self.assertFalse([k for k in seen["env_keys"] if k.upper().startswith(("CLAUDE", "ANTHROPIC"))])
+        prefixes = tuple(self.cfg["auth"]["strip_env_prefixes"])
+        self.assertFalse([k for k in seen["env_keys"] if k.upper().startswith(prefixes)])
 
     def test_effort_is_passed_when_set(self):
         self.cfg["models"]["extractor"]["effort"] = "high"
