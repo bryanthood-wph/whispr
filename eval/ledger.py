@@ -19,16 +19,15 @@
 
 from __future__ import annotations
 
-import json
 import msvcrt
 import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 from pipeline.config import data_dir
-from pipeline.models import append_jsonl
+from pipeline.models import append_jsonl, read_jsonl, read_jsonl_counted
 
 LEDGER_FILE = "ledger.jsonl"
 RUNS_FILE = "runs.jsonl"
@@ -53,44 +52,39 @@ def ledger_path(cfg: dict) -> Path:
     return eval_dir(cfg) / LEDGER_FILE
 
 
-def _read(path: Path) -> tuple[list[dict], int]:
-    """(rows, unreadable line count)."""
-    if not path.exists():
-        return [], 0
-    rows, bad = [], 0
-    with open(path, encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except ValueError:
-                row = None
-            if isinstance(row, dict):
-                rows.append(row)
-            else:
-                bad += 1
-    return rows, bad
+def is_reservation(row: dict) -> bool:
+    return row.get("event") == RESERVE
 
 
-def _rows(path: Path) -> list[dict]:
-    return _read(path)[0]
+def call_rows(rows: Iterable[dict]) -> list[dict]:
+    """Call rows: ledger rows without the budget reservations."""
+    return [r for r in rows if not is_reservation(r)]
+
+
+def row_cost(row: dict) -> float:
+    """A call row's cost in USD (a row without one counts as 0)."""
+    return float(row.get("cost_usd") or 0.0)
+
+
+def rows(cfg: dict) -> list[dict]:
+    """The call ledger's readable rows, in order (reservations included)."""
+    return read_jsonl(ledger_path(cfg))
 
 
 def malformed(cfg: dict) -> int:
     """Unreadable lines in the ledger and run records (shown by `status`)."""
-    return sum(_read(eval_dir(cfg) / name)[1] for name in (LEDGER_FILE, RUNS_FILE))
+    return sum(read_jsonl_counted(eval_dir(cfg) / name)[1] for name in (LEDGER_FILE, RUNS_FILE))
 
 
 def tally(cfg: dict) -> tuple[float, dict[str, float]]:
     """(total spend, spend by stage), counting unsettled reservations at their cap."""
     total, by_stage = 0.0, {}
     pending: dict[str, list[tuple[str, float]]] = {}
-    for row in _rows(ledger_path(cfg)):
-        if row.get("event") == RESERVE:
+    for row in rows(cfg):
+        if is_reservation(row):
             pending.setdefault(row.get("request_key"), []).append((row["stage"], float(row["reserve_usd"])))
             continue
-        cost = float(row.get("cost_usd") or 0.0)
+        cost = row_cost(row)
         total += cost
         queue = pending.get(row.get("request_key"))
         if queue:
@@ -110,6 +104,14 @@ def spent(cfg: dict) -> float:
 def budget_limit(cfg: dict) -> float:
     """Spend at which work stops and RESUME.md is written (G.5): cap minus margin."""
     return cfg["eval"]["budget_usd"] - cfg["eval"]["stop_margin_usd"]
+
+
+def call_cap(cfg: dict, stage: str) -> float:
+    """The per-call --max-budget-usd for `stage`: eval.stages.<stage>.max_budget_per_call_usd
+    when the stage sets one, else eval.max_budget_per_call_usd. The guard reserves this
+    full cap against the stage cap before each call, so a small stage needs a small cap."""
+    ev = cfg["eval"]
+    return ev["stages"][stage].get("max_budget_per_call_usd", ev["max_budget_per_call_usd"])
 
 
 def guard(cfg: dict, stage: str) -> Callable[[str, float], None]:
@@ -144,7 +146,7 @@ def _append_run(cfg: dict, record: dict) -> None:
 def runs(cfg: dict) -> dict[str, list[dict]]:
     """run_id -> its events, in order."""
     out: dict[str, list[dict]] = {}
-    for r in _rows(eval_dir(cfg) / RUNS_FILE):
+    for r in read_jsonl(eval_dir(cfg) / RUNS_FILE):
         out.setdefault(r["run_id"], []).append(r)
     return out
 

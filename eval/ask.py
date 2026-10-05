@@ -21,14 +21,14 @@ class Ask(Protocol):
                  replicate: int = 0) -> dict: ...
 
 
-def make_ask(cfg: dict, *, ledger: Path, cache_dir: Optional[Path],
-             before_call: Optional[Callable[[str, float], None]] = None,
-             max_budget_usd: Optional[float] = None) -> Ask:
-    cap = cfg["eval"]["max_budget_per_call_usd"] if max_budget_usd is None else max_budget_usd
+def make_ask(cfg: dict, *, ledger: Path, cache_dir: Optional[Path], max_budget_usd: float,
+             before_call: Optional[Callable[[str, float], None]] = None) -> Ask:
+    """`max_budget_usd` is the per-call cap, required so a stage-guarded ask always
+    carries its stage's cap (eval.ledger.call_cap) rather than a silent global default."""
 
     def ask(role: str, prompt: str, schema: dict, *, system_prompt: Optional[str] = None,
             replicate: int = 0) -> dict:
-        return calls.cached_call(cfg, role, prompt, schema=schema, max_budget_usd=cap, ledger=ledger,
+        return calls.cached_call(cfg, role, prompt, schema=schema, max_budget_usd=max_budget_usd, ledger=ledger,
                                  cache_dir=cache_dir, system_prompt=system_prompt, before_call=before_call,
                                  replicate=replicate).output
     return ask

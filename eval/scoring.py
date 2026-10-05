@@ -452,6 +452,43 @@ def stratum_entries(design: Design, outcomes: Iterable[Outcome], config: str, me
                                                             calibration=calibration)
 
 
+# ------------------------------------------------------------- sizing (B.3, pilot)
+
+def icc(groups: Sequence[Sequence[float]]) -> Optional[float]:
+    """One-way ANOVA intraclass correlation ICC(1) of item outcomes clustered by
+    transcript, truncated at 0. Unequal cluster sizes use the average size n0 =
+    (N - sum n_i^2 / N) / (k - 1). Empty clusters are dropped (a transcript with no
+    items adds nothing). None when it is undefined: fewer than 2 clusters, no
+    within-cluster degrees of freedom (N = k), or no variance at all."""
+    groups = [[float(x) for x in g] for g in groups if len(g)]
+    k, n = len(groups), sum(len(g) for g in groups)
+    if k < 2 or n <= k:
+        return None
+    grand = sum(sum(g) for g in groups) / n
+    means = [sum(g) / len(g) for g in groups]
+    ssb = sum(len(g) * (m - grand) ** 2 for g, m in zip(groups, means))
+    ssw = sum((x - m) ** 2 for g, m in zip(groups, means) for x in g)
+    if ssb + ssw == 0:
+        return None
+    msb, msw = ssb / (k - 1), ssw / (n - k)
+    n0 = (n - sum(len(g) ** 2 for g in groups) / n) / (k - 1)
+    return max(0.0, (msb - msw) / (msb + (n0 - 1) * msw))
+
+
+def transcripts_needed(*, rho: Optional[float], tasks_per_transcript: float, min_effective: int) -> Optional[int]:
+    """Transcripts needed so the effective number of items reaches `min_effective`
+    (B.3: eval.min_effective_tasks). A transcript of m correlated items is worth
+    m / (1 + (m - 1) rho) independent ones (the design effect). The design effect is
+    clamped at 1: for m < 1 it would fall below 1 and credit a transcript with more
+    effective items than it has. m is the mean items per transcript, so variation in
+    cluster size (which raises the design effect) is ignored. None when there is
+    nothing to size from: no rho, or m <= 0."""
+    m = tasks_per_transcript
+    if rho is None or m <= 0:
+        return None
+    return math.ceil(min_effective / (m / max(1.0, 1 + (m - 1) * rho)))
+
+
 def _at_least(name: str, value: Optional[float], threshold: float, reasons: list[str]) -> bool:
     """value >= threshold; a missing (None/NaN) value fails. Failures add a reason."""
     if value is None or math.isnan(value):

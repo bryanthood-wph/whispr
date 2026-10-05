@@ -94,10 +94,10 @@ class TestArtifacts(_Base):
         b = [ref("b.0.0", "b", "Deck ships Friday", "ship the Oracle forms deck", type="decision")]
         rendered = [
             R._prompt(self.cfg, "reference", self.prep),
-            R._prompt(self.cfg, "matcher", self.prep, ITEMS_A=R._item_json(a[0], with_id=True),
-                      ITEMS_B=R._item_json(b[0], with_id=True)),
-            R._prompt(self.cfg, "presence", self.prep, ITEM=R._item_json(a[0], with_id=False)),
-            R._prompt(self.cfg, "presence", self.prep, ITEM=R._item_json(b[0], with_id=False)),
+            R._prompt(self.cfg, "matcher", self.prep, ITEMS_A=R.item_json(a[0], with_id=True),
+                      ITEMS_B=R.item_json(b[0], with_id=True)),
+            R._prompt(self.cfg, "presence", self.prep, ITEM=R.item_json(a[0], with_id=False)),
+            R._prompt(self.cfg, "presence", self.prep, ITEM=R.item_json(b[0], with_id=False)),
         ]
         body = self.prep.render()
         end = rendered[0].index(body) + len(body)

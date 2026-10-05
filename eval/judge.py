@@ -46,6 +46,15 @@ DECISIONS: dict[str, tuple[str, ...]] = {
     "actionable": ("yes", "no"),
     "my_actions": ("yes", "no"),
 }
+# The answer that flags no error, per decision; any other answer is detected as one.
+# For presence that makes a partial a detection: the calibration convention the pilot
+# contract fixes (a plant that leaves a task partial was caught). The primary endpoint
+# instead scores a partial as 0.5 (PRESENT_VALUE), and as 0 only in a sensitivity
+# analysis (eval/PREREGISTRATION.md, primary endpoint).
+PASS = {"present": "yes", "supported": "supported", "attribution": "no", "task_owner": "yes",
+        "task_due": "yes", "actionable": "yes", "my_actions": "yes"}
+# Presence answers as outcome values (eval/records.py Outcome.value: 1 hit, 0.5 partial, 0 miss).
+PRESENT_VALUE = {"yes": 1.0, "partial": 0.5, "no": 0.0}
 # (decision, answer): the only verdict that carries missing ids.
 MISSING = ("my_actions", "no")
 
@@ -161,12 +170,20 @@ def _missing(decision: str, out: dict) -> tuple[str, ...]:
     return tuple(dict.fromkeys(out.get("missing", [])))
 
 
-def decide(decision: str, prompt: str, cfg: dict, ask: Callable, *,
-           system_prompt: Optional[str] = None) -> Verdict:
-    vocab = _vocabulary(decision)
+def check(cfg: dict) -> None:
+    """Raise JudgeError for a configuration no answer can fix: a judge role missing from
+    `models`, or a judge prompt whose decision blocks don't match DECISIONS. Callers
+    run it before any spend; `decide` runs it too."""
     unknown = [r for r in TIERS if r not in cfg["models"]]
     if unknown:
         raise JudgeError(f"config models lacks judge roles {unknown}")
+    _parsed_template(cfg["prompts"]["judge"])
+
+
+def decide(decision: str, prompt: str, cfg: dict, ask: Callable, *,
+           system_prompt: Optional[str] = None) -> Verdict:
+    vocab = _vocabulary(decision)
+    check(cfg)
     schema, jc = load_schema(cfg, "judge"), cfg["eval"]["judge"]
 
     def call(role: str, replicate: int = 0) -> dict:
@@ -185,7 +202,13 @@ def decide(decision: str, prompt: str, cfg: dict, ask: Callable, *,
     return Verdict(decision, out["answer"], tier, answers, _missing(decision, out), out["confidence"])
 
 
-def _rates(pairs: Iterable[tuple[str, bool]]) -> dict[str, float]:
+def flags_error(decision: str, value: str) -> bool:
+    """Whether an answer flags an error (see PASS). JudgeError for an unknown decision."""
+    _vocabulary(decision)
+    return value != PASS[decision]
+
+
+def rates(pairs: Iterable[tuple[str, bool]]) -> dict[str, float]:
     """Share of True per key, keys in first-seen order."""
     seen: dict[str, list[bool]] = defaultdict(list)
     for key, flag in pairs:
@@ -195,7 +218,7 @@ def _rates(pairs: Iterable[tuple[str, bool]]) -> dict[str, float]:
 
 def escalation_rates(verdicts: Iterable[Verdict]) -> dict[str, float]:
     """Per decision, the share of verdicts not settled by the first tier (B.5, B.7)."""
-    return _rates((v.decision, v.tier != FIRST) for v in verdicts)
+    return rates((v.decision, v.tier != FIRST) for v in verdicts)
 
 
 # --- claims -------------------------------------------------------------------------
@@ -455,12 +478,12 @@ def plant_positives(prep: Prepared, seed: int, n: int) -> list[str]:
 
 def sensitivity(detections: Iterable[tuple[str, bool]]) -> dict[str, float]:
     """Per planted kind, the share of plants the judge caught."""
-    return _rates(detections)
+    return rates(detections)
 
 
 def specificity(positives: Iterable[tuple[str, bool]]) -> dict[str, float]:
     """Per decision, the share of true items (planted positives) not flagged as errors."""
-    return _rates((decision, not flagged) for decision, flagged in positives)
+    return rates((decision, not flagged) for decision, flagged in positives)
 
 
 def calibrate(detections: Iterable[tuple[str, bool]], positives: Iterable[tuple[str, bool]]

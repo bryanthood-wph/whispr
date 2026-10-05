@@ -25,7 +25,7 @@ import shutil
 import subprocess
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -62,6 +62,10 @@ class CallResult:
     request_key: Optional[str] = None
     cost_is_upper_bound: bool = False
     raw_result: dict = field(default_factory=dict, repr=False)
+
+
+# The token counts a ledger row carries (a CallResult's fields, so a new one shows up here).
+TOKEN_FIELDS = tuple(f.name for f in fields(CallResult) if f.name.endswith("_tokens"))
 
 
 def resolve_executable(name: str) -> str:
@@ -104,6 +108,33 @@ def append_jsonl(path: Path, record: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(record) + "\n")
+
+
+def read_jsonl_counted(path: Path) -> tuple[list[dict], int]:
+    """(the readable rows of a JSONL `append_jsonl` wrote, unreadable line count). A
+    missing file is empty; a torn line (a process killed mid-append) or a non-object
+    line is skipped and counted, never fatal."""
+    if not path.exists():
+        return [], 0
+    rows, bad = [], 0
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                row = None
+            if isinstance(row, dict):
+                rows.append(row)
+            else:
+                bad += 1
+    return rows, bad
+
+
+def read_jsonl(path: Path) -> list[dict]:
+    """The readable rows of a JSONL `append_jsonl` wrote (see read_jsonl_counted)."""
+    return read_jsonl_counted(path)[0]
 
 
 def refused_env(cfg: dict) -> list[str]:

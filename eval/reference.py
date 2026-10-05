@@ -84,7 +84,9 @@ class Reference:
       not dropped).
     - `mine_disagreements`: extracted items whose model `mine` flag differed from the
       derived one (set by `build`).
-    - `rejected`: items quote_check discarded (set by `build`)."""
+    - `rejected`: items quote_check discarded (set by `build`).
+    - `kept`: family -> the items quote_check kept, the lists the matcher saw (set by
+      `build`; matcher calibration reuses them)."""
     accepted: tuple[RefItem, ...]
     contested: tuple[RefItem, ...]
     both_found: frozenset[str]
@@ -94,6 +96,7 @@ class Reference:
     duplicates: tuple[tuple[str, ...], ...] = ()
     mine_disagreements: int = 0
     rejected: tuple[RefItem, ...] = ()
+    kept: dict[str, tuple[RefItem, ...]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------- prompts and schemas
@@ -115,9 +118,9 @@ def _role(cfg: dict, family: str) -> str:
     return FAMILY_ROLES[family]
 
 
-def _item_json(item: RefItem, *, with_id: bool) -> str:
-    """One item as the matcher and presence prompts show it (importance is not shown:
-    it bears on neither sameness nor presence)."""
+def item_json(item: RefItem, *, with_id: bool) -> str:
+    """One item as the matcher, presence and judge prompts show it (importance is not
+    shown: it bears on neither sameness nor presence)."""
     body = {name: getattr(item, name) for name in _MODEL_FIELDS if name != "importance"}
     return json.dumps({"id": item.id, **body} if with_id else body, ensure_ascii=False)
 
@@ -257,8 +260,8 @@ def _match(a: Sequence[RefItem], b: Sequence[RefItem], prep: Prepared, cfg: dict
     if not a or not b:
         return []
     prompt = _prompt(cfg, "matcher", prep,
-                     ITEMS_A="\n".join(_item_json(i, with_id=True) for i in a),
-                     ITEMS_B="\n".join(_item_json(i, with_id=True) for i in b))
+                     ITEMS_A="\n".join(item_json(i, with_id=True) for i in a),
+                     ITEMS_B="\n".join(item_json(i, with_id=True) for i in b))
     out = ask(MATCHER_ROLE, prompt, load_schema(cfg, "matcher"), replicate=replicate)
     a_by_id, b_by_id = {i.id: i for i in a}, {i.id: i for i in b}
     used: set[str] = set()
@@ -317,7 +320,7 @@ def consensus(a: Sequence[RefItem], b: Sequence[RefItem], pairs: Sequence[tuple[
             continue
         if item.id in paired_b or (types is not None and item.type not in types):
             continue
-        prompt = _prompt(cfg, "presence", prep, ITEM=_item_json(item, with_id=False))
+        prompt = _prompt(cfg, "presence", prep, ITEM=item_json(item, with_id=False))
         verdicts[item.id] = {fam: ask(_role(cfg, fam), prompt, schema, replicate=replicate)["verdict"]
                              for fam in FAMILY_ROLES}
         if all(v == PRESENT for v in verdicts[item.id].values()):
@@ -359,7 +362,8 @@ def build(prep: Prepared, cfg: dict, ask: Ask, *, replicate: int = 0,
     a, b = kept["a"], kept["b"]
     pairs = match(a, b, prep, cfg, ask, replicate=replicate)
     ref = consensus(a, b, pairs, prep, cfg, ask, replicate=replicate, types=types)
-    return replace(ref, rejected=tuple(rejected), mine_disagreements=disagreements)
+    return replace(ref, rejected=tuple(rejected), mine_disagreements=disagreements,
+                   kept={family: tuple(items) for family, items in kept.items()})
 
 
 # ---------------------------------------------------------------- stability

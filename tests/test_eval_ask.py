@@ -45,14 +45,14 @@ class TestAsk(unittest.TestCase):
         self.assertEqual(len(keys), 3)
 
     def test_ask_caches_per_replicate_and_reports_to_the_guard(self):
-        seen = []
-        ask = make_ask(self.cfg, ledger=self.ledger, cache_dir=self.root / "cache",
-                       before_call=lambda key, cap: seen.append(cap))
+        seen, cap = [], self.cfg["eval"]["max_budget_per_call_usd"]
+        ask = make_ask(self.cfg, ledger=self.ledger, cache_dir=self.root / "cache", max_budget_usd=cap,
+                       before_call=lambda key, c: seen.append(c))
         self.assertEqual(ask("judge", "P", SCHEMA), {"ok": True})
         ask("judge", "P", SCHEMA)                                  # cache hit
         ask("judge", "P", SCHEMA, replicate=1)                     # a real second sample
         self.assertEqual(self.calls_made(), 2)
-        self.assertEqual(seen, [self.cfg["eval"]["max_budget_per_call_usd"]] * 2)
+        self.assertEqual(seen, [cap] * 2)
         argv_model = json.loads(self.ledger.read_text(encoding="utf-8").splitlines()[0])["model"]
         self.assertEqual(argv_model, self.cfg["models"]["judge"]["model"])
 

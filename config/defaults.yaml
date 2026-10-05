@@ -149,7 +149,18 @@ eval:
   run_tag: 'eval-{stage}'
   # Hard spend cap per stage (B.9); the overall limit is budget_usd - stop_margin_usd.
   stages:
-    pilot: {cap_usd: 3}
+    pilot:
+      cap_usd: 3
+      # #13 per-call --max-budget-usd for this stage (else eval.max_budget_per_call_usd). The
+      # guard reserves the full per-call cap against the stage cap, so $1.50 would stop the
+      # $3 pilot after about $1.50 of real spend.
+      max_budget_per_call_usd: 0.75
+      judge_subjects: 3       # #13 judged items per decision per summary (present: plus every reference my-task)
+      plants_per_kind: 1      # #13 planted errors per kind per transcript (calibration)
+      positives: 3            # #13 verbatim transcript claims planted per transcript (specificity)
+      # #13 per-call cap of the --setting-sources probe's two tiny calls. Small, because a
+      # probe variant the CLI rejects reports no cost and is booked at its full cap.
+      probe_max_budget_usd: 0.10
   scoring:
     # B.6: "Wilson intervals are used only for unweighted small cells." A stratum whose
     # units all sit in one cell (so equal design weights) and number at most this many

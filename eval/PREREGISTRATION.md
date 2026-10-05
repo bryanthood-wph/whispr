@@ -276,4 +276,4 @@ Amendments log:
 
 | Date | Change | Reason | Seen-results (yes/no) |
 |---|---|---|---|
-| | | | |
+| 2026-10-05 | The pilot's per-call cap is `eval.stages.pilot.max_budget_per_call_usd` (0.75), not `eval.max_budget_per_call_usd` (1.50); other stages keep the global key | The budget guard reserves each call's full cap against the pilot's $3 stage cap, so 1.50 would stop the pilot after about $1.50 of real spend (#13) | no |

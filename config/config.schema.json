@@ -149,8 +149,14 @@
         "run_tag": {"$ref": "#/$defs/str"},
         "stages": {
           "type": "object", "additionalProperties": false, "required": ["pilot"],
-          "properties": {"pilot": {"type": "object", "additionalProperties": false, "required": ["cap_usd"],
-                                   "properties": {"cap_usd": {"$ref": "#/$defs/money"}}}}
+          "properties": {"pilot": {"type": "object", "additionalProperties": false,
+                                   "required": ["cap_usd", "judge_subjects", "plants_per_kind", "positives", "probe_max_budget_usd"],
+                                   "properties": {"cap_usd": {"$ref": "#/$defs/money"},
+                                                  "max_budget_per_call_usd": {"$ref": "#/$defs/money"},
+                                                  "probe_max_budget_usd": {"$ref": "#/$defs/money"},
+                                                  "judge_subjects": {"type": "integer", "minimum": 1},
+                                                  "plants_per_kind": {"type": "integer", "minimum": 1},
+                                                  "positives": {"type": "integer", "minimum": 1}}}}
         },
         "scoring": {
           "type": "object", "additionalProperties": false, "required": ["wilson_max_units"],

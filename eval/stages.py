@@ -2,9 +2,10 @@
 any model call, so `run --dry-run` can show every request, its cache state and the
 worst-case spend.
 
-pilot (#11 skeleton): each pilot transcript, prepared, through the extractor with the
-CLI's default system prompt and with the minimal one (H-S2). Reference, matcher and
-judge steps join the pilot when #15/#16 land.
+pilot: each pilot transcript, prepared, through the extractor with the CLI's default
+system prompt and with the minimal one (H-S2). These are the only calls known before
+the run: the reference, judge and calibration calls depend on the extract outputs, so
+eval/pilot.py makes them at run time.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from pipeline import extract, prepare, prompts
 
 DEFAULT_SYSTEM = "cli-default"
 MINIMAL_SYSTEM = "minimal"
+EXTRACTOR = "extractor"          # the config `models` role every extract call runs on
 
 
 @dataclass
@@ -30,7 +32,8 @@ class Job:
     key: str
 
 
-def _system_variants(cfg: dict) -> dict[str, Optional[str]]:
+def system_variants(cfg: dict) -> dict[str, Optional[str]]:
+    """H-S2's two extract system prompts by label: the CLI default (None) and the minimal one."""
     return {DEFAULT_SYSTEM: None, MINIMAL_SYSTEM: prompts.load(cfg["prompts"]["system_minimal"])}
 
 
@@ -41,7 +44,7 @@ def plan(stage: str, cfg: dict, sample: Sample, frame: list[FrameItem]) -> list[
     jobs = []
     for unit_id in sample.pilot:
         prep = prepare.prepare([prepare.parse(Path(by_id[unit_id].path))], cfg)
-        for label, system in _system_variants(cfg).items():
-            req = extract.build_request(prep, cfg, role="extractor", system_prompt=system)
-            jobs.append(Job(unit_id, label, "extractor", prep, system, req.key))
+        for label, system in system_variants(cfg).items():
+            req = extract.build_request(prep, cfg, role=EXTRACTOR, system_prompt=system)
+            jobs.append(Job(unit_id, label, EXTRACTOR, prep, system, req.key))
     return jobs

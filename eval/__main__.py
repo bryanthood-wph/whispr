@@ -4,6 +4,7 @@
                                or spend has reached the stop limit
   sample [--write]             freeze the frame, derive low-mic, draw the sample
   run --stage S [--dry-run]    run a stage; --dry-run plans it with zero model calls
+                               (pilot: probe, every step, then report.json/.md in results/<run>/)
   resolve RUN_ID --note TEXT   acknowledge a failed run
 
 Scored runs start only from a one-shot scheduled task (B.9), never a Claude session.
@@ -19,7 +20,7 @@ from pathlib import Path
 
 from eval import frame as F
 from eval import ledger as L
-from eval import preflight, stages
+from eval import pilot, preflight, stages
 from pipeline import calls, extract
 from pipeline.config import load_config
 from whispr.fileio import atomic_write_text
@@ -78,7 +79,7 @@ def cmd_run(cfg: dict, args) -> int:
     items, sample, state = _sample(cfg)
     jobs = stages.plan(args.stage, cfg, sample, items)
     cache = L.eval_dir(cfg) / "cache"
-    cap = cfg["eval"]["max_budget_per_call_usd"]
+    cap = L.call_cap(cfg, args.stage)
     schema = extract.load_schema(cfg)
     cached = {j.key for j in jobs if calls.cached_entry(cache, j.key, schema)}
     calls_needed = [j for j in jobs if j.key not in cached and not j.prepared.is_stub]
@@ -88,6 +89,8 @@ def cmd_run(cfg: dict, args) -> int:
     total, by_stage = L.tally(cfg)
     print(f"stage {args.stage}: {len(jobs)} jobs, {len(calls_needed)} to call "
           f"({len(cached)} cached, stubs never call)")
+    if args.stage == "pilot":
+        print(f"  {pilot.DRY_RUN_NOTE}")
     worst, stage_cap = cap * len(calls_needed), cfg["eval"]["stages"][args.stage]["cap_usd"]
     print(f"worst-case spend ${worst:.2f} (stage cap ${stage_cap:.2f}, ${by_stage.get(args.stage, 0.0):.2f} used;"
           f" spent ${total:.2f} of limit ${L.budget_limit(cfg):.2f})")
@@ -107,20 +110,10 @@ def cmd_run(cfg: dict, args) -> int:
             print(f"REFUSED: {r}")
         return 2
 
-    out_dir = L.eval_dir(cfg) / "results"
-    check = L.guard(cfg, args.stage)
     with L.Run(cfg, args.stage, preflight.provenance()) as run:
-        run_dir = out_dir / run.run_id
+        run_dir = L.eval_dir(cfg) / "results" / run.run_id
         run_dir.mkdir(parents=True)
-        for j in jobs:
-            if j.prepared.is_stub:
-                continue
-            res = extract.extract(j.prepared, cfg, role=j.role, max_budget_usd=cap, ledger=L.ledger_path(cfg),
-                                  system_prompt=j.system_prompt, cache_dir=cache, before_call=check)
-            atomic_write_text(run_dir / f"{j.unit_id}--{j.label}.json",
-                              json.dumps({**asdict(res), "unit_id": j.unit_id, "label": j.label, "role": j.role},
-                                         ensure_ascii=False, indent=1))
-        print(f"completed {run.run_id}; spend now ${L.spent(cfg):.2f}")
+        pilot.execute(cfg, run, run_dir, jobs, cache, cap)   # stages.plan refuses every other stage
     return 0
 
 

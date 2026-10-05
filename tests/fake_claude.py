@@ -3,6 +3,9 @@
 Behavior comes from FAKE_CLAUDE_MODE: ok | apikey | noinit | error | nostructured | hang.
 FAKE_CLAUDE_ARGS_OUT, if set, receives {"argv", "stdin", "env_keys"} as JSON.
 FAKE_CLAUDE_STRUCTURED, if set, is the structured_output JSON to return.
+FAKE_CLAUDE_BY_PROPERTY, if set, is {property: structured_output}: the first entry whose
+property the --json-schema declares wins over FAKE_CLAUDE_STRUCTURED. An entry with
+"answer": null answers the prompt's first "ALLOWED ANSWERS:" option (the judge prompt).
 """
 
 import json
@@ -23,6 +26,12 @@ if mode != "noinit":
 if mode == "hang":
     time.sleep(60)
 structured = json.loads(os.environ.get("FAKE_CLAUDE_STRUCTURED", '{"ok": true}'))
+schema = json.loads(sys.argv[sys.argv.index("--json-schema") + 1]) if "--json-schema" in sys.argv else {}
+by_property = json.loads(os.environ.get("FAKE_CLAUDE_BY_PROPERTY", "{}"))
+structured = next((out for prop, out in by_property.items() if prop in schema.get("properties", {})), structured)
+if isinstance(structured, dict) and "answer" in structured and structured["answer"] is None:
+    allowed = stdin.rsplit("ALLOWED ANSWERS:", 1)[-1].splitlines()[0]
+    structured = {**structured, "answer": allowed.split("|")[0].strip()}
 print(json.dumps({
     "type": "result", "is_error": mode == "error", "total_cost_usd": 0.0123,
     "result": "boom" if mode == "error" else json.dumps(structured),

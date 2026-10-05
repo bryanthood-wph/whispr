@@ -252,7 +252,9 @@ class TestLedger(_Base):
                     pass
 
 
-class TestCli(_Base):
+class CliBase(_Base):
+    """`python -m eval` over a populated, frozen frame (shared with test_eval_pilot)."""
+
     def setUp(self):
         super().setUp()
         self.ov["eval"] = {"sample": {"frame_cutoff": "2026-09-30"}}   # ended: the frame freezes
@@ -266,6 +268,16 @@ class TestCli(_Base):
             code = cli.main(["--overlay", str(self.ov_path), *argv])
         return code, buf.getvalue()
 
+    def run_dir(self) -> Path:
+        (run_dir,) = (L.eval_dir(self.cfg) / "results").iterdir()
+        return run_dir
+
+    def report(self) -> dict:
+        return json.loads((self.run_dir() / "report.json").read_text(encoding="utf-8"))
+
+
+class TestCli(CliBase):
+
     def test_dry_run_makes_zero_calls(self):
         with mock.patch("pipeline.models.call", side_effect=AssertionError("model called")) as call:
             code, out = self.main("run", "--stage", "pilot", "--dry-run")
@@ -276,7 +288,7 @@ class TestCli(_Base):
         self.assertFalse(L.ledger_path(self.cfg).exists())
 
     def calls_made(self):
-        return [r for r in L._rows(L.ledger_path(self.cfg)) if r.get("event") != L.RESERVE]
+        return [r for r in L.rows(self.cfg) if r.get("event") != L.RESERVE]
 
     def test_stage_tag_is_required(self):
         tags = {"status": "", "tag": "v0.1.0"}
@@ -292,14 +304,34 @@ class TestCli(_Base):
         self.assertIn("REFUSED", out)
 
     def test_pilot_end_to_end_then_budget_stop_needs_resolution(self):
-        with mock.patch("eval.preflight.refusals", return_value=[]), \
+        # The fake CLI answers every pilot schema: one my-task per transcript, quoted from
+        # TURNS, from both reference families; judges give the first allowed answer.
+        quote = FILLER.split(" and ")[0]
+        item = {"type": "task", "text": "Walk through the plan", "owner": "Me", "owner_basis": "volunteered",
+                "mine": True, "due": None, "quote": quote, "importance": 2}
+        by_property = {"ok": {"ok": True}, "items": {"items": [item]}, "pairs": {"pairs": []},
+                       "verdict": {"verdict": "present"}, "answer": {"answer": None, "confidence": 0.9}}
+        self.ov["eval"].update({"judge": {"samples": 1}, "stages": {"pilot": {"judge_subjects": 1}}})
+        self.ov_path.write_text(yaml.safe_dump(self.ov), encoding="utf-8")
+        with mock.patch.dict(os.environ, {"FAKE_CLAUDE_BY_PROPERTY": json.dumps(by_property)}), \
+             mock.patch("eval.preflight.refusals", return_value=[]), \
              mock.patch("eval.preflight.provenance", return_value={"commit": "abc", "tags": ["eval-pilot"]}):
             code, out = self.main("run", "--stage", "pilot")
             self.assertEqual(code, 0, out)
-            self.assertEqual(len(self.calls_made()), 6)
+            first = len(self.calls_made())
+            run_dir, rep = self.run_dir(), self.report()
+            self.assertTrue((run_dir / "report.md").is_file() and (run_dir / "pilot.jsonl").is_file())
+            self.assertEqual({v["extract_calls"] for v in rep["h_s2"].values()}, {3})   # 3 transcripts each
+            self.assertTrue(rep["probe"]["default"]["ok"] and rep["probe"]["no_settings"]["ok"])
+            self.assertEqual(rep["errors"], 0)
+            # Every call this run made is in the report: the steps' plus the probe's two.
+            steps = sum(c["calls"] for c in rep["cost_by_step"].values())
+            self.assertEqual((steps, rep["probe_cost"]["calls"], rep["unattributed_cost"]["calls"]), (first - 2, 2, 0))
+            self.assertEqual(set(rep["cost_by_step"]), {"extract", "reference", "judge", "calibration"})
             self.assertEqual(self.main("status")[0], 0)
-            code, out = self.main("run", "--stage", "pilot")         # all cached: no new spend
-            self.assertEqual(len(self.calls_made()), 6)
+            code, out = self.main("run", "--stage", "pilot")         # all cached: only the uncached probe runs
+            self.assertEqual(code, 0, out)
+            self.assertEqual(len(self.calls_made()), first + 2)
             self.assertIn("0 to call", self.main("run", "--stage", "pilot", "--dry-run")[1])
 
             self.ov["eval"]["stages"] = {"pilot": {"cap_usd": 0.01}}

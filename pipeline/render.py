@@ -11,6 +11,8 @@ and are not rendered.
 
 from __future__ import annotations
 
+from typing import Optional
+
 MY_ACTIONS = "My Actions"
 OTHER_TASKS = "Other Tasks"
 FACTS = "Key Facts"
@@ -73,14 +75,24 @@ def _block(heading: str, lines: list[str]) -> str:
     return (f"## {heading}\n\n" + "\n".join(lines)) if lines else f"## {heading}"
 
 
+# The extract's task lists, and whether each holds the recording owner's tasks.
+TASK_LISTS = (("my_actions", True), ("other_tasks", False))
+
+
+def tasks(doc: dict, *, mine: Optional[bool] = None) -> list[tuple[str, str]]:
+    """(action, rendered task) for every task in `doc`, my actions first; only my
+    actions (mine=True) or only other tasks (mine=False) when asked."""
+    return [(t["action"], task(t, mine=m)) for key, m in TASK_LISTS if mine in (None, m) for t in doc[key]]
+
+
 def render(doc: dict) -> str:
     """Headline, points and facts use the same per-field functions as claim_parts."""
     blocks = [headline(doc)]
     blocks += [_block(s["heading"], [point(p) for p in s["points"]]) for s in doc["sections"]]
     # My Actions is always shown, with "None" when empty (B.8); the others only when non-empty.
-    blocks.append(_block(MY_ACTIONS, [task(t, mine=True) for t in doc["my_actions"]] or [NONE]))
+    blocks.append(_block(MY_ACTIONS, [line for _, line in tasks(doc, mine=True)] or [NONE]))
     if doc["other_tasks"]:
-        blocks.append(_block(OTHER_TASKS, [task(t, mine=False) for t in doc["other_tasks"]]))
+        blocks.append(_block(OTHER_TASKS, [line for _, line in tasks(doc, mine=False)]))
     if doc["facts"]:
         blocks.append(_block(FACTS, [fact(f) for f in doc["facts"]]))
     return "\n\n".join(blocks) + "\n"
