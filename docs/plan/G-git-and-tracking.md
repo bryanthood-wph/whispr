@@ -129,3 +129,64 @@ worktree with:
 
 "Continue" means: read `RESUME.md`, verify the branch and SHA match, and
 pick up at that step.
+
+## G.6 Parallel builders and review cadence (user direction, 2026-10-04)
+
+**Who does what.** The main session is the **build manager**. It owns the
+interfaces (`eval/records.py`, config keys), the `rebuild` branch, every
+merge, GitHub, gates and `RESUME.md`. Builders never merge, push, touch
+GitHub, run `claude`, or create scheduled tasks.
+
+**What runs in parallel.** Code that spends nothing until a gate can be
+built ahead: Phase 2–3 code (#15–#18) runs against the fake CLI while the
+critical path (#11 → #13 pilot) moves. Spend still happens only through
+one-shot scheduled tasks, and only after its gate. If the pilot changes a
+design assumption, the affected built-ahead code is revised before it runs.
+
+**Builder roster** (least privilege, CLAUDE.md):
+
+| Role | Model / effort | Tools | Why |
+|---|---|---|---|
+| Builder (one per issue) | Opus 5.5 for statistics, judging and money paths; Sonnet 5.5 for docs and plumbing | read/edit/write **inside its own worktree** `C:\github\whispr-wt\<issue>-<slug>` on `feat/<issue>-<slug>`; run the unit tests there | builds one issue to its contract |
+| Verifier (one per builder output) | Opus 5.5, fresh context | **read-only**; may run the tests | checks the output against the issue's acceptance checks and the contract, independently of the builder |
+| Reviewers | the `/code-review` and `/simplify` skills, run by the manager | read-only finders; fixes applied by the manager | correctness, then cleanup |
+
+**Acceptance pipeline: every builder output passes all five before it merges.**
+1. **Contract tests.** The manager writes the contract (interfaces, config
+   keys, required test cases, known-answer checks) before the builder starts.
+   Contract tests the manager commits are checksummed, and a builder that
+   edits them fails the gate.
+2. **Green.** The full suite runs under `-W error::ResourceWarning`, plus
+   `python -m eval run --dry-run` once it exists.
+3. **Independent verification.** The verifier returns PASS or FAIL per
+   acceptance check, with evidence (`file:line` and the test that proves it).
+   A FAIL goes back to the builder with the finding. The G.5 iteration rules
+   apply to the builder: after two failed rounds it writes a hypothesis, and
+   a third failure labels the issue `blocked`.
+4. **`/code-review`**, tiered by risk (below).
+5. **`/simplify`**, for code diffs, after the review fixes; then the suite
+   runs again.
+
+**Review cadence (systematic, not ad hoc).**
+
+| Tier | What | Per feature, before merge | Why |
+|---|---|---|---|
+| H | spends money, auth, egress, budget/ledger, redaction, statistics and scoring, judging | `/code-review --effort high`, then `/simplify` | a silent bug here costs money, leaks data or yields a wrong verdict |
+| M | other pipeline or eval code | `/code-review --effort medium`, then `/simplify` | |
+| L | docs, config-only, tests-only | verifier only | no runtime behavior |
+
+- **Gate sweep.** At every gate stop, before `RESUME.md` is written,
+  `/code-review --effort high` and then `/simplify` run over the whole
+  `rebuild` diff since the previous gate tag (`gate-N`). This catches
+  cross-feature duplication and drift that per-feature reviews can't see.
+  Then `rebuild` is tagged `gate-N`.
+- **Retro review.** #8–#10 merged before this cadence existed and are tier
+  H, so they get one `/code-review --effort high` now.
+- **Triage.** A finding is fixed only if it clears a stated bar (a real
+  failure scenario, or a CLAUDE.md rule broken). Declined findings are
+  listed with reasons in the issue's closing comment. Imperfections are
+  acceptable if the pipeline works.
+
+**Merge conflicts.** Builders add config keys only in a subsection named
+for their issue. The manager merges one branch at a time, re-runs the suite
+after each merge, and resolves conflicts.
