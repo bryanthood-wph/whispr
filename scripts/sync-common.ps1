@@ -226,6 +226,11 @@ function New-ClaudeProcessStartInfo {
     $psi.RedirectStandardError  = $true
     $psi.UseShellExecute        = $false
     $psi.CreateNoWindow         = $true
+    # Jobs run on the user's normal Claude Code sign-in (decision 2026-10-04).
+    # A user-scope ANTHROPIC_API_KEY takes precedence over that login in the
+    # CLI, so drop it from this child's environment only — the variable itself
+    # is untouched for everything else on the machine.
+    [void]$psi.Environment.Remove('ANTHROPIC_API_KEY')
     return $psi
 }
 
