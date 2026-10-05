@@ -313,10 +313,10 @@ def _edit(doc: dict, parts: dict[tuple, str], path: tuple, new: str) -> str:
     return _changed_claim(doc, path, before)
 
 
-def _other_texts(doc: dict, skip: Optional[dict] = None) -> list[str]:
-    """The summary's free text other than task `skip`'s: every claim-bearing field and
-    every task's action and context."""
-    texts = [_get(doc, p) for p in _text_slots(doc)]
+def _other_texts(doc: dict, skip: Optional[dict] = None, *, points: bool = True) -> list[str]:
+    """The summary's free text other than task `skip`'s: every claim-bearing field
+    (section points only if `points`) and every task's action and context."""
+    texts = [_get(doc, p) for p in _text_slots(doc) if points or p[0] != "sections"]
     for lst, _ in render.TASK_LISTS:
         texts += [x for t in doc[lst] if t is not skip for x in (t["action"], t["context"])]
     return texts
@@ -329,19 +329,19 @@ def _held_elsewhere(doc: dict, phrase: str, skip: Optional[dict] = None) -> bool
     return any(rx.search(text) for text in _other_texts(doc, skip))
 
 
-def _restated_elsewhere(doc: dict, action: str, skip: dict) -> bool:
-    """A task's `action` is restated in some free text other than task `skip`'s: the
-    phrase itself, or a text holding at least planting.yaml `restated_min_overlap` of its
-    distinct words of `restated_min_word_chars` characters or more (a paraphrase). An
-    action with no such word is restated only by the phrase itself."""
+def _restates(text: str, action: str) -> bool:
+    """`text` restates a task's `action`: it holds the phrase itself, or at least
+    planting.yaml `restated_min_overlap` of the action's distinct words of
+    `restated_min_word_chars` characters or more (a paraphrase). An action with no such
+    word is restated only by the phrase itself."""
     cfg = planting()
 
-    def words(text: str) -> set[str]:
-        return {w for w in word_tokens(text) if len(w) >= cfg["restated_min_word_chars"]}
+    def words(s: str) -> set[str]:
+        return {w for w in word_tokens(s) if len(w) >= cfg["restated_min_word_chars"]}
+    if re.search(whole_words([action]), text, re.IGNORECASE):
+        return True
     mine = words(action)
-    need = cfg["restated_min_overlap"] * len(mine)
-    return _held_elsewhere(doc, action, skip) or bool(mine) and any(
-        len(mine & words(text)) >= need for text in _other_texts(doc, skip))
+    return bool(mine) and len(mine & words(text)) >= cfg["restated_min_overlap"] * len(mine)
 
 
 def _get(doc: dict, path: tuple):
@@ -385,10 +385,19 @@ def _owner_swap(doc: dict, rng: random.Random, people: _People) -> str:
 
 
 def _deleted_my_task(doc: dict, rng: random.Random) -> str:
-    """Delete a my-task that nothing else in the summary restates, other tasks
-    included (otherwise the item would still be present and the plant undetectable)."""
-    indexes = [i for i, t in enumerate(doc["my_actions"]) if not _restated_elsewhere(doc, t["action"], skip=t)]
-    return doc["my_actions"].pop(_pick(rng, indexes, "no my-task that only the My Actions section holds"))["action"]
+    """Delete a my-task from the whole summary: its My Actions entry, every section
+    whose heading restates it (`_restates`), and every other section point that restates
+    it (a section left with no point goes too). A task
+    restated where no whole entry can go (the headline, a fact, another task) is not
+    eligible: the item would still be present and the plant undetectable."""
+    indexes = [i for i, t in enumerate(doc["my_actions"])
+               if not any(_restates(text, t["action"]) for text in _other_texts(doc, t, points=False))]
+    action = doc["my_actions"].pop(_pick(rng, indexes, "no my-task that only My Actions and section points hold"))["action"]
+    doc["sections"] = [s for s in doc["sections"] if not _restates(s["heading"], action)]
+    for s in doc["sections"]:
+        s["points"] = [p for p in s["points"] if not _restates(p, action)]
+    doc["sections"] = [s for s in doc["sections"] if s["points"]]
+    return action
 
 
 def _changed_number(doc: dict, rng: random.Random) -> str:

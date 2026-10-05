@@ -251,13 +251,12 @@ class TestFix10Positives(unittest.TestCase):
 
 
 class TestFix11DeletedTaskDetectable(unittest.TestCase):
-    def test_my_task_restated_elsewhere_is_skipped(self):
+    def test_my_task_restated_elsewhere_is_deleted_there_too(self):
+        # Since 2026-10-05 a restating point goes with the task (was: the task was skipped).
         doc = _doc(sections=[{"heading": "Deck", "points": ["Pat will send the deck to Jamie tonight."]}])
-        with self.assertRaises(J.NotApplicable):
-            J.plant("deleted_my_task", doc, seed=1)
-        doc["my_actions"].append(dict(doc["my_actions"][0], action="Update the budget sheet"))
-        for seed in SEEDS:
-            self.assertEqual(J.plant("deleted_my_task", doc, seed=seed).target, "Update the budget sheet")
+        planted = J.plant("deleted_my_task", doc, seed=1)
+        self.assertEqual(planted.target, doc["my_actions"][0]["action"])
+        self.assertNotIn("send the deck", render.render(planted.doc).lower())
 
 
 # --- review fixes (d406c7c) -------------------------------------------------------
@@ -314,25 +313,42 @@ class TestReview4TaskElsewhere(unittest.TestCase):
     def test_an_action_of_short_words_needs_the_phrase_itself(self):
         # No word of 4+ characters: overlap proves nothing, so only the phrase restates it.
         mine = EXTRACT_SAMPLE["my_actions"][0]
+        ship, fix = "The team agreed to ship the deck Friday.", "Pat said they would fix it today."
         doc = _doc(my_actions=[dict(mine, action="Fix it")], other_tasks=[],
-                   sections=[{"heading": "Next", "points": ["The team agreed to ship the deck Friday."]}])
-        self.assertEqual(J.plant("deleted_my_task", doc, seed=1).target, "Fix it")
-        doc["sections"][0]["points"].append("Pat said they would fix it today.")
-        with self.assertRaises(J.NotApplicable):
-            J.plant("deleted_my_task", doc, seed=1)
+                   sections=[{"heading": "Next", "points": [ship, fix]}])
+        planted = J.plant("deleted_my_task", doc, seed=1)
+        self.assertEqual((planted.target, planted.doc["sections"][0]["points"]), ("Fix it", [ship]))
 
-    def test_a_paraphrase_in_a_point_counts_as_restated(self):
-        # Pilot 2026-10-05: the task deleted from My Actions was still a section point.
+    def test_the_task_goes_with_every_point_that_restates_it(self):
+        # Pilot 2026-10-05: 10 of 12 my-tasks were also a section point, in other words, so
+        # a plant that only emptied My Actions left the task present.
         mine = EXTRACT_SAMPLE["my_actions"][0]
-        doc = _doc(my_actions=[dict(mine, action="Read materials tagged in the project and report assessment")],
-                   other_tasks=[],
-                   sections=[{"heading": "Next", "points": ["Pat will read all materials tagged to them tonight "
-                                                            "and report an assessment."]}])
+        action = "Read materials tagged in the project and report assessment"
+        keep = "The team agreed to ship the deck Friday."
+        doc = _doc(my_actions=[dict(mine, action=action)], other_tasks=[],
+                   sections=[{"heading": "Next", "points": [keep, "Pat will read all materials tagged to them "
+                                                                  "tonight and report an assessment."]},
+                             {"heading": "Later", "points": ["Pat to report an assessment of tagged materials."]}])
+        planted = J.plant("deleted_my_task", doc, seed=1)
+        self.assertEqual(planted.target, action)
+        self.assertEqual(planted.doc["my_actions"], [])
+        self.assertEqual(planted.doc["sections"], [{"heading": "Next", "points": [keep]}])   # "Later" emptied
+
+    def test_a_section_whose_heading_restates_the_task_goes_whole(self):
+        mine = EXTRACT_SAMPLE["my_actions"][0]
+        keep = {"heading": "Budget", "points": ["The team agreed to ship the deck Friday."]}
+        doc = _doc(my_actions=[dict(mine, action="Book the review room")], other_tasks=[],
+                   sections=[keep, {"heading": "Book the review room", "points": ["Thursday works for Pat."]}])
+        planted = J.plant("deleted_my_task", doc, seed=1)
+        self.assertEqual(planted.doc["sections"], [keep])
+        self.assertNotIn("review room", render.render(planted.doc).lower())
+
+    def test_a_task_the_headline_restates_is_not_deleted(self):
+        mine = EXTRACT_SAMPLE["my_actions"][0]
+        doc = _doc(my_actions=[dict(mine, action="Read materials tagged in the project")], other_tasks=[],
+                   headline="Pat reads the tagged project materials tonight")
         with self.assertRaises(J.NotApplicable):
             J.plant("deleted_my_task", doc, seed=1)
-        doc["sections"][0]["points"] = ["The team agreed to ship the deck Friday."]
-        self.assertEqual(J.plant("deleted_my_task", doc, seed=1).target,
-                         "Read materials tagged in the project and report assessment")
 
 
 class TestReview5NoConfigKey(unittest.TestCase):
