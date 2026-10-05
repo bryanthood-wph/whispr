@@ -15,7 +15,7 @@ from pipeline.config import load_config
 from pipeline_helpers import fake_cli, overlay, scrubbed_env
 
 
-class TestModelsCall(unittest.TestCase):
+class _CallBase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
@@ -41,6 +41,9 @@ class TestModelsCall(unittest.TestCase):
     def _ledger(self):
         return [json.loads(l) for l in self.ledger.read_text(encoding="utf-8").splitlines()] if self.ledger.exists() else []
 
+
+
+class TestModelsCall(_CallBase):
     def test_ok_returns_structured_and_records_cost(self):
         out = self._call(json_schema={"type": "object"}, request_key="k1")
         self.assertEqual(out.structured, {"ok": True})
@@ -58,6 +61,7 @@ class TestModelsCall(unittest.TestCase):
         self.assertEqual(argv[argv.index("--max-budget-usd") + 1], "0.50")
         self.assertEqual(argv[argv.index("--system-prompt") + 1], "SYS")
         self.assertIn("--json-schema", argv)
+        self.assertNotIn("--append-system-prompt-file", argv)      # no split line: sent whole
         self.assertNotIn("--effort", argv)  # extractor effort is null in defaults
         prefixes = tuple(self.cfg["auth"]["strip_env_prefixes"])
         self.assertFalse([k for k in seen["env_keys"] if k.upper().startswith(prefixes)])
@@ -161,6 +165,52 @@ class TestModelsCall(unittest.TestCase):
         self.assertIn("timed out", str(ctx.exception))
         row = self._ledger()[0]
         self.assertEqual((row["cost_usd"], row["cost_is_upper_bound"]), (0.5, True))
+
+
+class TestSplitPrompt(_CallBase):
+    PROMPT = "CONTEXT\nTRANSCRIPT\nMe: hello\n\nQUESTION\nIs it there?\nALLOWED ANSWERS: yes|no\n"
+
+    def test_shared_prefix_goes_to_the_cached_system_prompt(self):
+        models.call(self.cfg, "judge", self.PROMPT, max_budget_usd=0.5, ledger=self.ledger,
+                    json_schema={"type": "object"}, system_prompt="SYS")
+        seen = json.loads(self.args_out.read_text(encoding="utf-8"))
+        self.assertEqual(seen["system_append"], "CONTEXT\nTRANSCRIPT\nMe: hello\n\n")
+        self.assertEqual(seen["stdin"], "QUESTION\nIs it there?\nALLOWED ANSWERS: yes|no\n")
+        argv = seen["argv"]
+        self.assertEqual(argv[argv.index("--system-prompt") + 1], "SYS")    # the variant's prompt stays
+        self.assertFalse(Path(argv[argv.index("--append-system-prompt-file") + 1]).exists())
+
+    def test_prefix_file_is_removed_when_the_call_fails(self):
+        os.environ["FAKE_CLAUDE_MODE"] = "error"
+        with self.assertRaises(models.ModelCallError):
+            models.call(self.cfg, "judge", self.PROMPT, max_budget_usd=0.5, ledger=self.ledger)
+        argv = json.loads(self.args_out.read_text(encoding="utf-8"))["argv"]
+        self.assertFalse(Path(argv[argv.index("--append-system-prompt-file") + 1]).exists())
+
+    def test_prefix_file_is_removed_when_refused_before_launch(self):
+        work = models.data_dir(self.cfg, "prompt-parts")
+
+        def refuse():
+            raise RuntimeError("budget")
+        with self.assertRaises(RuntimeError):
+            models.call(self.cfg, "judge", self.PROMPT, max_budget_usd=0.5, ledger=self.ledger,
+                        before_launch=refuse)
+        self.assertFalse(self.args_out.exists())
+        self.assertEqual(list(work.glob("system-*")), [])
+
+    def test_split_is_before_the_last_split_line_and_never_at_the_start(self):
+        prompt = "A\nQUESTION\nB\nTHE ITEM\nC\n"
+        self.assertEqual(models.split_prompt(self.cfg, prompt), ("A\nQUESTION\nB\n", "THE ITEM\nC\n"))
+        self.assertEqual(models.split_prompt(self.cfg, "QUESTION\nB\n"), (None, "QUESTION\nB\n"))
+        self.assertEqual(models.split_prompt(self.cfg, "A QUESTION\nB\n"), (None, "A QUESTION\nB\n"))
+
+    def test_request_key_changes_only_for_a_split_prompt(self):
+        from pipeline import calls
+        whole = load_config(overlay={**overlay(self.root), "cli": {**fake_cli(), "cached_prefix_until": []}})
+        for prompt, differs in ((self.PROMPT, True), ("PROMPT TEXT", False)):
+            a = calls.request_key(self.cfg, "judge", prompt, {"type": "object"}, None)
+            b = calls.request_key(whole, "judge", prompt, {"type": "object"}, None)
+            self.assertEqual(a != b, differs, prompt)
 
 
 class TestResolveExecutable(unittest.TestCase):

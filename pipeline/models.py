@@ -15,16 +15,21 @@ and the event stream on stdout. Before and during each call this module:
   its budget cap, flagged as an upper bound, so the eval budget never undercounts,
   unless the CLI exited on its own without emitting a single event: events start
   before any API request, so such a call (rejected arguments, say) spent nothing.
+- sends a prompt's shared prefix (a transcript many calls repeat) as the CLI's appended
+  system prompt, which the CLI caches, and only the per-call rest over stdin
+  (`split_prompt`)
 
 The API path is deferred (README §3) and would sit behind this same `call` function.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass, field, fields
@@ -91,8 +96,23 @@ def child_env(cfg: dict) -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if not k.upper().startswith(prefixes)}
 
 
+def split_prompt(cfg: dict, prompt: str) -> tuple[Optional[str], str]:
+    """(the prompt's shared prefix, or None; the rest). `claude -p` sends stdin as one user
+    block cached only at its end, so a prefix many calls share would be re-written to the
+    prompt cache on every call (pilot 2026-10-05: each presence verdict wrote ~8k tokens
+    and read ~2k); the CLI does cache its system prompt. The split is before the last line
+    equal to one of cli.cached_prefix_until (a template's first per-call section, after
+    its shared text); a prompt without one, or starting with one, is not split."""
+    lines = prompt.splitlines(keepends=True)
+    marks = set(cfg["cli"]["cached_prefix_until"])
+    at = max((i for i, line in enumerate(lines) if line.rstrip("\r\n") in marks), default=0)
+    if not at:
+        return None, prompt
+    return "".join(lines[:at]), "".join(lines[at:])
+
+
 def build_args(cfg: dict, role: str, json_schema: Optional[dict], system_prompt: Optional[str],
-               max_budget_usd: float) -> list[str]:
+               max_budget_usd: float, system_append: Optional[Path] = None) -> list[str]:
     spec = cfg["models"][role]
     args = [resolve_executable(cfg["cli"]["executable"]), *cfg["cli"]["base_args"], "--model", spec["model"]]
     if spec["effort"]:
@@ -106,6 +126,8 @@ def build_args(cfg: dict, role: str, json_schema: Optional[dict], system_prompt:
         args += ["--json-schema", json.dumps(cli_schema, separators=(",", ":"))]
     if system_prompt is not None:
         args += ["--system-prompt", system_prompt]
+    if system_append is not None:     # a file: a transcript can pass Windows' 32k command-line limit
+        args += ["--append-system-prompt-file", str(system_append)]
     args += ["--max-budget-usd", f"{max_budget_usd:.2f}"]
     return args
 
@@ -160,8 +182,27 @@ def call(cfg: dict, role: str, prompt: str, *, max_budget_usd: float,
     it has run, a ledger row is always written, even if the CLI fails to start."""
     if refused := refused_env(cfg):
         raise ModelCallError(f"refusing to call the model: {refused[0]} is set (nested Claude session)")
+    launch = dict(max_budget_usd=max_budget_usd, ledger=ledger, json_schema=json_schema,
+                  system_prompt=system_prompt, request_key=request_key, before_launch=before_launch)
+    prefix, prompt = split_prompt(cfg, prompt)
+    if prefix is None:
+        return _launch(cfg, role, prompt, None, **launch)
+    # Beside the CLI's working directory, not in it: nothing per call where the CLI looks.
+    fd, name = tempfile.mkstemp(prefix="system-", suffix=".md", dir=data_dir(cfg, "prompt-parts"))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(prefix)
+        return _launch(cfg, role, prompt, Path(name), **launch)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(name)
 
-    args = build_args(cfg, role, json_schema, system_prompt, max_budget_usd)
+
+def _launch(cfg: dict, role: str, prompt: str, system_append: Optional[Path], *, max_budget_usd: float,
+            ledger: Path, json_schema: Optional[dict], system_prompt: Optional[str],
+            request_key: Optional[str], before_launch: Optional[Callable[[], None]]) -> CallResult:
+    """`call` once the prompt is split: `prompt` is the part sent over stdin."""
+    args = build_args(cfg, role, json_schema, system_prompt, max_budget_usd, system_append)
     spec = cfg["models"][role]
     approved = set(cfg["auth"]["approved_sources"])
     if before_launch:

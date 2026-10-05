@@ -7,7 +7,9 @@ index when it is nonzero. Base arguments are in it because they change how the C
 runs (setting sources, tools), so output made under other arguments is no hit.
 Repeated samples of one request (judge votes, the reference stability rerun) use
 replicate 1, 2, ... so each is a real call rather than a cache hit of the first;
-replicate 0 leaves the key exactly as it was. The model is the configured name; an alias
+replicate 0 leaves the key exactly as it was. A prompt sent in two parts
+(models.split_prompt) also keys the split point, so the same text sent whole is no hit;
+an unsplit prompt's key is unchanged. The model is the configured name; an alias
 such as "haiku" can resolve to a newer model later, so each entry records the model
 the CLI actually ran. Only output that passes the schema is returned or cached.
 
@@ -66,6 +68,9 @@ def request_key(cfg: dict, role: str, prompt: str, schema: dict, system_prompt: 
                "system_prompt": system_prompt, "schema": schema_sha(schema), "prompt": prompt}
     if replicate:
         request["replicate"] = replicate
+    prefix, _ = models.split_prompt(cfg, prompt)
+    if prefix is not None:          # delivered in two parts: a different request to the model
+        request["system_prefix_chars"] = len(prefix)
     return sha256_text(canonical(request))
 
 

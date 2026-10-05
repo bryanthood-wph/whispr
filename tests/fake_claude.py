@@ -4,7 +4,8 @@ Behavior comes from FAKE_CLAUDE_MODE: ok | apikey | noinit | error | nostructure
 badargs (rejects its arguments: stderr only, no events, exit 1) | hooksonly (one non-init
 event, then exit 1 with no result) | silenthang (no events, then hangs) | junk (a bare JSON
 value on stdout before the normal events).
-FAKE_CLAUDE_ARGS_OUT, if set, receives {"argv", "stdin", "env_keys"} as JSON.
+FAKE_CLAUDE_ARGS_OUT, if set, receives {"argv", "stdin", "system_append", "env_keys"} as JSON
+(system_append: the --append-system-prompt-file content, or null).
 FAKE_CLAUDE_STRUCTURED, if set, is the structured_output JSON to return.
 FAKE_CLAUDE_BY_PROPERTY, if set, is {property: structured_output}: the first entry whose
 property the --json-schema declares wins over FAKE_CLAUDE_STRUCTURED. An entry with
@@ -18,9 +19,14 @@ import time
 
 mode = os.environ.get("FAKE_CLAUDE_MODE", "ok")
 stdin = sys.stdin.read()
+system_append = None
+if "--append-system-prompt-file" in sys.argv:
+    with open(sys.argv[sys.argv.index("--append-system-prompt-file") + 1], encoding="utf-8") as fh:
+        system_append = fh.read()
 if os.environ.get("FAKE_CLAUDE_ARGS_OUT"):
     with open(os.environ["FAKE_CLAUDE_ARGS_OUT"], "w", encoding="utf-8") as fh:
-        json.dump({"argv": sys.argv[1:], "stdin": stdin, "env_keys": sorted(os.environ)}, fh)
+        json.dump({"argv": sys.argv[1:], "stdin": stdin, "system_append": system_append,
+                   "env_keys": sorted(os.environ)}, fh)
 
 if mode == "badargs":
     print("Error: --json-schema is not a valid JSON Schema (test)", file=sys.stderr)

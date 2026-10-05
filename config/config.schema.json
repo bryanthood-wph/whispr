@@ -53,10 +53,11 @@
       }
     },
     "cli": {
-      "type": "object", "additionalProperties": false, "required": ["executable", "base_args", "timeout_s"],
+      "type": "object", "additionalProperties": false, "required": ["executable", "base_args", "cached_prefix_until", "timeout_s"],
       "properties": {
         "executable": {"$ref": "#/$defs/str"},
         "base_args": {"$ref": "#/$defs/strs"},
+        "cached_prefix_until": {"$ref": "#/$defs/strs"},
         "timeout_s": {"type": "number", "minimum": 1}
       }
     },

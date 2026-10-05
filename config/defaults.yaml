@@ -33,6 +33,12 @@ cli:
   # Arguments for every call: print mode, machine-readable events, no tools, no MCP,
   # nothing persisted. The prompt goes over stdin; model/effort/schema/budget are added per call.
   base_args: ["-p", "--output-format", "stream-json", "--verbose", "--tools", "", "--strict-mcp-config", "--no-session-persistence"]
+  # Lines that open a template's first per-call section (presence.md, judge.md). A prompt
+  # holding one is split before it: the shared text above (call context, transcript,
+  # summary) goes to the CLI's cached system prompt, the rest over stdin
+  # (pipeline/models.py split_prompt; pilot 2026-10-05: one user block re-wrote the
+  # transcript to the prompt cache on every call).
+  cached_prefix_until: ["THE ITEM", "QUESTION"]
   timeout_s: 900
 
 models:
@@ -150,9 +156,10 @@ eval:
   # Hard spend cap per stage (B.9); the overall limit is budget_usd - stop_margin_usd.
   stages:
     pilot:
-      # $3 (B.9) plus $0.75: the first pilot run (2026-10-05) was booked $0.75 for a call
-      # the CLI rejected before starting (no spend); see the preregistration amendments.
-      cap_usd: 3.75
+      # $3 (B.9) plus $0.75 (a booking for a call the CLI rejected before starting), raised
+      # to $15 on 2026-10-05: the $3.75 run stopped inside unit 1's judge step, before
+      # judge, calibration or sizing were measured. See the preregistration amendments.
+      cap_usd: 15
       # #13 per-call --max-budget-usd for this stage (else eval.max_budget_per_call_usd). The
       # guard reserves the full per-call cap against the stage cap, so $1.50 would stop the
       # pilot after about half its cap of real spend.
