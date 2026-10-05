@@ -123,6 +123,13 @@ transcription:
 retention:
   # Delete WAVs after a successful transcription. Failed transcriptions keep audio.
   delete_audio_on_success: true
+  # ASR study (docs/plan/F-asr-live.md F.1): through this date, successful
+  # transcriptions keep their audio too. null = no window.
+  keep_audio_until: "2026-10-18"
+  # Hard ceiling. `python -m whispr purge-audio` (run by the freshness check) deletes
+  # any WAV older than this whose call has a transcript. A WAV with no transcript is
+  # never deleted: it is reported and the check fails until a human resolves it.
+  audio_max_age_days: 21
 
 metadata:
   # Max seconds of clock skew when matching a recording window to a calendar item.

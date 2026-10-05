@@ -5,6 +5,7 @@ Usage:
     python -m whispr list-pending [file]  # list transcripts awaiting a local summary
     python -m whispr record-test SECONDS  # record both streams for N seconds, then stop
     python -m whispr doctor [DAYS]        # summarize crashes + auto-discards (default 7 days)
+    python -m whispr purge-audio [--check] # delete WAVs past retention.audio_max_age_days
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from whispr.capture import DualStreamRecorder
 from whispr.config import load_config
 from whispr.log import configure_logging, get_logger
 from whispr.models import CallSession, TranscriptResult
+from whispr.retention import keeping_audio, wav_stamp
 from whispr.tray import TrayController
 
 log = get_logger("main")
@@ -57,7 +59,7 @@ def _now_local() -> datetime:
 
 def _wav_paths(cfg: dict, session_start: datetime) -> tuple[str, str]:
     rec_dir = cfg["paths"]["recordings"]
-    stamp = session_start.strftime("%Y-%m-%d-%H%M%S")
+    stamp = wav_stamp(session_start)
     return str(rec_dir / f"{stamp}-mic.wav"), str(rec_dir / f"{stamp}-loopback.wav")
 
 
@@ -237,6 +239,8 @@ class Orchestrator:
                         session.mic_wav, session.loopback_wav)
             self._tray.notify(f"No speech captured in a {session.duration_min}-min recording: "
                               f"{session.window_title[:_TRAY_LABEL_MAX]}. Audio kept in recordings.")
+        elif keeping_audio(self._cfg["retention"], _now_local().date()):
+            log.info("ASR-study window open; keeping audio (%s, %s)", session.mic_wav, session.loopback_wav)
         elif self._cfg["retention"]["delete_audio_on_success"]:
             self._delete_wavs(session)
         log.info("transcript ready: %s", path)
@@ -346,6 +350,8 @@ _DOCTOR_SECTIONS = (
      lambda i: f"{i.get('dropouts')}x, {i.get('lost_seconds')}s lost  {i.get('title')}"),
     ("short-session-discarded", "Auto-discarded short sessions",
      lambda i: f"{i.get('seconds')}s  {i.get('title')}"),
+    ("audio-purged", "Audio deleted at the retention limit",
+     lambda i: f"{i.get('stamp')}  {i.get('files')} file(s)"),
 )
 
 
@@ -366,6 +372,16 @@ def _doctor(argv: list[str]) -> int:
     if not incidents:
         print("\nNo incidents recorded - see logs/incidents.jsonl once any occur.")
     return 0
+
+
+def _purge_audio(argv: list[str]) -> int:
+    """Delete overdue WAVs that have a transcript; exit 1 while any overdue audio remains."""
+    from whispr.retention import purge_audio
+
+    code, report = purge_audio(load_config(), datetime.now(), check_only="--check" in argv)
+    for line in report:
+        print(line)
+    return code
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -389,6 +405,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return _record_test(seconds)
     if cmd == "doctor":
         return _doctor(argv[1:])
+    if cmd == "purge-audio":
+        return _purge_audio(argv[1:])
     print(__doc__)
     return 2
 

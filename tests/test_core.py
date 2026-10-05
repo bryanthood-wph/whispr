@@ -818,7 +818,7 @@ class TestNoSpeechKeepsAudio(unittest.TestCase):
     """2026-09-28: a 26-min meeting captured only silence; whispr wrote 'No speech
     detected', deleted both WAVs and told no one."""
 
-    def _transcribed(self, result):
+    def _transcribed(self, result, keep_audio_until=None):
         import copy
         from types import SimpleNamespace
         from unittest import mock
@@ -829,6 +829,7 @@ class TestNoSpeechKeepsAudio(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cfg = copy.deepcopy(CFG)
             cfg["paths"]["logs"] = Path(d)
+            cfg["retention"]["keep_audio_until"] = keep_audio_until
             deleted, notes = [], []
             fake = SimpleNamespace(_cfg=cfg, _delete_wavs=lambda s: deleted.append(s),
                                    _tray=SimpleNamespace(notify=notes.append))
@@ -849,6 +850,86 @@ class TestNoSpeechKeepsAudio(unittest.TestCase):
         self.assertEqual(len(deleted), 1)
         self.assertEqual(notes, [])
         self.assertEqual(incidents, [])
+
+    def test_study_window_keeps_audio(self):
+        result = TranscriptResult(turns=[Turn(start_seconds=0.0, speaker="Me", text="hi")])
+        deleted, _, _ = self._transcribed(result, keep_audio_until="2999-01-01")
+        self.assertEqual(deleted, [])
+
+    def test_closed_study_window_deletes_audio(self):
+        result = TranscriptResult(turns=[Turn(start_seconds=0.0, speaker="Me", text="hi")])
+        deleted, _, _ = self._transcribed(result, keep_audio_until="2000-01-01")
+        self.assertEqual(len(deleted), 1)
+
+
+class TestRetention(unittest.TestCase):
+    """F.1 keep window + L14: the purge never deletes a WAV whose call has no transcript."""
+
+    NOW = datetime(2026, 11, 1, 12, 0, 0)
+
+    def test_keeping_audio_window_is_inclusive(self):
+        from datetime import date
+        from whispr.retention import keeping_audio
+
+        r = {"keep_audio_until": "2026-10-18"}
+        self.assertTrue(keeping_audio(r, date(2026, 10, 18)))
+        self.assertFalse(keeping_audio(r, date(2026, 10, 19)))
+        self.assertFalse(keeping_audio({"keep_audio_until": None}, date(2026, 10, 1)))
+        self.assertFalse(keeping_audio({}, date(2026, 10, 1)))
+
+    def _cfg(self, root: Path) -> dict:
+        import copy
+
+        cfg = copy.deepcopy(CFG)
+        for key in ("transcripts", "recordings", "logs"):
+            (root / key).mkdir()
+            cfg["paths"][key] = root / key
+        cfg["retention"]["audio_max_age_days"] = 21
+        return cfg
+
+    def _wavs(self, cfg, stamp):
+        for stream in ("mic", "loopback"):
+            (cfg["paths"]["recordings"] / f"{stamp}-{stream}.wav").write_bytes(b"RIFF")
+
+    def _transcript(self, cfg, start_iso):
+        (cfg["paths"]["transcripts"] / f"{start_iso[:10]}-call.md").write_text(
+            f"---\ncall_title: x\nstart: '{start_iso}'\n---\n\nbody\n", encoding="utf-8")
+
+    def test_purge_deletes_old_transcribed_keeps_orphan_and_young(self):
+        from whispr.retention import purge_audio
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            self._wavs(cfg, "2026-09-01-100000")            # old, transcribed -> deleted
+            self._transcript(cfg, "2026-09-01T10:00:00-04:00")
+            self._wavs(cfg, "2026-09-02-100000")            # old, no transcript -> kept
+            self._wavs(cfg, "2026-10-30-100000")            # young -> untouched
+            code, report = purge_audio(cfg, self.NOW)
+            left = sorted(p.name for p in cfg["paths"]["recordings"].iterdir())
+        self.assertEqual(code, 1)
+        self.assertEqual(left, ["2026-09-02-100000-loopback.wav", "2026-09-02-100000-mic.wav",
+                                "2026-10-30-100000-loopback.wav", "2026-10-30-100000-mic.wav"])
+        self.assertTrue(any(line.startswith("OVERDUE 2026-09-02-100000") for line in report))
+
+    def test_check_only_deletes_nothing_and_fails_on_overdue(self):
+        from whispr.retention import purge_audio
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            self._wavs(cfg, "2026-09-01-100000")
+            self._transcript(cfg, "2026-09-01T10:00:00-04:00")
+            code, _ = purge_audio(cfg, self.NOW, check_only=True)
+            left = len(list(cfg["paths"]["recordings"].iterdir()))
+        self.assertEqual((code, left), (1, 2))
+
+    def test_nothing_overdue_exits_zero(self):
+        from whispr.retention import purge_audio
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            self._wavs(cfg, "2026-10-30-100000")
+            code, _ = purge_audio(cfg, self.NOW)
+        self.assertEqual(code, 0)
 
 
 if __name__ == "__main__":

@@ -29,6 +29,8 @@
       today's run FAILED to park one (watermark frozen, expensive re-ingest
       loop live). Both are invisible to Check B, because the run continues and
       still logs SUCCESS. Runs LAST.
+  E — call audio older than retention.audio_max_age_days remains. This check
+      also runs the daily purge (`whispr purge-audio`). Runs just before D.
 
   A run that already self-reported failure (logs "FAIL THE JOB..." via
   Invoke-JobFailure, matched case-insensitively on "fail") is NOT re-flagged
@@ -192,6 +194,27 @@ if (-not (Test-Path -LiteralPath $todayLog)) {
         $detail = "today's log ($todayLog) exists, the task is not Running, and no terminal marker (SUCCESS/FAIL) appears in its last 5 lines — the run started and never finished. Last line: $lastLine"
         Invoke-CheckFailure -Check 'B' -StepName 'watchdog-stuck-run' -Detail $detail -FileContext $todayLog
     }
+}
+
+# -- Check E: no call audio outlives retention.audio_max_age_days -------------
+# Added 2026-10-04 (plan F.1, lesson L14). This check is also the purge's daily
+# runner, rather than a fifth scheduled task: `whispr purge-audio` deletes overdue
+# WAVs whose call has a transcript and exits 1 while anything overdue remains —
+# an untranscribed call (never deleted automatically), a failed delete, or, under
+# -DryRun (--check, deletes nothing), audio the purge would remove.
+#
+# Runs BEFORE Check D: colleagues' voices outliving the limit never self-heals
+# and is the privacy-relevant condition; a parked file only delays one ingest.
+$python = Join-Path $RepoRoot '.venv\Scripts\python.exe'
+$purgeArgs = @('-m', 'whispr', 'purge-audio') + $(if ($DryRun) { @('--check') } else { @() })
+$purgeOut = (& $python @purgeArgs 2>&1 | Out-String).Trim()
+$purgeExit = $LASTEXITCODE
+foreach ($line in ($purgeOut -split "`r?`n")) { if ($line) { Write-Log -Message "purge-audio: $line" } }
+if ($purgeExit -eq 0) {
+    Write-Log -Message "Check E OK: no audio older than retention.audio_max_age_days."
+} else {
+    $detail = "call audio is past retention.audio_max_age_days and was not deleted (purge-audio exit $purgeExit). Untranscribed calls are never deleted automatically — transcribe or delete each by hand. $($purgeOut -replace "`r?`n", ' | ')"
+    Invoke-CheckFailure -Check 'E' -StepName 'audio-retention-overdue' -Detail $detail -FileContext (Join-Path $RepoRoot 'recordings')
 }
 
 # -- Check D: last night's run parked a file it could not resolve ------------
