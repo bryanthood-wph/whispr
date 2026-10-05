@@ -74,16 +74,18 @@
     "ontology": {"$ref": "#/$defs/str"},
     "prepare": {
       "type": "object", "additionalProperties": false,
-      "required": ["version", "min_words", "echo_window_s", "echo_overlap", "merge_gap_min", "redaction_patterns", "redaction_token", "attendee_reject_patterns", "mojibake_markers"],
+      "required": ["version", "min_words", "echo_window_s", "echo_overlap", "merge_gap_min", "echo_min_words", "redaction_patterns", "redaction_token", "title_segment_separator", "metadata_reject_patterns", "mojibake_markers"],
       "properties": {
         "version": {"type": "integer", "minimum": 1},
         "min_words": {"type": "integer", "minimum": 0},
         "echo_window_s": {"type": "number", "minimum": 0},
         "echo_overlap": {"$ref": "#/$defs/frac"},
+        "echo_min_words": {"type": "integer", "minimum": 1},
         "merge_gap_min": {"type": "number", "minimum": 0},
         "redaction_patterns": {"$ref": "#/$defs/strs"},
         "redaction_token": {"type": "string"},
-        "attendee_reject_patterns": {"$ref": "#/$defs/strs"},
+        "title_segment_separator": {"$ref": "#/$defs/str"},
+        "metadata_reject_patterns": {"$ref": "#/$defs/strs"},
         "mojibake_markers": {"$ref": "#/$defs/strs"}
       }
     },
