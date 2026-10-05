@@ -279,7 +279,7 @@ class CliBase(_Base):
 
     def setUp(self):
         super().setUp()
-        self.ov["eval"] = {"sample": {"frame_cutoff": "2026-09-30"}}   # ended: the frame freezes
+        self.ov["eval"]["sample"] = {"frame_cutoff": "2026-09-30"}   # ended: the frame freezes
         self.populate(per_cell=12)
         self.ov_path = self.root / "overlay.yaml"
         self.ov_path.write_text(yaml.safe_dump(self.ov), encoding="utf-8")

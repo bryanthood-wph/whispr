@@ -53,10 +53,11 @@
       }
     },
     "cli": {
-      "type": "object", "additionalProperties": false, "required": ["executable", "base_args", "cached_prefix_until", "timeout_s"],
+      "type": "object", "additionalProperties": false, "required": ["executable", "base_args", "isolation_args", "cached_prefix_until", "timeout_s"],
       "properties": {
         "executable": {"$ref": "#/$defs/str"},
         "base_args": {"$ref": "#/$defs/strs"},
+        "isolation_args": {"$ref": "#/$defs/strs"},
         "cached_prefix_until": {"$ref": "#/$defs/strs"},
         "timeout_s": {"type": "number", "minimum": 1}
       }
@@ -104,7 +105,7 @@
     },
     "eval": {
       "type": "object", "additionalProperties": false,
-      "required": ["budget_usd", "stop_margin_usd", "max_budget_per_call_usd", "cost_overrun_factor", "min_effective_tasks", "stability_n", "stability_min_jaccard", "seed", "bootstrap_replicates", "alpha", "judge", "calibration_min_sensitivity", "bar", "sample", "run_tag", "stages", "scoring", "regress", "reference"],
+      "required": ["budget_usd", "stop_margin_usd", "max_budget_per_call_usd", "cost_overrun_factor", "min_effective_tasks", "stability_n", "stability_min_jaccard", "seed", "workers", "bootstrap_replicates", "alpha", "judge", "calibration_min_sensitivity", "bar", "sample", "run_tag", "stages", "scoring", "regress", "reference"],
       "properties": {
         "budget_usd": {"$ref": "#/$defs/money"},
         "stop_margin_usd": {"$ref": "#/$defs/money"},
@@ -114,6 +115,7 @@
         "stability_n": {"type": "integer", "minimum": 1},
         "stability_min_jaccard": {"$ref": "#/$defs/frac"},
         "seed": {"type": "integer"},
+        "workers": {"type": "integer", "minimum": 1},
         "bootstrap_replicates": {"type": "integer", "minimum": 100},
         "alpha": {"$ref": "#/$defs/frac"},
         "judge": {

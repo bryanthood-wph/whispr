@@ -1,7 +1,7 @@
 """Cached, schema-validated model calls: the layer every structured call goes through
 (extract here; reference, matcher and judges in the eval).
 
-Cache key (D.1, B.9): sha256 of the exact request: the CLI's base arguments, model,
+Cache key (D.1, B.9): sha256 of the exact request: the CLI's base and isolation arguments, model,
 effort, system prompt, schema hash and the prompt actually sent, plus a replicate
 index when it is nonzero. Base arguments are in it because they change how the CLI
 runs (setting sources, tools), so output made under other arguments is no hit.
@@ -17,11 +17,17 @@ the CLI actually ran. Only output that passes the schema is returned or cached.
 immediately before the CLI starts. The eval passes its budget guard here: it can stop
 before spending, and it reserves the call's cap in the ledger under `key` until the
 call's own row lands.
+
+Calls may run on several threads (eval.workers). Two with the same key never run at
+once: the second waits and is served from the first's cache entry, as it would be if
+the calls ran one at a time.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,7 +70,7 @@ def config_file_sha(relative: str) -> str:
 def request_key(cfg: dict, role: str, prompt: str, schema: dict, system_prompt: Optional[str],
                 replicate: int = 0) -> str:
     spec = cfg["models"][role]
-    request = {"base_args": cfg["cli"]["base_args"], "model": spec["model"], "effort": spec["effort"],
+    request = {"base_args": models.cli_args(cfg), "model": spec["model"], "effort": spec["effort"],
                "system_prompt": system_prompt, "schema": schema_sha(schema), "prompt": prompt}
     if replicate:
         request["replicate"] = replicate
@@ -91,6 +97,18 @@ def cached_entry(cache_dir: Optional[Path], key: str, schema: dict) -> Optional[
     return entry
 
 
+_in_flight: dict[str, threading.Lock] = {}
+_in_flight_lock = threading.Lock()
+
+
+@contextlib.contextmanager
+def _one_call_per_key(key: str):
+    with _in_flight_lock:
+        lock = _in_flight.setdefault(key, threading.Lock())
+    with lock:
+        yield
+
+
 def cached_call(cfg: dict, role: str, prompt: str, *, schema: dict, max_budget_usd: float, ledger: Path,
                 cache_dir: Optional[Path] = None, system_prompt: Optional[str] = None,
                 before_call: Optional[Callable[[str, float], None]] = None,
@@ -98,6 +116,15 @@ def cached_call(cfg: dict, role: str, prompt: str, *, schema: dict, max_budget_u
     """One structured call, served from the cache when possible. Raises OutputError for
     schema-invalid output; models.AuthError / ModelCallError propagate."""
     key = request_key(cfg, role, prompt, schema, system_prompt, replicate)
+    with _one_call_per_key(key):
+        return _cached_call(cfg, role, prompt, key, schema=schema, max_budget_usd=max_budget_usd, ledger=ledger,
+                            cache_dir=cache_dir, system_prompt=system_prompt, before_call=before_call,
+                            provenance=provenance)
+
+
+def _cached_call(cfg: dict, role: str, prompt: str, key: str, *, schema: dict, max_budget_usd: float,
+                 ledger: Path, cache_dir: Optional[Path], system_prompt: Optional[str],
+                 before_call: Optional[Callable[[str, float], None]], provenance: Optional[dict]) -> Cached:
     entry = cached_entry(cache_dir, key, schema)
     if entry:
         return Cached(key, entry["output"], True, entry["model"], entry["auth_source"], 0.0)

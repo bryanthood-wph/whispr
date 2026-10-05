@@ -17,6 +17,11 @@ judge and matcher calibration once.
 - A model answer that fails its schema or its vocabulary (calls.OutputError,
   judge.JudgeError) becomes an "error" record and that item is skipped. Anything
   else (auth, CLI, timeout) propagates: the run is broken, not the answer.
+- A step's judge decisions (and the calibration plants) run together on eval.workers
+  threads (`batch`, eval.ask.fan_out); their records are emitted in the order a
+  one-at-a-time loop emits them. A batch a budget stop ends keeps every finished job's
+  record: which jobs finished depends on timing (calls in flight are each reserved at
+  their cap, so the stop can come a few calls earlier), never on an answer.
 - Every record is appended to the output JSONL as it happens, and every call entry
   to calls.jsonl beside it, so a crash keeps all work done so far and the cost join
   (`load` reads both back).
@@ -43,6 +48,7 @@ import json
 import random
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Callable, Iterable, Optional, Sequence
 
@@ -51,7 +57,7 @@ from eval import ledger as L
 from eval import reference as R
 from eval import scoring as S
 from eval import stages
-from eval.ask import Ask, make_ask
+from eval.ask import Ask, fan_out, make_ask, values
 from pipeline import calls, extract, render
 from pipeline.models import TOKEN_FIELDS, ModelCallError, append_jsonl, read_jsonl
 from pipeline.prepare import Prepared, owner_names   # names a plant must never choose as a person
@@ -63,6 +69,7 @@ PREPARED, SKIPPED, EXTRACT, REFERENCE, JUDGE, CALIBRATION, ERROR, BUDGET_STOP = 
 PROBE = "probe"     # the --setting-sources probe's step in the call log (it writes no records)
 JUDGED, NOT_APPLICABLE = "judged", "not_applicable"     # calibration record status
 MATCHER = "matcher"                                     # calibration record kind for the matcher
+UNUSABLE = (calls.OutputError, J.JudgeError)    # a model answer that becomes an "error" record
 
 # Files a pilot run writes into results/<run_id>/.
 RECORDS_FILE, CALLS_FILE, REPORT_JSON, REPORT_MD = "pilot.jsonl", "calls.jsonl", "report.json", "report.md"
@@ -208,20 +215,40 @@ class _Pilot:
         append_jsonl(self.out, record)
         self.result.records.append(json.loads(json.dumps(record)))     # exactly as the file holds it
 
+    def batch(self, jobs: Sequence[Callable[[], dict]]) -> None:
+        """Run record-making jobs together (eval.ask.fan_out) and emit their records in job
+        order. Every finished job's record is emitted before any job's error (a budget stop
+        included) is raised, since its calls are paid."""
+        outcomes = fan_out(self.cfg, jobs)
+        for done in outcomes:
+            if done is not None and done.error is None:
+                self.emit(done.value)
+        values(outcomes)
+
+    def error_record(self, unit: str, exc: Exception, **context) -> dict:
+        return {"step": ERROR, "unit": unit, "during": self.step, **context, "error": f"{type(exc).__name__}: {exc}"}
+
     def attempt(self, unit: str, fn: Callable, **context):
         """fn(), or None after an "error" record when a model answer is unusable."""
         try:
             return fn()
-        except (calls.OutputError, J.JudgeError) as exc:
-            self.emit({"step": ERROR, "unit": unit, "during": self.step, **context,
-                       "error": f"{type(exc).__name__}: {exc}"})
+        except UNUSABLE as exc:
+            self.emit(self.error_record(unit, exc, **context))
             return None
 
-    def decide(self, unit: str, decision: str, transcript: str, summary: str, subject: str,
-               **context) -> Optional[J.Verdict]:
+    def judged(self, unit: str, decision: str, transcript: str, summary: str, subject: str, record: dict,
+               **context) -> Callable[[], dict]:
+        """A `batch` job: `record` with the verdict on `subject`, or an "error" record when a
+        model answer is unusable."""
         prompt = J.build_prompt(decision, self.cfg, transcript=transcript, summary=summary, subject=subject)
-        return self.attempt(unit, lambda: J.decide(decision, prompt, self.cfg, self.ask),
-                            decision=decision, **context)
+
+        def job() -> dict:
+            try:
+                verdict = J.decide(decision, prompt, self.cfg, self.ask)
+            except UNUSABLE as exc:
+                return self.error_record(unit, exc, decision=decision, **context)
+            return {**record, "verdict": asdict(verdict), "detected": detected(decision, verdict.value)}
+        return job
 
     # -- steps
 
@@ -283,15 +310,12 @@ class _Pilot:
             return
         self.step, self.variant = JUDGE, variant
         transcript, summary = prep.render(), render.render(doc)
-        for decision in J.DECISIONS:
-            for subject, item in _subject_items(decision, doc, ref.accepted, self.cfg, key=unit):
-                verdict = self.decide(unit, decision, transcript, summary, subject, variant=variant)
-                if verdict is None:
-                    continue
-                about = {"item_id": item.id, "mine": item.mine} if item else {}
-                self.emit({"step": JUDGE, "unit": unit, "variant": variant, "decision": decision,
-                           "subject": subject, **about, "verdict": asdict(verdict),
-                           "detected": detected(decision, verdict.value)})
+        self.batch([self.judged(unit, decision, transcript, summary, subject,
+                                {"step": JUDGE, "unit": unit, "variant": variant, "decision": decision,
+                                 "subject": subject, **({"item_id": item.id, "mine": item.mine} if item else {})},
+                                variant=variant)
+                    for decision in J.DECISIONS
+                    for subject, item in _subject_items(decision, doc, ref.accepted, self.cfg, key=unit)])
         self.variant = None
 
     def calibrate(self, unit: str, prep: Prepared) -> None:
@@ -302,34 +326,36 @@ class _Pilot:
         doc = self.docs.get((unit, stages.DEFAULT_SYSTEM))
         if doc is not None:
             transcript, exclude = prep.render(), owner_names(self.cfg)
-            for kind in J.PLANT_KINDS:
-                for n in range(pc["plants_per_kind"]):
-                    self.plant_and_judge(unit, transcript, doc, {"kind": kind, "seed": seed + n},
-                                         lambda: J.plant(kind, doc, seed + n, exclude=exclude))
+            jobs = [self.plant_and_judge(unit, transcript, doc, {"kind": kind, "seed": seed + n},
+                                         partial(J.plant, kind, doc, seed + n, exclude=exclude))
+                    for kind in J.PLANT_KINDS for n in range(pc["plants_per_kind"])]
             try:
                 claims = J.plant_positives(prep, seed, pc["positives"])
             except J.NotApplicable as exc:
-                self.not_applicable(unit, {"kind": J.POSITIVE, "seed": seed}, exc)
+                jobs.append(partial(self.not_applicable_record, unit, {"kind": J.POSITIVE, "seed": seed}, exc))
                 claims = []
-            for n, claim in enumerate(claims):
-                self.plant_and_judge(unit, transcript, doc, {"kind": J.POSITIVE, "seed": seed + n},
-                                     lambda: J.plant_positive(doc, claim, seed + n))
+            jobs += [self.plant_and_judge(unit, transcript, doc, {"kind": J.POSITIVE, "seed": seed + n},
+                                          partial(J.plant_positive, doc, claim, seed + n))
+                     for n, claim in enumerate(claims)]
+            self.batch(jobs)
         if unit in self.refs:
             self.calibrate_matcher(unit, prep, self.refs[unit])
 
+    def not_applicable_record(self, unit: str, about: dict, reason) -> dict:
+        return {"step": CALIBRATION, "unit": unit, **about, "status": NOT_APPLICABLE, "reason": str(reason)}
+
     def not_applicable(self, unit: str, about: dict, reason) -> None:
-        self.emit({"step": CALIBRATION, "unit": unit, **about, "status": NOT_APPLICABLE, "reason": str(reason)})
+        self.emit(self.not_applicable_record(unit, about, reason))
 
     def plant_and_judge(self, unit: str, transcript: str, doc: dict, about: dict,
-                        make: Callable[[], J.Planted]) -> None:
-        """Plant with make() and judge the result; a plant with nothing to act on (or, for
-        a positive, nowhere to go) is a not_applicable record."""
+                        make: Callable[[], J.Planted]) -> Callable[[], dict]:
+        """A `batch` job for the plant make() makes now: judging it, or a not_applicable
+        record when the plant has nothing to act on (or, for a positive, nowhere to go)."""
         try:
             planted = make()
         except J.NotApplicable as exc:
-            self.not_applicable(unit, about, exc)
-            return
-        self.judge_plant(unit, transcript, planted, doc, {"step": CALIBRATION, "unit": unit, **about})
+            return partial(self.not_applicable_record, unit, about, exc)
+        return self.judge_plant(unit, transcript, planted, doc, {"step": CALIBRATION, "unit": unit, **about})
 
     def calibrate_matcher(self, unit: str, prep: Prepared, ref: R.Reference) -> None:
         a, b = (ref.kept[family] for family in R.FAMILY_ROLES)
@@ -345,13 +371,13 @@ class _Pilot:
                        "positives": [[x.id, y.id, hit] for (x, y), hit in zip(positives, outcome[0])],
                        "negatives": [[x.id, y.id, hit] for (x, y), hit in zip(negatives, outcome[1])]})
 
-    def judge_plant(self, unit: str, transcript: str, planted: J.Planted, original: dict, base: dict) -> None:
+    def judge_plant(self, unit: str, transcript: str, planted: J.Planted, original: dict,
+                    base: dict) -> Callable[[], dict]:
         decision = POSITIVE_DECISION if planted.kind == J.POSITIVE else J.KIND_DECISION[planted.kind]
         subject = _plant_subject(planted, original, decision)
-        verdict = self.decide(unit, decision, transcript, render.render(planted.doc), subject, kind=planted.kind)
-        if verdict is not None:
-            self.emit({**base, "decision": decision, "status": JUDGED, "target": planted.target, "subject": subject,
-                       "verdict": asdict(verdict), "detected": detected(decision, verdict.value)})
+        return self.judged(unit, decision, transcript, render.render(planted.doc), subject,
+                           {**base, "decision": decision, "status": JUDGED, "target": planted.target,
+                            "subject": subject}, kind=planted.kind)
 
 
 def run(units: Iterable[tuple[str, Prepared]], cfg: dict, ask: Ask, out_path: Path) -> Result:
@@ -547,11 +573,14 @@ def report_markdown(rep: dict) -> str:
 # --- --setting-sources probe --------------------------------------------------------
 
 def probe_variants(cfg: dict) -> list[tuple[str, dict]]:
-    """The probe's configs: cfg itself ("default") and a deep copy with
-    `--setting-sources ""` appended to cli.base_args ("no_settings"); cfg is never changed."""
-    no_settings = copy.deepcopy(cfg)
+    """The probe's configs, deep copies of cfg without cli.isolation_args (which would put
+    the flag in both): cli.base_args alone ("default") and with `--setting-sources ""`
+    appended ("no_settings"); cfg is never changed."""
+    default = copy.deepcopy(cfg)
+    default["cli"]["isolation_args"] = []
+    no_settings = copy.deepcopy(default)
     no_settings["cli"]["base_args"] = [*cfg["cli"]["base_args"], *NO_SETTINGS_ARGS]
-    return [("default", cfg), ("no_settings", no_settings)]
+    return [("default", default), ("no_settings", no_settings)]
 
 
 def probe(cfg: dict, make_ask_fn: Callable[[dict], Ask]) -> dict:

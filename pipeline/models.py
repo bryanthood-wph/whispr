@@ -42,6 +42,10 @@ from pipeline.config import data_dir
 # Where npm puts the native binary relative to its claude.cmd / claude.ps1 shim.
 _NATIVE_FROM_SHIM = Path("node_modules") / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
 
+# Held for every append_jsonl write: calls can run on several threads (eval.workers). The
+# eval's budget guard also holds it from reading spend to booking its reservation.
+JSONL_LOCK = threading.RLock()
+
 
 class ModelCallError(RuntimeError):
     pass
@@ -111,10 +115,15 @@ def split_prompt(cfg: dict, prompt: str) -> tuple[Optional[str], str]:
     return "".join(lines[:at]), "".join(lines[at:])
 
 
+def cli_args(cfg: dict) -> list[str]:
+    """The arguments every call passes before its own: cli.base_args, then cli.isolation_args."""
+    return [*cfg["cli"]["base_args"], *cfg["cli"]["isolation_args"]]
+
+
 def build_args(cfg: dict, role: str, json_schema: Optional[dict], system_prompt: Optional[str],
                max_budget_usd: float, system_append: Optional[Path] = None) -> list[str]:
     spec = cfg["models"][role]
-    args = [resolve_executable(cfg["cli"]["executable"]), *cfg["cli"]["base_args"], "--model", spec["model"]]
+    args = [resolve_executable(cfg["cli"]["executable"]), *cli_args(cfg), "--model", spec["model"]]
     if spec["effort"]:
         args += ["--effort", spec["effort"]]
     if json_schema is not None:
@@ -135,7 +144,7 @@ def build_args(cfg: dict, role: str, json_schema: Optional[dict], system_prompt:
 def append_jsonl(path: Path, record: dict) -> None:
     """Append one JSON line (the call ledger and the eval's run records)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as fh:
+    with JSONL_LOCK, open(path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(record) + "\n")
 
 

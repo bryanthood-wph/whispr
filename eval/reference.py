@@ -25,10 +25,10 @@ import json
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field, fields, replace
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import Optional, Sequence
 
-from eval.ask import Ask
+from eval.ask import Ask, fan_out, values
 from pipeline import prepare, prompts
 from pipeline.config import load_schema
 from pipeline.extract import prompt_values
@@ -335,18 +335,20 @@ def consensus(a: Sequence[RefItem], b: Sequence[RefItem], pairs: Sequence[tuple[
     paired_a = {x for x, _ in pairs}
     paired_b = {y for _, y in pairs}
     schema = load_schema(cfg, "presence")
-    accepted, contested, verdicts = [], [], {}
+    asked = [i for i in [*a, *b] if i.id not in paired_a and i.id not in paired_b
+             and (types is None or i.type in types)]
+    prompt_of = {i.id: _prompt(cfg, "presence", prep, ITEM=item_json(i, with_id=False)) for i in asked}
+    outs = iter(values(fan_out(cfg, [partial(ask, _role(cfg, fam), prompt_of[i.id], schema, replicate=replicate)
+                                     for i in asked for fam in FAMILY_ROLES])))
+    verdicts = {i.id: {fam: next(outs)["verdict"] for fam in FAMILY_ROLES} for i in asked}
+    accepted, contested = [], []
     singles: dict[str, list[RefItem]] = {family: [] for family in FAMILY_ROLES}   # accepted, by family
     for item in [*a, *b]:
         if item.id in paired_a:
             accepted.append(item)
+        elif item.id not in verdicts:
             continue
-        if item.id in paired_b or (types is not None and item.type not in types):
-            continue
-        prompt = _prompt(cfg, "presence", prep, ITEM=item_json(item, with_id=False))
-        verdicts[item.id] = {fam: ask(_role(cfg, fam), prompt, schema, replicate=replicate)["verdict"]
-                             for fam in FAMILY_ROLES}
-        if all(v == PRESENT for v in verdicts[item.id].values()):
+        elif all(v == PRESENT for v in verdicts[item.id].values()):
             accepted.append(item)
             singles[item.family].append(item)
         else:
@@ -377,8 +379,8 @@ def build(prep: Prepared, cfg: dict, ask: Ask, *, replicate: int = 0,
     """The whole B.4 reference for one episode: both families, quote check, match,
     consensus. The stability rerun passes `types=frozenset({TASK})` (see `consensus`)."""
     kept, rejected, disagreements = {}, [], 0
-    for family in FAMILY_ROLES:
-        items, n = _extract(prep, cfg, family, ask, replicate)
+    extracted = values(fan_out(cfg, [partial(_extract, prep, cfg, family, ask, replicate) for family in FAMILY_ROLES]))
+    for family, (items, n) in zip(FAMILY_ROLES, extracted):
         disagreements += n
         kept[family], dropped = quote_check(items, prep, cfg)
         rejected += dropped

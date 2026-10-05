@@ -6,7 +6,10 @@
   stops once the next call could take total spend past
   eval.budget_usd - eval.stop_margin_usd, or the stage's spend (summed over all its
   runs) past the stage's cap: it stops and asks rather than shrinking n. Otherwise it
-  appends a reservation row for the call's cap and stage under its request key.
+  appends a reservation row for the call's cap and stage under its request key. It
+  reads spend and books under pipeline.models.JSONL_LOCK, so calls on several threads
+  (eval.workers) never both pass on the same headroom: every call in flight is
+  reserved at its cap.
 - Spend = the call rows, plus every reservation no call row has settled yet. A run
   killed mid-call (its row never written) is so charged at the cap, and a call row
   is attributed to the stage of the reservation it settles.
@@ -27,7 +30,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from pipeline.config import data_dir
-from pipeline.models import append_jsonl, read_jsonl, read_jsonl_counted
+from pipeline.models import JSONL_LOCK, append_jsonl, read_jsonl, read_jsonl_counted
 
 LEDGER_FILE = "ledger.jsonl"
 RUNS_FILE = "runs.jsonl"
@@ -119,15 +122,17 @@ def guard(cfg: dict, stage: str) -> Callable[[str, float], None]:
     stage_cap = cfg["eval"]["stages"][stage]["cap_usd"]
 
     def check(key: str, call_cap: float) -> None:
-        total, by_stage = tally(cfg)
-        used = by_stage.get(stage, 0.0)
-        if total + call_cap > budget_limit(cfg):
-            raise BudgetStop(f"spent ${total:.2f}; the next call (cap ${call_cap:.2f}) could pass "
-                             f"the ${budget_limit(cfg):.2f} limit (eval.budget_usd - eval.stop_margin_usd)")
-        if used + call_cap > stage_cap:
-            raise BudgetStop(f"stage {stage!r} spent ${used:.2f}; the next call (cap ${call_cap:.2f}) "
-                             f"could pass its ${stage_cap:.2f} cap (eval.stages.{stage}.cap_usd)")
-        _append(ledger_path(cfg), {"event": RESERVE, "request_key": key, "stage": stage, "reserve_usd": call_cap})
+        with JSONL_LOCK:
+            total, by_stage = tally(cfg)
+            used = by_stage.get(stage, 0.0)
+            if total + call_cap > budget_limit(cfg):
+                raise BudgetStop(f"spent ${total:.2f}; the next call (cap ${call_cap:.2f}) could pass "
+                                 f"the ${budget_limit(cfg):.2f} limit (eval.budget_usd - eval.stop_margin_usd)")
+            if used + call_cap > stage_cap:
+                raise BudgetStop(f"stage {stage!r} spent ${used:.2f}; the next call (cap ${call_cap:.2f}) "
+                                 f"could pass its ${stage_cap:.2f} cap (eval.stages.{stage}.cap_usd)")
+            _append(ledger_path(cfg), {"event": RESERVE, "request_key": key, "stage": stage,
+                                       "reserve_usd": call_cap})
     return check
 
 

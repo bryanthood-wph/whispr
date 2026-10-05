@@ -33,6 +33,11 @@ cli:
   # Arguments for every call: print mode, machine-readable events, no tools, no MCP,
   # nothing persisted. The prompt goes over stdin; model/effort/schema/budget are added per call.
   base_args: ["-p", "--output-format", "stream-json", "--verbose", "--tools", "", "--strict-mcp-config", "--no-session-persistence"]
+  # Passed after base_args on every call, and keyed with them: no user or project
+  # settings, so no CLAUDE.md, plugins or hooks of whoever runs the eval (2026-10-05
+  # amendment). Kept apart from base_args because the pilot's pre-registered probe
+  # compares base_args with and without --setting-sources.
+  isolation_args: ["--setting-sources", ""]
   # Lines that open a template's first per-call section (presence.md, judge.md). A prompt
   # holding one is split before it: the shared text above (call context, transcript,
   # summary) goes to the CLI's cached system prompt, the rest over stdin
@@ -118,6 +123,10 @@ eval:
   stability_n: 10
   stability_min_jaccard: 0.8
   seed: 20261004
+  # Model calls run at once, at most (eval/ask.py fan_out): independent judge decisions,
+  # calibration plants, presence verdicts and the two reference extracts. Each call is the
+  # request it would be alone; the budget guard reserves every call in flight at its cap.
+  workers: 4
   bootstrap_replicates: 10000
   alpha: 0.05
   judge:
@@ -157,9 +166,11 @@ eval:
   stages:
     pilot:
       # $3 (B.9) plus $0.75 (a booking for a call the CLI rejected before starting), raised
-      # to $15 on 2026-10-05: the $3.75 run stopped inside unit 1's judge step, before
-      # judge, calibration or sizing were measured. See the preregistration amendments.
-      cap_usd: 15
+      # to $15 on 2026-10-05 (the $3.75 run stopped inside unit 1's judge step, before
+      # judge, calibration or sizing were measured), then to $25 the same day: adding
+      # --setting-sources changes every request key, so the rerun repeats the cached
+      # calls. See the preregistration amendments.
+      cap_usd: 25
       # #13 per-call --max-budget-usd for this stage (else eval.max_budget_per_call_usd). The
       # guard reserves the full per-call cap against the stage cap, so $1.50 would stop the
       # pilot after about half its cap of real spend.

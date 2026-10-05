@@ -40,6 +40,9 @@ def overlay(root: Path) -> dict:
         "owner": {"name": "Pat Example", "email": "pat@example.com", "tenant": "Example (TEN)"},
         "paths": {"transcripts": str(root / "transcripts"), "data_dir": str(root / "data"),
                   "recorder_log": str(root / "whispr.log")},
+        # One call at a time: the tests pin that order (eval.ask.fan_out is then exactly a
+        # loop). test_eval_parallel runs the same work on several workers.
+        "eval": {"workers": 1},
     }
 
 
