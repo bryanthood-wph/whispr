@@ -199,9 +199,12 @@ into every scorecard (B.7).
 ## Hashes
 
 Prompts (`prompts.*`), schemas (`schemas.*`) and the ontology as configured
-in `config/defaults.yaml` at registration. JSON files are hashed in canonical
-form (`json.dumps(obj, sort_keys=True, separators=(",", ":"),
-ensure_ascii=False)`, via `pipeline.extract._canonical`); text files are
+in `config/defaults.yaml` at registration, plus the judge-calibration planting
+seed data `config/planting.yaml` (invented-claim templates and the
+positive-claim and reattribution filters, B.5). That file is not a config key:
+it is part of the registered design, and no user overlay can change it. JSON
+files are hashed in canonical form (`json.dumps(obj, sort_keys=True, separators=(",", ":"),
+ensure_ascii=False)`, via `pipeline.calls.canonical`); text files are
 hashed as UTF-8 with CRLF converted to LF. `tests/test_eval_prereg_contract.py`
 re-checks every row against the file on disk, so an edit after registration
 fails until it is re-registered or reported as exploratory.
@@ -219,6 +222,9 @@ fails until it is re-registered or reported as exploratory.
 | `config/schema/reference.json` | `6e1da40e93483c69a21c54b425ed232306dd83c14c885117b12cdefa35f109e3` |
 | `config/schema/matcher.json` | `019785f404444098900ad6f2d7b9bdce6b83a959872874d86ecbd1734fc4672a` |
 | `config/schema/presence.json` | `3454e2eb5981a112d1558dafb757368305ff5c2f7fc0fba0911a0d0c7b71e69f` |
+| `config/prompts/judge.md` | `e146a9d0332dca83916a57db42c931c61b1cec540107160a8a2c81c6e0b9fcc9` |
+| `config/schema/judge.json` | `20307df8b5a0f2fc0a55bf4485de7eb889b93cc1be1063b0b0ad20484ac2a3a7` |
+| `config/planting.yaml` | `27621149cc631812fe0fe7c434185afdc160f841b0a86ef5ee43b98ae8c251e8` |
 | `config/ontology.yaml` | `d76e3c0161ca49466bf5c167043e3062bfa11b41ccd4dad456897d9e36efa748` |
 
 Baseline (configuration A) summarizer prompt, recorded outside the table

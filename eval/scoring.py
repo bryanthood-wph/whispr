@@ -45,7 +45,7 @@ from typing import Any, Iterable, Optional, Sequence
 import numpy as np
 
 from eval.records import Design, Outcome, Unit
-from pipeline.config import DEFAULTS_PATH, _read_yaml, config_file
+from pipeline.config import DEFAULTS_PATH, _read_yaml, load_schema
 from pipeline.jsonschema_lite import validate
 from whispr.fileio import atomic_write_text
 
@@ -493,8 +493,7 @@ def my_task_bar(*, recall: Optional[float], recall_lb: Optional[float], precisio
 def _schema(cfg: Optional[dict]) -> dict:
     if cfg is None:                                      # the schema path is not per-user
         cfg = _read_yaml(DEFAULTS_PATH)
-    with open(config_file(cfg["schemas"]["scorecard"]), encoding="utf-8") as fh:
-        return json.load(fh)
+    return load_schema(cfg, "scorecard")
 
 
 def write_scorecard(path: Path, scorecard: dict, *, cfg: Optional[dict] = None) -> None:

@@ -65,14 +65,12 @@
       "required": ["extractor", "reference_a", "reference_b", "matcher", "judge", "judge_escalate_1", "judge_escalate_2"]
     },
     "prompts": {
-      "type": "object", "additionalProperties": false, "required": ["extract", "system_minimal", "reference", "matcher", "presence"],
-      "properties": {"extract": {"$ref": "#/$defs/str"}, "system_minimal": {"$ref": "#/$defs/str"},
-                     "reference": {"$ref": "#/$defs/str"}, "matcher": {"$ref": "#/$defs/str"}, "presence": {"$ref": "#/$defs/str"}}
+      "type": "object", "additionalProperties": false, "required": ["extract", "system_minimal", "reference", "matcher", "presence", "judge"],
+      "properties": {"extract": {"$ref": "#/$defs/str"}, "system_minimal": {"$ref": "#/$defs/str"}, "reference": {"$ref": "#/$defs/str"}, "matcher": {"$ref": "#/$defs/str"}, "presence": {"$ref": "#/$defs/str"}, "judge": {"$ref": "#/$defs/str"}}
     },
     "schemas": {
-      "type": "object", "additionalProperties": false, "required": ["extract", "task", "scorecard", "reference", "matcher", "presence"],
-      "properties": {"extract": {"$ref": "#/$defs/str"}, "task": {"$ref": "#/$defs/str"}, "scorecard": {"$ref": "#/$defs/str"},
-                     "reference": {"$ref": "#/$defs/str"}, "matcher": {"$ref": "#/$defs/str"}, "presence": {"$ref": "#/$defs/str"}}
+      "type": "object", "additionalProperties": false, "required": ["extract", "task", "scorecard", "reference", "matcher", "presence", "judge"],
+      "properties": {"extract": {"$ref": "#/$defs/str"}, "task": {"$ref": "#/$defs/str"}, "scorecard": {"$ref": "#/$defs/str"}, "reference": {"$ref": "#/$defs/str"}, "matcher": {"$ref": "#/$defs/str"}, "presence": {"$ref": "#/$defs/str"}, "judge": {"$ref": "#/$defs/str"}}
     },
     "ontology": {"$ref": "#/$defs/str"},
     "prepare": {

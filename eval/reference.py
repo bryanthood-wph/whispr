@@ -30,7 +30,7 @@ from typing import Optional, Sequence
 
 from eval.ask import Ask
 from pipeline import prepare, prompts
-from pipeline.config import config_file
+from pipeline.config import load_schema
 from pipeline.extract import prompt_values
 from pipeline.prepare import Prepared, word_tokens
 
@@ -98,11 +98,6 @@ class Reference:
 
 # ---------------------------------------------------------------- prompts and schemas
 
-def _schema(cfg: dict, key: str) -> dict:
-    with open(config_file(cfg["schemas"][key]), encoding="utf-8") as fh:
-        return json.load(fh)
-
-
 @lru_cache(maxsize=None)
 def _template(relative: str) -> str:
     """A prompt template, read once per process (keyed by its config-relative path)."""
@@ -138,7 +133,7 @@ def _extract(prep: Prepared, cfg: dict, family: str, ask: Ask, replicate: int) -
     """(items, how many items' model `mine` flag differed from the derived one)."""
     if prep.is_stub:
         return [], 0
-    out = ask(_role(cfg, family), _prompt(cfg, "reference", prep), _schema(cfg, "reference"),
+    out = ask(_role(cfg, family), _prompt(cfg, "reference", prep), load_schema(cfg, "reference"),
               replicate=replicate)
     items, disagreements = [], 0
     for n, raw in enumerate(out["items"]):
@@ -264,7 +259,7 @@ def _match(a: Sequence[RefItem], b: Sequence[RefItem], prep: Prepared, cfg: dict
     prompt = _prompt(cfg, "matcher", prep,
                      ITEMS_A="\n".join(_item_json(i, with_id=True) for i in a),
                      ITEMS_B="\n".join(_item_json(i, with_id=True) for i in b))
-    out = ask(MATCHER_ROLE, prompt, _schema(cfg, "matcher"), replicate=replicate)
+    out = ask(MATCHER_ROLE, prompt, load_schema(cfg, "matcher"), replicate=replicate)
     a_by_id, b_by_id = {i.id: i for i in a}, {i.id: i for i in b}
     used: set[str] = set()
     pairs = []
@@ -313,7 +308,7 @@ def consensus(a: Sequence[RefItem], b: Sequence[RefItem], pairs: Sequence[tuple[
     by_id = {i.id: i for i in [*a, *b]}
     paired_a = {x for x, _ in pairs}
     paired_b = {y for _, y in pairs}
-    schema = _schema(cfg, "presence")
+    schema = load_schema(cfg, "presence")
     accepted, contested, verdicts = [], [], {}
     singles: dict[str, list[RefItem]] = {family: [] for family in FAMILY_ROLES}   # accepted, by family
     for item in [*a, *b]:

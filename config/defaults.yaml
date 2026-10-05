@@ -51,6 +51,7 @@ prompts:
   reference: prompts/reference.md   # #15 B.4
   matcher: prompts/matcher.md   # #15 B.4
   presence: prompts/presence.md   # #15 B.4
+  judge: prompts/judge.md   # #16 B.5
 
 schemas:
   extract: schema/extract.json
@@ -59,6 +60,7 @@ schemas:
   reference: schema/reference.json   # #15 B.4
   matcher: schema/matcher.json   # #15 B.4
   presence: schema/presence.json   # #15 B.4
+  judge: schema/judge.json   # #16 B.5
 
 ontology: ontology.yaml
 

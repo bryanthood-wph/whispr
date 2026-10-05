@@ -72,6 +72,12 @@ def config_file(relative: str) -> Path:
     return CONFIG_DIR / relative
 
 
+def load_schema(cfg: dict, key: str) -> dict:
+    """The JSON schema configured as schemas.<key>."""
+    with open(config_file(cfg["schemas"][key]), encoding="utf-8") as fh:
+        return json.load(fh)
+
+
 def data_dir(cfg: dict, *parts: str) -> Path:
     """A folder under the per-user data dir, created on first use."""
     path = Path(cfg["paths"]["data_dir"]).joinpath(*parts)

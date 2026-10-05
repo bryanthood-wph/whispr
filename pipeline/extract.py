@@ -8,13 +8,11 @@ job (the queue's max_attempts / quarantine, D.1), so this makes at most one call
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-from pipeline import calls, prompts
-from pipeline.config import config_file
+from pipeline import calls, config, prompts
 from pipeline.prepare import Prepared
 
 
@@ -34,8 +32,7 @@ class Request:
 
 
 def load_schema(cfg: dict) -> dict:
-    with open(config_file(cfg["schemas"]["extract"]), encoding="utf-8") as fh:
-        return json.load(fh)
+    return config.load_schema(cfg, "extract")
 
 
 def prompt_values(prep: Prepared, cfg: dict) -> dict[str, str]:

@@ -1,0 +1,35 @@
+# Judge calibration seed data (docs/plan/B-eval.md B.5), read by eval/judge.py from
+# next to defaults.yaml. Part of the pre-registered eval, not a user tunable, so it is
+# not a config key and no overlay can change it. Hashed in eval/PREREGISTRATION.md:
+# an edit after registration fails tests/test_eval_prereg_contract.py until it is
+# re-registered.
+
+# invented_claim: one template is filled with a section heading ({{TOPIC}}) and a
+# number from invented_number_range (inclusive), then inserted into that section.
+# Each reads like a summary point but comes from no transcript.
+invented_claims:
+  - "The group agreed to postpone the {{TOPIC}} work by {{NUMBER}} weeks."
+  - "An attendee reported that the {{TOPIC}} budget was cut by {{NUMBER}} percent."
+  - "The {{TOPIC}} effort is on hold until a new vendor contract is signed."
+  - "A decision was made to bring in {{NUMBER}} contractors for {{TOPIC}}."
+invented_number_range: [2, 9]
+
+# plant_positives: verbatim transcript sentences planted into a summary as true
+# claims. A sentence is skipped when it is shorter than positive_min_words, is a
+# question, or contains one of `pronouns` (whole words, any case): first- and
+# second-person speech reads as a summary claim with the wrong perspective. The
+# pronoun filter removes most conversational filler, so the length floor only has to
+# drop fragments ("Yes, that works.").
+positive_min_words: 4
+pronouns: [i, me, my, mine, myself, we, us, our, ours, ourselves,
+           you, your, yours, yourself, yourselves]
+
+# reattribution: a section point whose subject is an unnamed speaker ("The client
+# said ...", "An attendee noted ...") is the realistic target for an Others statement
+# reattributed to a named person. Subject = a determiner plus up to
+# subject_extra_words more words, followed by a speech verb.
+unnamed_speaker:
+  determiners: [the, a, an, one, another, someone, somebody]
+  subject_extra_words: 3
+  speech_verbs: [said, says, noted, notes, mentioned, asked, explained, reported, suggested,
+                 confirmed, stated, added, argued, warned, proposed, thought, felt]
