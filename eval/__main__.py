@@ -21,7 +21,7 @@ from pathlib import Path
 from eval import frame as F
 from eval import ledger as L
 from eval import pilot, preflight, stages
-from pipeline import calls, extract
+from pipeline import calls
 from pipeline.config import load_config
 from whispr.fileio import atomic_write_text
 
@@ -80,8 +80,7 @@ def cmd_run(cfg: dict, args) -> int:
     jobs = stages.plan(args.stage, cfg, sample, items)
     cache = L.eval_dir(cfg) / "cache"
     cap = L.call_cap(cfg, args.stage)
-    schema = extract.load_schema(cfg)
-    cached = {j.key for j in jobs if calls.cached_entry(cache, j.key, schema)}
+    cached = {j.key for j in jobs if calls.cached_entry(cache, j.key, j.schema)}
     calls_needed = [j for j in jobs if j.key not in cached and not j.prepared.is_stub]
     refusals = preflight.refusals(cfg, args.stage)
     if state == F.PROVISIONAL:

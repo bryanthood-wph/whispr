@@ -30,7 +30,8 @@ judge and matcher calibration once.
   chosen deterministically (`subjects`); every reference my-task is always judged
   for presence, since my-task presence is what sizes n (B.3).
 - `probe` checks whether the CLI accepts `--setting-sources ""` (deferred from #8),
-  on its own small per-call cap (eval.stages.pilot.probe_max_budget_usd).
+  on its own small per-call cap (eval.stages.pilot.probe_max_budget_usd). In `execute`
+  its calls are logged like the steps', as step "probe", so its cost is a step cost.
 - `execute` is what `python -m eval run --stage pilot` does after planning: every
   step, then the probe, then report.json/report.md in the run's results directory.
 """
@@ -59,6 +60,7 @@ from whispr.fileio import atomic_write_text
 # Record steps. extract..calibration are the priority order; the rest are bookkeeping.
 PREPARED, SKIPPED, EXTRACT, REFERENCE, JUDGE, CALIBRATION, ERROR, BUDGET_STOP = (
     "prepared", "skipped", "extract", "reference", "judge", "calibration", "error", "budget_stop")
+PROBE = "probe"     # the --setting-sources probe's step in the call log (it writes no records)
 JUDGED, NOT_APPLICABLE = "judged", "not_applicable"     # calibration record status
 MATCHER = "matcher"                                     # calibration record kind for the matcher
 
@@ -162,7 +164,8 @@ def _verdict(record: dict) -> J.Verdict:
 
 class _Pilot:
     def __init__(self, cfg: dict, ask: Ask, out_path: Path):
-        self.cfg, self.out, self._ask = cfg, Path(out_path), ask
+        self.cfg, self.out = cfg, Path(out_path)
+        self.ask = self.logged(cfg, ask)        # the injected ask, every launched call logged
         self.result = Result()
         self.variants = stages.system_variants(cfg)
         self.step: Optional[str] = None
@@ -170,22 +173,32 @@ class _Pilot:
         self.docs: dict[tuple[str, str], dict] = {}     # (unit, variant) -> extract document
         self.refs: dict[str, R.Reference] = {}
 
-    def ask(self, role: str, prompt: str, schema: dict, *, system_prompt: Optional[str] = None,
-            replicate: int = 0) -> dict:
-        """The injected ask, logging (step, role, request key) for every launched call."""
-        entry = {"step": self.step, "role": role,
-                 "key": calls.request_key(self.cfg, role, prompt, schema, system_prompt, replicate)}
-        if self.variant:
-            entry["variant"] = self.variant
-        try:
-            out = self._ask(role, prompt, schema, system_prompt=system_prompt, replicate=replicate)
-        except L.BudgetStop:
-            raise                               # refused before launch: no call, no ledger row
-        except BaseException:
-            self.log_call(entry)                # launched and failed: its ledger row still lands
-            raise
-        self.log_call(entry)
-        return out
+    def logged(self, cfg: dict, ask: Ask) -> Ask:
+        """`ask`, built from `cfg`, wrapped to log (step, role, request key) for every
+        launched call under the current step and variant; the key is computed from `cfg`,
+        exactly as the ledger records it."""
+        def wrapped(role: str, prompt: str, schema: dict, *, system_prompt: Optional[str] = None,
+                    replicate: int = 0) -> dict:
+            entry = {"step": self.step, "role": role,
+                     "key": calls.request_key(cfg, role, prompt, schema, system_prompt, replicate)}
+            if self.variant:
+                entry["variant"] = self.variant
+            try:
+                out = ask(role, prompt, schema, system_prompt=system_prompt, replicate=replicate)
+            except L.BudgetStop:
+                raise                           # refused before launch: no call, no ledger row
+            except BaseException:
+                self.log_call(entry)            # launched and failed: its ledger row still lands
+                raise
+            self.log_call(entry)
+            return out
+        return wrapped
+
+    def probe(self, make_ask_fn: Callable[[dict], Ask]) -> dict:
+        """The --setting-sources probe (module `probe`), its calls logged as step PROBE
+        so its cost lands in the report's cost by step."""
+        self.step, self.variant = PROBE, None
+        return probe(self.cfg, lambda c: self.logged(c, make_ask_fn(c)))
 
     def log_call(self, entry: dict) -> None:
         append_jsonl(self.out.with_name(CALLS_FILE), entry)
@@ -378,13 +391,6 @@ def _judge_values(records: list[dict]) -> dict:
             for d in J.DECISIONS if d in shares}
 
 
-def probe_keys(cfg: dict) -> dict[str, str]:
-    """Each probe variant's request key, by variant name (base_args are in the key, so
-    the variants differ)."""
-    return {name: calls.request_key(variant, stages.EXTRACTOR, PROBE_PROMPT, PROBE_SCHEMA, None)
-            for name, variant in probe_variants(cfg)}
-
-
 def report(result: Result, ledger_rows: Iterable[dict], cfg: dict, *, new_rows: Optional[Iterable[dict]] = None,
            error: Optional[str] = None) -> dict:
     """The pilot's measurements.
@@ -395,9 +401,10 @@ def report(result: Result, ledger_rows: Iterable[dict], cfg: dict, *, new_rows: 
     rows from earlier invocations count too, so a resumed pilot still shows the cost of
     the steps its cache served. `new_rows` are the rows this invocation appended
     (default: all of `ledger_rows`): they give `spent_this_invocation_usd`, each step's
-    `cached_calls` (logged calls whose key got no new row), the probe's cost and any
-    unattributed cost. `error` is the exception a crashed run raised (its report is
-    built from whatever was written)."""
+    `cached_calls` (logged calls whose key got no new row) and any unattributed cost: a
+    new row whose key no logged call has, which a complete call log never leaves.
+    `error` is the exception a crashed run raised (its report is built from whatever
+    was written)."""
     recs = result.records
     rows = L.call_rows(ledger_rows)
     new = rows if new_rows is None else L.call_rows(new_rows)
@@ -416,11 +423,10 @@ def report(result: Result, ledger_rows: Iterable[dict], cfg: dict, *, new_rows: 
     for c in result.calls:
         step = by_step.setdefault(c["step"], _cost())
         step["cached_calls"] = step.get("cached_calls", 0) + (fresh[c["key"]] == 0)
-    probe_cost, unattributed, probed = _cost(), _cost(), set(probe_keys(cfg).values())
+    unattributed = _cost()
     for row in new:
-        key = row.get("request_key")
-        if key not in by_key:
-            _add(probe_cost if key in probed else unattributed, row)
+        if row.get("request_key") not in by_key:
+            _add(unattributed, row)
 
     variants = list(stages.system_variants(cfg))
     judged = [r for r in recs if r["step"] == JUDGE]
@@ -457,7 +463,7 @@ def report(result: Result, ledger_rows: Iterable[dict], cfg: dict, *, new_rows: 
     stop = next((r["error"] for r in recs if r["step"] == BUDGET_STOP), None)
     return {
         "stopped": result.stopped, "budget_stop": stop, "error": error,
-        "cost_by_role": by_role, "cost_by_step": by_step, "probe_cost": probe_cost, "unattributed_cost": unattributed,
+        "cost_by_role": by_role, "cost_by_step": by_step, "unattributed_cost": unattributed,
         "spent_this_invocation_usd": sum(L.row_cost(r) for r in new),
         "h_s2": h_s2, "judge_cost_note": JUDGE_COST_NOTE,
         "my_tasks_per_transcript": per_transcript, "icc": icc, "transcripts_needed": needed,
@@ -505,8 +511,8 @@ def report_markdown(rep: dict) -> str:
     else:
         lines.append("Completed every step.")
     lines += [f"Errors (unusable model answers): {rep['errors']}. Skipped stubs: {', '.join(rep['skipped']) or 'none'}.",
-              f"Spent this invocation: ${rep['spent_this_invocation_usd']:.4f} (probe ${rep['probe_cost']['usd']:.4f},"
-              f" unattributed ${rep['unattributed_cost']['usd']:.4f}). Step costs include earlier invocations'"
+              f"Spent this invocation: ${rep['spent_this_invocation_usd']:.4f} (unattributed"
+              f" ${rep['unattributed_cost']['usd']:.4f}). Step costs include earlier invocations'"
               " rows for requests this run served from cache.", ""]
     if rep.get("probe"):
         lines += ["## --setting-sources probe", ""]
@@ -588,9 +594,10 @@ def execute(cfg: dict, eval_run: L.Run, run_dir: Path, jobs: list[stages.Job], c
     def ask_for(c: dict, cache_dir: Optional[Path], max_budget_usd: float) -> Ask:
         return make_ask(c, ledger=ledger, cache_dir=cache_dir, before_call=check, max_budget_usd=max_budget_usd)
     try:
-        result = run(units, cfg, ask_for(cfg, cache, cap), out)
+        pilot = _Pilot(cfg, ask_for(cfg, cache, cap), out)
+        result = pilot.run(units)
         probe_cap = cfg["eval"]["stages"]["pilot"]["probe_max_budget_usd"]
-        probed = probe(cfg, lambda c: ask_for(c, None, probe_cap))
+        probed = pilot.probe(lambda c: ask_for(c, None, probe_cap))
     except BaseException as exc:
         error = f"{type(exc).__name__}: {exc}"
         raise

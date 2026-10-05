@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import sys
 import tempfile
 import unittest
 from collections import Counter
@@ -393,10 +392,11 @@ class TestCli(CliBase):
             self.assertEqual({v["extract_calls"] for v in rep["h_s2"].values()}, {3})   # 3 transcripts each
             self.assertTrue(rep["probe"]["default"]["ok"] and rep["probe"]["no_settings"]["ok"])
             self.assertEqual(rep["errors"], 0)
-            # Every call this run made is in the report: the steps' plus the probe's two.
+            # Every call this run made is in the report's steps, the probe's two among them.
             steps = sum(c["calls"] for c in rep["cost_by_step"].values())
-            self.assertEqual((steps, rep["probe_cost"]["calls"], rep["unattributed_cost"]["calls"]), (first - 2, 2, 0))
-            self.assertEqual(set(rep["cost_by_step"]), {"extract", "reference", "judge", "calibration"})
+            self.assertEqual((steps, rep["cost_by_step"]["probe"]["calls"], rep["unattributed_cost"]["calls"]),
+                             (first, 2, 0))
+            self.assertEqual(set(rep["cost_by_step"]), {"extract", "reference", "judge", "calibration", "probe"})
             self.assertEqual(self.main("status")[0], 0)
             code, out = self.main("run", "--stage", "pilot")         # all cached: only the uncached probe runs
             self.assertEqual(code, 0, out)

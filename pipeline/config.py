@@ -56,10 +56,6 @@ def read_yaml(path: Path) -> dict:
     return data
 
 
-# Transitional alias for eval/scoring.py, which still imports the old private name.
-_read_yaml = read_yaml
-
-
 def load_config(overlay_path: Optional[Path] = None, overlay: Optional[dict] = None) -> dict[str, Any]:
     """Return the validated config. `overlay` (a dict) is for tests; otherwise the
     overlay file is read from `overlay_path` or the default %APPDATA% location."""

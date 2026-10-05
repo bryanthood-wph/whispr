@@ -26,9 +26,8 @@ EXTRACTOR = "extractor"          # the config `models` role every extract call r
 class Job:
     unit_id: str
     label: str
-    role: str
     prepared: prepare.Prepared
-    system_prompt: Optional[str]
+    schema: dict        # the request's output schema: a cached entry is valid only against it
     key: str
 
 
@@ -46,5 +45,5 @@ def plan(stage: str, cfg: dict, sample: Sample, frame: list[FrameItem]) -> list[
         prep = prepare.prepare([prepare.parse(Path(by_id[unit_id].path))], cfg)
         for label, system in system_variants(cfg).items():
             req = extract.build_request(prep, cfg, role=EXTRACTOR, system_prompt=system)
-            jobs.append(Job(unit_id, label, EXTRACTOR, prep, system, req.key))
+            jobs.append(Job(unit_id, label, prep, req.schema, req.key))
     return jobs

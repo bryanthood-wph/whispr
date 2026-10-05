@@ -50,10 +50,11 @@ def prompt_values(prep: Prepared, cfg: dict) -> dict[str, str]:
 
 
 def build_request(prep: Prepared, cfg: dict, *, role: str, system_prompt: Optional[str] = None) -> Request:
-    template = prompts.load(cfg["prompts"]["extract"])
-    prompt = prompts.render(template, prompt_values(prep, cfg))
+    template_file = cfg["prompts"]["extract"]
+    prompt = prompts.render(prompts.load(template_file), prompt_values(prep, cfg))
     schema = load_schema(cfg)
-    return Request(role, prompt, system_prompt, schema, prompts.sha256_text(template),
+    # The template's hash as eval/PREREGISTRATION.md registers it (the file, author note included).
+    return Request(role, prompt, system_prompt, schema, calls.config_file_sha(template_file),
                    calls.schema_sha(schema),
                    calls.request_key(cfg, role, prompt, schema, system_prompt))
 

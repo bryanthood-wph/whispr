@@ -4,9 +4,9 @@ the scorecard (docs/plan/B-eval.md B.6, B.7). Pure stdlib + numpy; no model call
 Conventions (all functions below):
 
 - A metric is a **ratio estimator** over one config's outcomes for that metric:
-  sum(w * value) / sum(w * 1), one term per item, w = frame_n[cell] / sample n[cell].
-- Outcomes whose unit is not in the design are ignored. That is how a filtered
-  design (exclude_low_mic) scores the same outcome list.
+  sum(w * value) / sum(w * 1), one term per item, w = Design.weights().
+- Outcomes whose unit is not in the design are ignored, so one outcome list scores
+  against each design (eval.frame.design's primary and low-mic ones).
 - **Strata are domains.** A stratum (or the `units` argument of ratio/bootstrap) is an
   indicator on the per-unit numerator and denominator: units outside it contribute 0.
   Weights and resamples are the full design's, so a domain's size varies across
@@ -45,7 +45,7 @@ from typing import Any, Iterable, Optional, Sequence
 import numpy as np
 
 from eval.records import Design, Outcome, Unit
-from pipeline.config import DEFAULTS_PATH, _read_yaml, load_schema
+from pipeline.config import DEFAULTS_PATH, load_schema, read_yaml
 from pipeline.jsonschema_lite import validate
 from whispr.fileio import atomic_write_text
 
@@ -195,13 +195,6 @@ def _nullable(x: float) -> Optional[float]:
 
 # ------------------------------------------------------------------ the analyses
 
-def exclude_low_mic(design: Design) -> Design:
-    """`design` with its low-mic units removed and frame_n kept as given. The harness's
-    primary design (eval.frame.design) already holds no low-mic units and counts only
-    non-low-mic transcripts in frame_n (B.3), so there this changes nothing."""
-    return Design(dict(design.frame_n), tuple(u for u in design.units if not u.low_mic))
-
-
 def _usable(calibration: Calibration, cfg: dict) -> bool:
     """B.5: a correction needs both figures, sens + spec > 1, and sensitivity on target."""
     sens, spec = calibration.sensitivity, calibration.specificity
@@ -217,7 +210,7 @@ def _point(estimate: float, lo: float, hi: float) -> dict:
 class ScorecardBuild:
     """One design and one outcome list, prepared once for every estimate of a scorecard.
 
-    - Design weights frame_n[cell] / sample n[cell] are computed once.
+    - Design weights (Design.weights) are computed once.
     - Outcomes are indexed once into per-unit arrays keyed by (config, metric), aligned
       with design.units: weighted numerator, weighted denominator and item count. Point
       estimates and replicates come from the same arrays.
@@ -225,7 +218,7 @@ class ScorecardBuild:
       config, metric and stratum of the build. It is (replicates x units) floats, about
       10 MB at 10,000 replicates, so it lives only as long as the build.
 
-    A filtered design (exclude_low_mic) is a different design: give it its own build.
+    Another design (e.g. the low-mic one) is a different design: give it its own build.
     """
 
     def __init__(self, design: Design, outcomes: Iterable[Outcome]):
@@ -234,7 +227,7 @@ class ScorecardBuild:
         n = len(units)
         pos = {u.id: i for i, u in enumerate(units)}
         sampled = Counter(u.cell for u in units)
-        weights = np.array([design.frame_n[u.cell] / sampled[u.cell] for u in units], dtype=float)
+        weights = np.array(design.weights(), dtype=float)
         self._cells = [u.cell for u in units]
         self._resamplable = np.array([sampled[u.cell] > 1 for u in units], dtype=bool)
         index: dict[tuple[str, str], tuple[list[int], list[float]]] = {}
@@ -530,7 +523,7 @@ def my_task_bar(*, recall: Optional[float], recall_lb: Optional[float], precisio
 
 def _schema(cfg: Optional[dict]) -> dict:
     if cfg is None:                                      # the schema path is not per-user
-        cfg = _read_yaml(DEFAULTS_PATH)
+        cfg = read_yaml(DEFAULTS_PATH)
     return load_schema(cfg, "scorecard")
 
 

@@ -14,7 +14,7 @@ from eval import ledger as L
 from eval import pilot as P
 from eval import scoring as S
 from eval import stages
-from pipeline import extract
+from pipeline import calls, extract
 from pipeline.models import read_jsonl
 from test_eval_harness import CliBase
 from test_eval_pilot_contract import _Base, fake_ask
@@ -149,7 +149,6 @@ class TestFixes(_PilotBase):
         keys = list(dict.fromkeys(c["key"] for c in result.calls))
         old = [{"request_key": k, "cost_usd": 0.01} for k in keys]          # an earlier invocation's rows
         new = [{"request_key": keys[0], "cost_usd": 0.02},                   # a fresh call of the first key
-               *({"request_key": k, "cost_usd": 0.0015} for k in P.probe_keys(self.cfg).values()),
                {"request_key": "stray", "cost_usd": 0.004}]
         rep = P.report(result, old + new, self.cfg, new_rows=new)
         steps = rep["cost_by_step"].values()
@@ -159,9 +158,8 @@ class TestFixes(_PilotBase):
         fresh = Counter(c["step"] for c in result.calls if c["key"] == keys[0])
         self.assertEqual({s: c["cached_calls"] for s, c in rep["cost_by_step"].items()},
                          {s: n - fresh[s] for s, n in logged.items()})
-        self.assertEqual((rep["probe_cost"]["calls"], rep["probe_cost"]["usd"]), (2, 0.003))
         self.assertEqual((rep["unattributed_cost"]["calls"], rep["unattributed_cost"]["usd"]), (1, 0.004))
-        self.assertAlmostEqual(rep["spent_this_invocation_usd"], 0.027)
+        self.assertAlmostEqual(rep["spent_this_invocation_usd"], 0.024)
 
     def test_e_design_effect_is_clamped_at_one(self):
         # m = 0.5: unclamped, 1 + (m - 1) rho = 0.75 would credit 0.67 effective items per transcript.
@@ -213,6 +211,8 @@ class TestFixes(_PilotBase):
         extracts = [r for r in result.records if r["step"] == P.EXTRACT]
         self.assertTrue(extracts)
         req = extract.build_request(self.units[0][1], self.cfg, role=stages.EXTRACTOR)
+        # The same hash eval/PREREGISTRATION.md registers and preflight.provenance records.
+        self.assertEqual(req.template_sha256, calls.config_file_sha(self.cfg["prompts"]["extract"]))
         for r in extracts:
             self.assertEqual((r["template_sha256"], r["schema_sha256"]), (req.template_sha256, req.schema_sha256))
 
@@ -252,7 +252,10 @@ class TestCliPilot(CliBase):
         run_dir, rep = self.run_dir(), self.report()
         self.assertTrue(rep["run_id"].startswith("pilot-"))
         self.assertEqual(set(rep["probe"]), {"default", "no_settings"})
-        records = [json.loads(line) for line in (run_dir / P.RECORDS_FILE).read_text(encoding="utf-8").splitlines()]
+        probed = [c for c in read_jsonl(run_dir / P.CALLS_FILE) if c["step"] == P.PROBE]
+        self.assertEqual((len(probed), len({c["key"] for c in probed})), (2, 2))   # base_args are in the key
+        self.assertIn(P.PROBE, rep["cost_by_step"])
+        records =[json.loads(line) for line in (run_dir / P.RECORDS_FILE).read_text(encoding="utf-8").splitlines()]
         units = {r["unit"] for r in records if "unit" in r}
         self.assertEqual(len(units), self.cfg["eval"]["sample"]["pilot_n"])
         self.assertIn("# Pilot pilot-", (run_dir / P.REPORT_MD).read_text(encoding="utf-8"))

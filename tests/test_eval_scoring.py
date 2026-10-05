@@ -204,20 +204,6 @@ class TestLowMicAndStrata(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def test_exclude_low_mic_keeps_frame_n(self):
-        d = _design({"c1": (30, 6), "c2": (8, 2)}, low_mic_every=3)
-        primary = S.exclude_low_mic(d)
-        self.assertEqual(primary.frame_n, d.frame_n)
-        self.assertFalse(any(u.low_mic for u in primary.units))
-        self.assertEqual(len(primary.units), 5)              # c1-0, c1-3, c2-0 removed
-        self.assertEqual(primary.weight(primary.units[0]), 30 / 4)
-
-    def test_low_mic_outcomes_drop_out_of_primary_ratio(self):
-        d = _design({"c1": (10, 2)}, low_mic_every=2)        # c1-0 is low-mic
-        outs = [Outcome("c1-0", "B", M, "i1", 0.0), Outcome("c1-1", "B", M, "i2", 1.0)]
-        self.assertEqual(S.ratio(d, outs, "B", M), 0.5)
-        self.assertEqual(S.ratio(S.exclude_low_mic(d), outs, "B", M), 1.0)
-
     def test_strata_by_each_dimension(self):
         d = _design({"c1": (100, 20), "c2": (20, 4)}, low_mic_every=4)
         outs = _outs(d, "B", 0.8, 9)

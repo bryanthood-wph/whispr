@@ -29,10 +29,15 @@ class Design:
     frame_n: dict[str, int]
     units: tuple[Unit, ...]
 
+    def weights(self) -> tuple[float, ...]:
+        """The B.6 design weight of each unit, aligned with `units`: frame N / sample n
+        for the unit's cell, how many frame transcripts it stands for."""
+        sampled = Counter(u.cell for u in self.units)
+        return tuple(self.frame_n[u.cell] / sampled[u.cell] for u in self.units)
+
     def weight(self, unit: Unit) -> float:
-        """Frame N / sample n for the unit's cell: how many frame transcripts it stands for."""
-        sampled = Counter(u.cell for u in self.units)[unit.cell]
-        return self.frame_n[unit.cell] / sampled
+        """`weights()` for one of the design's units."""
+        return self.weights()[self.units.index(unit)]
 
 
 @dataclass(frozen=True)

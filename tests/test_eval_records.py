@@ -12,6 +12,7 @@ class TestDesign(unittest.TestCase):
         d = Design({"c1": 10, "c2": 7}, units)
         self.assertEqual(d.weight(units[0]), 5.0)
         self.assertEqual(d.weight(units[2]), 7.0)
+        self.assertEqual(d.weights(), (5.0, 5.0, 7.0))     # aligned with units
 
 
 if __name__ == "__main__":
