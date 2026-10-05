@@ -23,8 +23,11 @@ auth:
   # Claude Code (claude.ai / enterprise) sign-in, not an API key (decision 2026-10-04).
   approved_sources: [none]
   # Environment variables removed from every child claude process, by prefix, so a
-  # call never inherits a parent session (CLAUDECODE, ...) or an API key.
-  strip_env_prefixes: [CLAUDE, ANTHROPIC]
+  # call never inherits a parent session (CLAUDECODE, ...) or an API key, nor a
+  # structured-output retry limit set wherever the run was launched (the CLI reads it
+  # from the environment whatever --setting-sources says). cli.thinking_tokens_env is
+  # always stripped too.
+  strip_env_prefixes: [CLAUDE, ANTHROPIC, MAX_STRUCTURED_OUTPUT_RETRIES]
   # A call refuses to start while any of these is set in our own environment (lesson L3).
   refuse_if_set: [CLAUDECODE]
 
@@ -44,17 +47,22 @@ cli:
   # (pipeline/models.py split_prompt; pilot 2026-10-05: one user block re-wrote the
   # transcript to the prompt cache on every call).
   cached_prefix_until: ["THE ITEM", "QUESTION"]
+  # The variable a role's thinking_tokens is passed in: the CLI's extended-thinking budget
+  # for a model with a fixed budget (Haiku 4.5, which takes no --effort); 0 turns thinking off.
+  thinking_tokens_env: MAX_THINKING_TOKENS
   timeout_s: 900
 
 models:
-  # Role -> model and effort (null effort = CLI default). Rosters: B.10 (eval), D.3 (production).
-  extractor:        {model: haiku, effort: null}
-  reference_a:      {model: claude-opus-5-5, effort: high}
-  reference_b:      {model: claude-sonnet-5-5, effort: high}
-  matcher:          {model: haiku, effort: null}
-  judge:            {model: haiku, effort: null}
-  judge_escalate_1: {model: claude-sonnet-5-5, effort: null}
-  judge_escalate_2: {model: claude-opus-5-5, effort: null}
+  # Role -> model, effort and thinking budget (null = CLI default; thinking_tokens goes in
+  # cli.thinking_tokens_env). Haiku 4.5 takes no --effort: its knob is thinking_tokens.
+  # Rosters: B.10 (eval), D.3 (production).
+  extractor:        {model: haiku, effort: null, thinking_tokens: null}
+  reference_a:      {model: claude-opus-5-5, effort: high, thinking_tokens: null}
+  reference_b:      {model: claude-sonnet-5-5, effort: high, thinking_tokens: null}
+  matcher:          {model: haiku, effort: null, thinking_tokens: null}
+  judge:            {model: haiku, effort: null, thinking_tokens: null}
+  judge_escalate_1: {model: claude-sonnet-5-5, effort: null, thinking_tokens: null}
+  judge_escalate_2: {model: claude-opus-5-5, effort: null, thinking_tokens: null}
 
 prompts:
   extract: prompts/extract.md

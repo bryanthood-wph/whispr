@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from pipeline import models
+from pipeline import calls, models
 from pipeline.config import load_config
 from pipeline_helpers import fake_cli, overlay, scrubbed_env
 
@@ -71,6 +71,29 @@ class TestModelsCall(_CallBase):
         self._call()
         argv = json.loads(self.args_out.read_text(encoding="utf-8"))["argv"]
         self.assertEqual(argv[argv.index("--effort") + 1], "high")
+
+    def test_thinking_budget_is_set_per_role_and_never_inherited(self):
+        name = self.cfg["cli"]["thinking_tokens_env"]
+        with mock.patch.dict(os.environ, {name: "9999", "MAX_STRUCTURED_OUTPUT_RETRIES": "9"}):
+            self._call()                                    # extractor: thinking_tokens null
+            self.assertEqual(json.loads(self.args_out.read_text(encoding="utf-8"))["env_max"], {})
+            self.cfg["models"]["extractor"]["thinking_tokens"] = 0
+            self._call()
+            self.assertEqual(json.loads(self.args_out.read_text(encoding="utf-8"))["env_max"], {name: "0"})
+
+    def test_a_thinking_budget_is_keyed_only_when_set(self):
+        key = lambda: calls.request_key(self.cfg, "extractor", "P", {"type": "object"}, None)
+        unset = key()
+        self.cfg["models"]["extractor"]["thinking_tokens"] = 0
+        self.assertNotEqual(key(), unset)
+        self.cfg["models"]["extractor"]["thinking_tokens"] = None
+        self.assertEqual(key(), unset)
+
+    def test_ledger_records_turns_result_length_and_other_usage(self):
+        self._call(json_schema={"type": "object"})
+        row, = self._ledger()
+        self.assertEqual((row["num_turns"], row["result_chars"]), (1, len('{"ok": true}')))
+        self.assertEqual(row["usage_other"], {"output_tokens_details": {"thinking_tokens": 12}})
 
     def test_refuses_inside_a_claude_session(self):
         os.environ["CLAUDECODE"] = "1"

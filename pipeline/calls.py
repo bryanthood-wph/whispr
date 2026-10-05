@@ -74,6 +74,8 @@ def request_key(cfg: dict, role: str, prompt: str, schema: dict, system_prompt: 
                "system_prompt": system_prompt, "schema": schema_sha(schema), "prompt": prompt}
     if replicate:
         request["replicate"] = replicate
+    if spec["thinking_tokens"] is not None:     # keyed only when set: a null budget keeps its key
+        request["thinking_tokens"] = spec["thinking_tokens"]
     prefix, _ = models.split_prompt(cfg, prompt)
     if prefix is not None:          # delivered in two parts: a different request to the model
         request["system_prefix_chars"] = len(prefix)

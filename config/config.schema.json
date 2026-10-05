@@ -10,10 +10,11 @@
     "money": {"type": "number", "minimum": 0},
     "frac": {"type": "number", "minimum": 0, "maximum": 1},
     "role": {
-      "type": "object", "additionalProperties": false, "required": ["model", "effort"],
+      "type": "object", "additionalProperties": false, "required": ["model", "effort", "thinking_tokens"],
       "properties": {
         "model": {"$ref": "#/$defs/str"},
-        "effort": {"type": ["string", "null"], "enum": [null, "low", "medium", "high", "xhigh", "max"]}
+        "effort": {"type": ["string", "null"], "enum": [null, "low", "medium", "high", "xhigh", "max"]},
+        "thinking_tokens": {"type": ["integer", "null"], "minimum": 0}
       }
     },
     "cell": {
@@ -53,12 +54,13 @@
       }
     },
     "cli": {
-      "type": "object", "additionalProperties": false, "required": ["executable", "base_args", "isolation_args", "cached_prefix_until", "timeout_s"],
+      "type": "object", "additionalProperties": false, "required": ["executable", "base_args", "isolation_args", "cached_prefix_until", "thinking_tokens_env", "timeout_s"],
       "properties": {
         "executable": {"$ref": "#/$defs/str"},
         "base_args": {"$ref": "#/$defs/strs"},
         "isolation_args": {"$ref": "#/$defs/strs"},
         "cached_prefix_until": {"$ref": "#/$defs/strs"},
+        "thinking_tokens_env": {"$ref": "#/$defs/str"},
         "timeout_s": {"type": "number", "minimum": 1}
       }
     },

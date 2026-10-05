@@ -10,7 +10,8 @@ and the event stream on stdout. Before and during each call this module:
   before the model is called
 - fails closed if the stream never reports an auth source at all
 - passes --max-budget-usd, and appends model, effort, tokens, cost and auth source
-  to the run ledger for every launched call, including ones that fail or are killed
+  (plus the turn count, the result text's length and any usage fields it does not
+  parse, which show where output tokens went) to the run ledger for every launched call, including ones that fail or are killed
   (the money may be spent either way). A call with no result event is recorded at
   its budget cap, flagged as an upper bound, so the eval budget never undercounts,
   unless the CLI exited on its own without emitting a single event: events start
@@ -72,8 +73,14 @@ class CallResult:
     is_error: bool
     request_key: Optional[str] = None
     cost_is_upper_bound: bool = False
+    num_turns: int = 0
+    result_chars: int = 0             # the result text: prose beside a ~20-token structured answer
+    usage_other: dict = field(default_factory=dict)   # usage fields not parsed above (thinking, say)
     raw_result: dict = field(default_factory=dict, repr=False)
 
+
+# The result event's usage fields CallResult parses; the rest go to `usage_other`.
+_PARSED_USAGE = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
 
 # The token counts a ledger row carries (a CallResult's fields, so a new one shows up here).
 TOKEN_FIELDS = tuple(f.name for f in fields(CallResult) if f.name.endswith("_tokens"))
@@ -95,9 +102,16 @@ def resolve_executable(name: str) -> str:
     return found
 
 
-def child_env(cfg: dict) -> dict[str, str]:
-    prefixes = tuple(cfg["auth"]["strip_env_prefixes"])
-    return {k: v for k, v in os.environ.items() if not k.upper().startswith(prefixes)}
+def child_env(cfg: dict, role: Optional[str] = None) -> dict[str, str]:
+    """os.environ less the auth.strip_env_prefixes variables and cli.thinking_tokens_env
+    (never inherited), plus `role`'s thinking budget (models.<role>.thinking_tokens) in
+    cli.thinking_tokens_env when it is set."""
+    prefixes = (*cfg["auth"]["strip_env_prefixes"], cfg["cli"]["thinking_tokens_env"])
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith(prefixes)}
+    thinking = cfg["models"][role]["thinking_tokens"] if role else None
+    if thinking is not None:
+        env[cfg["cli"]["thinking_tokens_env"]] = str(thinking)
+    return env
 
 
 def split_prompt(cfg: dict, prompt: str) -> tuple[Optional[str], str]:
@@ -220,7 +234,7 @@ def _launch(cfg: dict, role: str, prompt: str, system_append: Optional[Path], *,
     try:
         proc = subprocess.Popen(
             args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            cwd=data_dir(cfg, "work"), env=child_env(cfg), text=True, encoding="utf-8", errors="replace",
+            cwd=data_dir(cfg, "work"), env=child_env(cfg, role), text=True, encoding="utf-8", errors="replace",
         )
     except OSError as exc:            # nothing ran, so nothing was spent; the row settles any reservation
         append_jsonl(ledger, {"role": role, "model": spec["model"], "request_key": request_key, "cost_usd": 0.0,
@@ -294,6 +308,8 @@ def _launch(cfg: dict, role: str, prompt: str, system_append: Optional[Path], *,
         input_tokens=int(usage.get("input_tokens") or 0), output_tokens=int(usage.get("output_tokens") or 0),
         cache_read_tokens=int(usage.get("cache_read_input_tokens") or 0),
         cache_creation_tokens=int(usage.get("cache_creation_input_tokens") or 0),
+        num_turns=int(result.get("num_turns") or 0), result_chars=len(result.get("result") or ""),
+        usage_other={k: v for k, v in usage.items() if k not in _PARSED_USAGE},
         duration_ms=int((time.monotonic() - started) * 1000),
         is_error=bool(result.get("is_error")) or not result or proc.returncode != 0,
         request_key=request_key, raw_result=result, cost_is_upper_bound=not has_cost and not spent_nothing,

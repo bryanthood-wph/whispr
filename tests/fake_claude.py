@@ -4,8 +4,9 @@ Behavior comes from FAKE_CLAUDE_MODE: ok | apikey | noinit | error | nostructure
 badargs (rejects its arguments: stderr only, no events, exit 1) | hooksonly (one non-init
 event, then exit 1 with no result) | silenthang (no events, then hangs) | junk (a bare JSON
 value on stdout before the normal events).
-FAKE_CLAUDE_ARGS_OUT, if set, receives {"argv", "stdin", "system_append", "env_keys"} as JSON
-(system_append: the --append-system-prompt-file content, or null).
+FAKE_CLAUDE_ARGS_OUT, if set, receives {"argv", "stdin", "system_append", "env_keys", "env_max"}
+as JSON (system_append: the --append-system-prompt-file content, or null; env_max: the
+MAX_* variables and their values, such as the thinking budget).
 FAKE_CLAUDE_STRUCTURED, if set, is the structured_output JSON to return.
 FAKE_CLAUDE_BY_PROPERTY, if set, is {property: structured_output}: the first entry whose
 property the --json-schema declares wins over FAKE_CLAUDE_STRUCTURED. An entry with
@@ -26,7 +27,8 @@ if "--append-system-prompt-file" in sys.argv:
 if os.environ.get("FAKE_CLAUDE_ARGS_OUT"):
     with open(os.environ["FAKE_CLAUDE_ARGS_OUT"], "w", encoding="utf-8") as fh:
         json.dump({"argv": sys.argv[1:], "stdin": stdin, "system_append": system_append,
-                   "env_keys": sorted(os.environ)}, fh)
+                   "env_keys": sorted(os.environ),
+                   "env_max": {k: v for k, v in os.environ.items() if k.upper().startswith("MAX_")}}, fh)
 
 if mode == "badargs":
     print("Error: --json-schema is not a valid JSON Schema (test)", file=sys.stderr)
@@ -55,6 +57,8 @@ print(json.dumps({
     "type": "result", "is_error": mode == "error", "total_cost_usd": 0.0123,
     "result": "boom" if mode == "error" else json.dumps(structured),
     "structured_output": None if mode in ("nostructured", "error") else structured,
-    "usage": {"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 5, "cache_creation_input_tokens": 0},
+    "num_turns": 1,
+    "usage": {"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 5, "cache_creation_input_tokens": 0,
+              "output_tokens_details": {"thinking_tokens": 12}},
 }), flush=True)
 sys.exit(1 if mode == "error" else 0)
