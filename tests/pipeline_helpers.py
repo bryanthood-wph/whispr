@@ -6,6 +6,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from fake_version import FAKE_VERSION
 from pipeline import models, prepare
 
 # Stands in for the claude CLI (see fake_claude.py).
@@ -77,7 +78,8 @@ def prepared(cfg: dict, start: str, turns: list[tuple[str, str, str]], **kw) -> 
 
 def fake_cli() -> dict:
     """The `cli` overlay section that runs fake_claude.py in place of the claude CLI."""
-    return {"executable": sys.executable, "base_args": [FAKE_CLAUDE], "timeout_s": 20}
+    return {"executable": sys.executable, "version": FAKE_VERSION, "base_args": [FAKE_CLAUDE],
+            "timeout_s": 20}
 
 
 def scrubbed_env(cfg: dict, **extra: str) -> dict[str, str]:

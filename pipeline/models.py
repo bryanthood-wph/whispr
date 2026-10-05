@@ -102,6 +102,18 @@ def resolve_executable(name: str) -> str:
     return found
 
 
+def cli_version(cfg: dict) -> str:
+    """The version the CLI reports (`--version`, first word), run with the eval's own
+    arguments and environment. Makes no model call."""
+    out = subprocess.run([resolve_executable(cfg["cli"]["executable"]), *cli_args(cfg), "--version"],
+                         capture_output=True, text=True, stdin=subprocess.DEVNULL, env=child_env(cfg),
+                         timeout=cfg["cli"]["timeout_s"])
+    words = out.stdout.split()
+    if out.returncode != 0 or not words:
+        raise ModelCallError(f"`--version` failed (exit {out.returncode}): {out.stderr[-300:]!r}")
+    return words[0]
+
+
 def child_env(cfg: dict, role: Optional[str] = None) -> dict[str, str]:
     """os.environ less the auth.strip_env_prefixes variables and cli.thinking_tokens_env
     (never inherited), plus `role`'s thinking budget (models.<role>.thinking_tokens) in

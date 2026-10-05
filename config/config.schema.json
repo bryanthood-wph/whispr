@@ -54,9 +54,10 @@
       }
     },
     "cli": {
-      "type": "object", "additionalProperties": false, "required": ["executable", "base_args", "isolation_args", "cached_prefix_until", "thinking_tokens_env", "timeout_s"],
+      "type": "object", "additionalProperties": false, "required": ["executable", "version", "base_args", "isolation_args", "cached_prefix_until", "thinking_tokens_env", "timeout_s"],
       "properties": {
         "executable": {"$ref": "#/$defs/str"},
+        "version": {"$ref": "#/$defs/str"},
         "base_args": {"$ref": "#/$defs/strs"},
         "isolation_args": {"$ref": "#/$defs/strs"},
         "cached_prefix_until": {"$ref": "#/$defs/strs"},

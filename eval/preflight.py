@@ -9,7 +9,7 @@ from pathlib import Path
 
 from pipeline.calls import canonical, config_file_sha
 from pipeline.config import CONFIG_DIR, PLANTING_PATH
-from pipeline.models import refused_env
+from pipeline.models import ModelCallError, cli_version, refused_env
 from pipeline.prompts import sha256_text
 
 REPO = Path(__file__).resolve().parent.parent
@@ -53,7 +53,23 @@ def provenance(cfg: dict) -> dict:
     registered file's hash as registered, so a run is tied to eval/PREREGISTRATION.md."""
     return {"commit": git("rev-parse", "HEAD"), "tags": git("tag", "--points-at", "HEAD").split(),
             "effective_config_sha256": sha256_text(canonical(cfg)),
-            "config_sha256": {rel: config_file_sha(rel) for rel in registered_files(cfg)}}
+            "config_sha256": {rel: config_file_sha(rel) for rel in registered_files(cfg)},
+            "cli_version": _version_or_error(cfg)}
+
+
+def _version_or_error(cfg: dict) -> str:
+    try:
+        return cli_version(cfg)
+    except (ModelCallError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        return f"unknown ({exc})"
+
+
+def version_refusals(cfg: dict) -> list[str]:
+    """A reason when the CLI does not report the pinned cli.version: roles left at a CLI
+    default would run with that version's defaults instead of the measured ones."""
+    found, pinned = _version_or_error(cfg), cfg["cli"]["version"]
+    return [] if found == pinned else [
+        f"the claude CLI reports {found}, but cli.version pins {pinned} (re-pilot, then amend cli.version)"]
 
 
 def run_tag(cfg: dict, stage: str) -> str:
@@ -67,4 +83,4 @@ def refusals(cfg: dict, stage: str) -> list[str]:
     tag = run_tag(cfg, stage)
     if tag not in git("tag", "--points-at", "HEAD").split():
         reasons.append(f"HEAD is not tagged {tag} (G.3)")
-    return reasons + hash_refusals(cfg)
+    return reasons + hash_refusals(cfg) + version_refusals(cfg)

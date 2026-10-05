@@ -4,6 +4,7 @@ Behavior comes from FAKE_CLAUDE_MODE: ok | apikey | noinit | error | nostructure
 badargs (rejects its arguments: stderr only, no events, exit 1) | hooksonly (one non-init
 event, then exit 1 with no result) | silenthang (no events, then hangs) | junk (a bare JSON
 value on stdout before the normal events).
+--version prints FAKE_CLAUDE_VERSION (default FAKE_VERSION) and exits.
 FAKE_CLAUDE_ARGS_OUT, if set, receives {"argv", "stdin", "system_append", "env_keys", "env_max"}
 as JSON (system_append: the --append-system-prompt-file content, or null; env_max: the
 MAX_* variables and their values, such as the thinking budget).
@@ -18,7 +19,12 @@ import os
 import sys
 import time
 
+from fake_version import FAKE_VERSION   # the script's own directory is on sys.path
+
 mode = os.environ.get("FAKE_CLAUDE_MODE", "ok")
+if "--version" in sys.argv:
+    print(f"{os.environ.get('FAKE_CLAUDE_VERSION', FAKE_VERSION)} (Claude Code)")
+    sys.exit(0)
 stdin = sys.stdin.read()
 system_append = None
 if "--append-system-prompt-file" in sys.argv:

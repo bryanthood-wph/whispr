@@ -319,6 +319,24 @@ class TestCli(CliBase):
             tags["tag"] = "v0.1.0 eval-pilot"
             self.assertEqual(preflight.refusals(self.cfg, "pilot"), [])
 
+    def test_a_cli_version_other_than_the_pinned_one_is_refused(self):
+        tags = {"status": "", "tag": "eval-pilot", "rev-parse": "abc"}
+        with mock.patch("eval.preflight.git", side_effect=lambda *a: tags[a[0]]):
+            with mock.patch.dict(os.environ, {"FAKE_CLAUDE_VERSION": "9.9.9"}):
+                reasons = preflight.refusals(self.cfg, "pilot")
+                self.assertEqual(preflight.provenance(self.cfg)["cli_version"], "9.9.9")
+            self.assertEqual(len(reasons), 1)
+            self.assertIn(f"reports 9.9.9, but cli.version pins {self.cfg['cli']['version']}", reasons[0])
+            self.assertEqual(preflight.provenance(self.cfg)["cli_version"], self.cfg["cli"]["version"])
+
+    def test_a_cli_that_cannot_report_its_version_is_refused(self):
+        self.cfg["cli"]["executable"] = str(self.root / "no-such-claude.exe")
+        tags = {"status": "", "tag": "eval-pilot", "rev-parse": "abc"}
+        with mock.patch("eval.preflight.git", side_effect=lambda *a: tags[a[0]]):
+            reasons = preflight.refusals(self.cfg, "pilot")
+        self.assertEqual(len(reasons), 1)
+        self.assertIn("reports unknown", reasons[0])
+
     def test_provenance_records_every_registered_hash(self):
         with mock.patch("eval.preflight.git", return_value="abc"):
             hashes = preflight.provenance(self.cfg)["config_sha256"]
@@ -342,7 +360,7 @@ class TestCli(CliBase):
                           encoding="utf-8")
         self.ov["prompts"] = {"extract": str(edited)}
         self.ov_path.write_text(yaml.safe_dump(self.ov), encoding="utf-8")
-        tags = {"status": "", "tag": "eval-pilot"}
+        tags = {"status": "", "tag": "eval-pilot", "rev-parse": "abc"}
         with mock.patch("eval.preflight.git", side_effect=lambda *a: tags[a[0]]):
             reasons = preflight.refusals(load_config(overlay=self.ov), "pilot")
             self.assertEqual(len(reasons), 1)
@@ -358,7 +376,7 @@ class TestCli(CliBase):
         digest = preflight.registered_hashes()[rel]
         tampered = self.root / "PREREGISTRATION.md"
         tampered.write_text(table.replace(digest, "0" * 64), encoding="utf-8")
-        tags = {"status": "", "tag": "eval-pilot"}
+        tags = {"status": "", "tag": "eval-pilot", "rev-parse": "abc"}
         with mock.patch("eval.preflight.git", side_effect=lambda *a: tags[a[0]]), \
              mock.patch("eval.preflight.PREREG", tampered):
             reasons = preflight.refusals(self.cfg, "pilot")

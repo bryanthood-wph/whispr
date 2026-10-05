@@ -33,6 +33,11 @@ auth:
 
 cli:
   executable: claude
+  # The CLI version every run must report (`claude --version`). Roles left at a CLI
+  # default (null effort or thinking_tokens) get whatever this version does, and the
+  # pilot's judge A/B showed the thinking default moves accuracy, so a run refuses on any
+  # other version: re-pilot, then amend this (2026-10-05 amendment).
+  version: "2.1.289"
   # Arguments for every call: print mode, machine-readable events, no tools, no MCP,
   # nothing persisted. The prompt goes over stdin; model/effort/schema/budget are added per call.
   base_args: ["-p", "--output-format", "stream-json", "--verbose", "--tools", "", "--strict-mcp-config", "--no-session-persistence"]
@@ -60,11 +65,13 @@ models:
   reference_a:      {model: claude-opus-5-5, effort: high, thinking_tokens: null}
   reference_b:      {model: claude-sonnet-5-5, effort: high, thinking_tokens: null}
   matcher:          {model: haiku, effort: null, thinking_tokens: null}
-  # judge thinking off (2026-10-05 amendment, pending its pilot A/B): the answer is ~20 tokens,
-  # but the pilot's judge averaged ~1,080 output tokens of default thinking, 58% of its cost.
-  judge:            {model: haiku, effort: null, thinking_tokens: 0}
-  judge_escalate_1: {model: claude-sonnet-5-5, effort: null, thinking_tokens: null}
-  judge_escalate_2: {model: claude-opus-5-5, effort: null, thinking_tokens: null}
+  # judge: default thinking. The pilot A/B with thinking off (2026-10-05) failed its
+  # pre-registered rule (supported specificity 0.889 < 0.90; my-task recall 0.70 -> 0.55).
+  judge:            {model: haiku, effort: null, thinking_tokens: null}
+  # Escalations pinned to their models' documented default efforts, so the pilot's
+  # measurements hold whatever a later CLI defaults to.
+  judge_escalate_1: {model: claude-sonnet-5-5, effort: high, thinking_tokens: null}
+  judge_escalate_2: {model: claude-opus-5-5, effort: medium, thinking_tokens: null}
 
 prompts:
   extract: prompts/extract.md

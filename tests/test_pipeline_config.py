@@ -6,7 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pipeline.config import ConfigError, load_config
+import yaml
+
+from pipeline.config import DEFAULTS_PATH, ConfigError, load_config
 from pipeline.jsonschema_lite import SchemaError, validate
 from pipeline_helpers import overlay
 
@@ -77,6 +79,17 @@ class TestJsonSchemaLite(unittest.TestCase):
             "a": {"type": "array", "items": {"type": "string", "pattern": "^x$"}}}}
         with self.assertRaises(SchemaError):
             validate({"a": []}, schema)
+
+
+class TestRosterPins(unittest.TestCase):
+    """The 2026-10-05 amendments: escalations pinned to their measured efforts, and the
+    judge left at the CLI default thinking after the thinking-off A/B failed its rule."""
+
+    def test_pinned_roles(self):
+        roles = yaml.safe_load(DEFAULTS_PATH.read_text(encoding="utf-8"))["models"]
+        self.assertEqual(roles["judge_escalate_1"]["effort"], "high")
+        self.assertEqual(roles["judge_escalate_2"]["effort"], "medium")
+        self.assertIsNone(roles["judge"]["thinking_tokens"])
 
 
 if __name__ == "__main__":
