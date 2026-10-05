@@ -3,7 +3,7 @@
   "title": "whispr pipeline config (defaults.yaml merged with the user overlay)",
   "type": "object",
   "additionalProperties": false,
-  "required": ["config_version", "owner", "paths", "auth", "cli", "models", "prompts", "schemas", "ontology", "prepare", "pipeline", "eval"],
+  "required": ["config_version", "owner", "paths", "auth", "cli", "models", "prompts", "schemas", "ontology", "prepare", "extract", "pipeline", "eval"],
   "$defs": {
     "str": {"type": "string", "minLength": 1},
     "strs": {"type": "array", "items": {"type": "string"}},
@@ -88,6 +88,10 @@
         "metadata_reject_patterns": {"$ref": "#/$defs/strs"},
         "mojibake_markers": {"$ref": "#/$defs/strs"}
       }
+    },
+    "extract": {
+      "type": "object", "additionalProperties": false, "required": ["missing_value", "list_separator"],
+      "properties": {"missing_value": {"$ref": "#/$defs/str"}, "list_separator": {"$ref": "#/$defs/str"}}
     },
     "pipeline": {
       "type": "object", "additionalProperties": false, "required": ["max_attempts", "max_budget_per_call_usd"],

@@ -83,6 +83,11 @@ prepare:
   # Encoding (L9): any text containing one of these is rejected as mojibake.
   mojibake_markers: ["Γ", "�"]
 
+extract:
+  # How episode metadata fills the extract prompt's placeholders.
+  missing_value: not recorded   # a null title/organizer, or no attendees
+  list_separator: ', '          # joins attendee names
+
 pipeline:
   max_attempts: 3
   max_budget_per_call_usd: 1.00

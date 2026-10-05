@@ -10,6 +10,7 @@ import yaml
 
 from pipeline.config import config_file
 from pipeline.jsonschema_lite import validate
+from pipeline_helpers import EXTRACT_SAMPLE as SAMPLE
 
 
 def _load_json(rel):
@@ -21,24 +22,6 @@ EXTRACT = _load_json("schema/extract.json")
 TASK = _load_json("schema/task.json")
 with open(config_file("ontology.yaml"), encoding="utf-8") as _fh:
     ONTOLOGY = yaml.safe_load(_fh)
-
-SAMPLE = {
-    "headline": "The team agreed to ship the deck Friday.",
-    "sections": [{"heading": "Deck", "points": ["Review moved to Thursday."]}],
-    "my_actions": [{
-        "action": "Send the deck to Jamie", "owner_basis": "volunteered",
-        "due": {"text": "Friday", "basis": "stated"}, "context": "Final review copy",
-        "quote": "I'll send the deck to Jamie by Friday", "start": "00:01:02",
-    }],
-    "other_tasks": [{
-        "action": "Book the room", "owner": None, "due": {"text": None, "basis": "not_stated"},
-        "context": "", "quote": "someone book the room", "start": None,
-    }],
-    "topics": ["deck"],
-    "entities": [{"name": "Jamie Doe", "type": "person", "aliases": ["Jamie"]}],
-    "facts": [{"type": "decision", "text": "Ship Friday", "subject": None, "quote": "ship it Friday", "start": "00:02:00"}],
-    "edges": [{"src": "Jamie Doe", "relation": "works_on", "dst": "Deck", "quote": "Jamie owns the deck", "start": None}],
-}
 
 
 def _enum(schema_items, field):
