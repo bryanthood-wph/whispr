@@ -25,6 +25,11 @@ audio:
   # than watchdog_silence_seconds while a call is active, re-run the probe.
   watchdog_dbfs_floor: -70.0
   watchdog_silence_seconds: 30
+  # Mic stream recovery: when the input stream errors (device unplugged, driver
+  # reset, stale device list), wait this long, re-enumerate devices, re-resolve
+  # the mic and reopen it. The gap is padded with silence so "Me" timestamps stay
+  # aligned with "Others".
+  mic_retry_seconds: 2.0
 
 trigger:
   process_name: "ms-teams.exe"
@@ -54,6 +59,14 @@ trigger:
     - "Praise |"
     - "New Message |"
     - "Viva |"
+  # Session-title segments (split on "|") that name no meeting or person: Teams'
+  # join-screen label, its default subject, and the "<tenant> | <account>" pair new
+  # Teams appends to every window. Any segment containing "@" is also dropped.
+  # What remains is the title's identity; if nothing remains the title is generic.
+  generic_title_segments:
+    - "Meeting join"
+    - "Microsoft Teams meeting"
+    - "Deloitte (O365D)"
   # Titles that indicate the window returned to a home/nav state (call ended).
   end_title_patterns:
     - "Activity \\|"
@@ -119,5 +132,17 @@ metadata:
   max_calendar_items: 200
   # Outlook connect attempts for post-call metadata fetch (hot-path is_live_meeting always uses 1).
   outlook_connect_retries: 3
+  # Retries when Outlook answers "Call was rejected by callee" (busy with a dialog
+  # or sync), and the wait between them. Applies to the hot path too: without it a
+  # busy Outlook turns a scheduled meeting into a prompted ad-hoc call.
+  outlook_busy_retries: 2
+  outlook_busy_retry_seconds: 0.5
+  # Time-overlap matching, used when the window title doesn't name the meeting.
+  # Only events whose body contains online_meeting_marker count (not all-day,
+  # personal blocks, declined or cancelled). The best event must cover at least
+  # overlap_min_fraction of the recording and no other event may — a tie means
+  # back-to-back or double-booked meetings, which overlap alone can't resolve.
+  online_meeting_marker: "teams.microsoft.com"
+  overlap_min_fraction: 0.5
 
 version: "0.1.0"

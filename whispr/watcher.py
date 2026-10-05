@@ -469,13 +469,18 @@ class TeamsWatcher:
         if call_type == "call":
             # Recording is already running; ask whether to keep. Non-blocking.
             threading.Thread(
-                target=self._prompt_call, args=(title,), name="whispr-prompt", daemon=True
+                target=self._prompt_call, args=(title, subject), name="whispr-prompt", daemon=True
             ).start()
         return True
 
-    def _do_stop(self, keep: bool) -> None:
+    def _do_stop(self, keep: bool, only_subject: Optional[str] = None) -> None:
+        """Stop the current recording. With `only_subject`, do nothing unless that
+        session is the one recording — a late prompt answer must not stop a
+        different session that started in the meantime."""
         with self._state_lock:
             if not self._recording:
+                return
+            if only_subject is not None and self._active_subject != only_subject:
                 return
             self._recording = False
             # Hold the start-gate closed through the (slow) teardown that follows,
@@ -495,11 +500,20 @@ class TeamsWatcher:
         except Exception as exc:
             log.error("stop callback failed: %s", exc)
 
-    def _prompt_call(self, title: str) -> None:
-        keep = self._show_prompt(title)
-        if not keep:
-            log.info("user declined call recording; discarding")
-            self._do_stop(keep=False)
+    def _prompt_call(self, title: str, subject: str) -> None:
+        if self._show_prompt(title):
+            return
+        self._decline(subject)
+
+    def _decline(self, subject: str) -> None:
+        """'No' means leave this session alone until its window closes, same as the
+        tray kill switch. Without the latch the still-open window is re-detected on
+        the next poll and prompts again (2026-10-02: one Teams recording playback
+        prompted 8 times in 26 minutes)."""
+        with self._state_lock:
+            self._suppressed_subject = subject
+        log.info("user declined call recording; discarding and suppressing %r until its window closes", subject)
+        self._do_stop(keep=False, only_subject=subject)
 
     def _show_prompt(self, title: str) -> bool:
         """Topmost Yes/No box with timeout. Returns True to keep recording.

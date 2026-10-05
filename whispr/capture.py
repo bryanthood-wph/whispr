@@ -54,19 +54,22 @@ def _rms(arr: np.ndarray) -> float:
     return float(np.sqrt(np.mean(np.square(arr, dtype=np.float64))))
 
 
-def resolve_mic(name_match: str) -> tuple[Optional[int], Optional[str]]:
+def resolve_mic(name_match: str, quiet: bool = False) -> tuple[Optional[int], Optional[str]]:
     """Return (device_index, device_name) of the first input device whose name
-    contains `name_match` (case-insensitive); else the system default input."""
+    contains `name_match` (case-insensitive); else the system default input.
+    `quiet` demotes the choice to DEBUG for the mic-recovery retry loop."""
+    say = log.debug if quiet else log.info
+    warn = log.debug if quiet else log.warning
     try:
         devices = sd.query_devices()
     except Exception as exc:  # pragma: no cover - depends on host audio stack
-        log.warning("could not query input devices: %s", exc)
+        warn("could not query input devices: %s", exc)
         return None, None
 
     needle = name_match.lower()
     for idx, dev in enumerate(devices):
         if dev.get("max_input_channels", 0) > 0 and needle in dev.get("name", "").lower():
-            log.info("mic matched by name: [%d] %s", idx, dev["name"])
+            say("mic matched by name: [%d] %s", idx, dev["name"])
             return idx, dev["name"]
 
     # Fall back to default input device.
@@ -74,11 +77,27 @@ def resolve_mic(name_match: str) -> tuple[Optional[int], Optional[str]]:
         default_in = sd.default.device[0]
         if default_in is not None and default_in >= 0:
             name = sd.query_devices(default_in)["name"]
-            log.info("mic name %r not found; using default input [%d] %s", name_match, default_in, name)
+            say("mic name %r not found; using default input [%d] %s", name_match, default_in, name)
             return default_in, name
     except Exception as exc:  # pragma: no cover
-        log.warning("no default input device: %s", exc)
+        warn("no default input device: %s", exc)
     return None, None
+
+
+def _refresh_devices() -> None:
+    """Re-enumerate PortAudio devices.
+
+    PortAudio snapshots the device list when it initializes. After a device is
+    added or removed (dock, headset, Bluetooth), every cached index can be stale:
+    reopening by index fails with MME 'device ID out of range' or 'no driver
+    installed' until the list is rebuilt. Only the mic uses PortAudio (loopback is
+    soundcard/WASAPI), and the dead stream is closed before this runs.
+    """
+    try:
+        sd._terminate()
+        sd._initialize()
+    except Exception as exc:  # pragma: no cover - host dependent
+        log.debug("PortAudio re-initialize failed: %s", exc)
 
 
 def _loopback_endpoints() -> list:
@@ -245,6 +264,10 @@ class DualStreamRecorder:
         # that fragments the stream. Re-probe only rescues a wrong/dead initial lock.
         self._loop_had_audio = False
 
+        # Mic-stream health, written only by the mic thread, read after it joins.
+        self._mic_dropouts = 0
+        self._mic_lost_seconds = 0.0
+
     # -- lifecycle -------------------------------------------------------
 
     def start(self) -> None:
@@ -282,6 +305,8 @@ class DualStreamRecorder:
             output_device=self.loopback_device_name,
             mic_frames=mic_frames,
             loopback_frames=loop_frames,
+            mic_dropouts=self._mic_dropouts,
+            mic_lost_seconds=round(self._mic_lost_seconds, 1),
         )
 
     def _sleep(self, seconds: float) -> None:
@@ -299,18 +324,61 @@ class DualStreamRecorder:
     # -- stream loops ----------------------------------------------------
 
     def _mic_loop(self, mic_idx: Optional[int]) -> None:
-        if mic_idx is None:
-            log.warning("no mic device resolved; 'Me' stream will be empty")
-            return
-        try:
-            with sd.InputStream(
-                device=mic_idx, samplerate=self._sr, channels=1, dtype="float32"
-            ) as stream:
-                while self._running.is_set():
-                    data, _overflowed = stream.read(self._chunk)
-                    self._mic_writer.write_float(data[:, 0])
-        except Exception as exc:
-            log.error("mic capture failed: %s", exc)
+        """Capture the mic until stop, reopening it whenever the stream is lost.
+
+        Before 2026-10 a single error ended "Me" capture for the rest of the call:
+        18 calls lost the user's own voice, mostly within seconds of the start.
+        """
+        retry_seconds = self._cfg["audio"]["mic_retry_seconds"]
+        lost_at: Optional[float] = None  # monotonic time the stream was lost
+        while self._running.is_set():
+            if mic_idx is not None:
+                try:
+                    with sd.InputStream(
+                        device=mic_idx, samplerate=self._sr, channels=1, dtype="float32"
+                    ) as stream:
+                        if lost_at is not None:
+                            gap = self._pad_mic_gap(lost_at)
+                            log.info("mic recovered on %s after %.1fs; gap padded with silence",
+                                     self.mic_device_name, gap)
+                            lost_at = None
+                        while self._running.is_set():
+                            data, _overflowed = stream.read(self._chunk)
+                            self._mic_writer.write_float(data[:, 0])
+                        return
+                except Exception as exc:
+                    if lost_at is None:
+                        lost_at = time.monotonic()
+                        self._mic_dropouts += 1
+                        log.error("mic capture failed: %s; retrying every %gs", exc, retry_seconds)
+                    else:
+                        log.debug("mic reopen failed: %s", exc)
+            elif lost_at is None:
+                lost_at = time.monotonic()
+                self._mic_dropouts += 1
+                log.warning("no mic device resolved; retrying every %gs", retry_seconds)
+            self._sleep(retry_seconds)
+            if not self._running.is_set():
+                break
+            _refresh_devices()
+            mic_idx, name = resolve_mic(self._cfg["audio"]["mic_name_match"], quiet=True)
+            if name:
+                self.mic_device_name = name
+        if lost_at is not None:
+            self._mic_lost_seconds += time.monotonic() - lost_at
+
+    def _pad_mic_gap(self, lost_at: float) -> float:
+        """Write silence for the time the mic was down, so later "Me" turns keep
+        their true offsets relative to "Others". Returns the gap in seconds."""
+        gap = time.monotonic() - lost_at
+        self._mic_lost_seconds += gap
+        remaining = int(gap * self._sr)
+        block = np.zeros(self._sr, dtype="float32")  # 1 s per write bounds memory
+        while remaining > 0:
+            n = min(remaining, block.size)
+            self._mic_writer.write_float(block[:n])
+            remaining -= n
+        return gap
 
     def _loopback_loop(self) -> None:
         with com_initialized():

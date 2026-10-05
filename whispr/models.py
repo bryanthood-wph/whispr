@@ -80,3 +80,5 @@ class CaptureResult:
     output_device: Optional[str]      # locked loopback endpoint name
     mic_frames: int
     loopback_frames: int
+    mic_dropouts: int = 0             # times the mic stream was lost (failed open or died)
+    mic_lost_seconds: float = 0.0     # wall-clock seconds of "Me" audio not captured

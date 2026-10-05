@@ -170,14 +170,17 @@ class Orchestrator:
             keep, partial, result.mic_frames, result.loopback_frames,
             self._cfg["audio"]["samplerate"], self._cfg["trigger"]["min_recording_seconds"],
         )
-        if too_short:
-            from whispr.incidents import record_incident
+        from whispr.incidents import record_incident
 
+        if too_short:
             seconds = round(_captured_seconds(
                 result.mic_frames, result.loopback_frames, self._cfg["audio"]["samplerate"]), 1)
             record_incident(self._cfg, "short-session-discarded", title=session.window_title, seconds=seconds)
 
         if keep and not too_short:
+            if result.mic_dropouts:
+                record_incident(self._cfg, "mic-dropout", title=session.window_title,
+                                dropouts=result.mic_dropouts, lost_seconds=result.mic_lost_seconds)
             log.info("queuing session for transcription (%s)", session.window_title)
             self._queue.submit(session)
         else:
@@ -219,7 +222,22 @@ class Orchestrator:
         # off-line. See SUMMARY_AGENT.md. whispr's pipeline ends at a written
         # transcript; nothing here contacts any service.
 
-        if self._cfg["retention"]["delete_audio_on_success"]:
+        if result.is_stub:
+            # A kept session with no speech in either stream is a capture failure
+            # (2026-09-28: 26 min of meeting, loopback locked to a silent endpoint,
+            # mic failed to open) or a silent lobby. Either way, don't destroy the
+            # only evidence, and say so now — while there's still time to get a
+            # Teams recording or notes.
+            from whispr.incidents import record_incident
+
+            record_incident(self._cfg, "no-speech", title=session.window_title,
+                            duration_min=session.duration_min,
+                            mic_wav=session.mic_wav, loopback_wav=session.loopback_wav)
+            log.warning("no speech in either stream; keeping audio (%s, %s)",
+                        session.mic_wav, session.loopback_wav)
+            self._tray.notify(f"No speech captured in a {session.duration_min}-min recording: "
+                              f"{session.window_title[:_TRAY_LABEL_MAX]}. Audio kept in recordings.")
+        elif self._cfg["retention"]["delete_audio_on_success"]:
             self._delete_wavs(session)
         log.info("transcript ready: %s", path)
 
@@ -319,23 +337,32 @@ def _record_test(seconds: float) -> int:
     return 0
 
 
+# (incident kind, heading, one-line detail) — one section per kind, in print order.
+_DOCTOR_SECTIONS = (
+    ("crash", "Crashes", lambda i: f"[{i.get('thread')}]  {i.get('error')}"),
+    ("no-speech", "Kept sessions with no speech (audio kept)",
+     lambda i: f"{i.get('duration_min')}m  {i.get('title')}  -> {i.get('loopback_wav')}"),
+    ("mic-dropout", "Mic dropouts (your side of the call missing for a while)",
+     lambda i: f"{i.get('dropouts')}x, {i.get('lost_seconds')}s lost  {i.get('title')}"),
+    ("short-session-discarded", "Auto-discarded short sessions",
+     lambda i: f"{i.get('seconds')}s  {i.get('title')}"),
+)
+
+
 def _doctor(argv: list[str]) -> int:
-    """Print crashes and auto-discarded short sessions from the last N days (default 7)."""
+    """Print incidents from the last N days (default 7), grouped by kind."""
     from whispr.incidents import read_incidents
 
     since_days = float(argv[0]) if argv else 7.0
     cfg = load_config()
     incidents = read_incidents(cfg, since_days)
-    crashes = [i for i in incidents if i.get("kind") == "crash"]
-    short_sessions = [i for i in incidents if i.get("kind") == "short-session-discarded"]
 
     print(f"whispr doctor - last {since_days:g} day(s)")
-    print(f"\nCrashes: {len(crashes)}")
-    for c in crashes:
-        print(f"  {c.get('ts')}  [{c.get('thread')}]  {c.get('error')}")
-    print(f"\nAuto-discarded short sessions: {len(short_sessions)}")
-    for s in short_sessions:
-        print(f"  {s.get('ts')}  {s.get('seconds')}s  {s.get('title')}")
+    for kind, heading, detail in _DOCTOR_SECTIONS:
+        rows = [i for i in incidents if i.get("kind") == kind]
+        print(f"\n{heading}: {len(rows)}")
+        for row in rows:
+            print(f"  {row.get('ts')}  {detail(row)}")
     if not incidents:
         print("\nNo incidents recorded - see logs/incidents.jsonl once any occur.")
     return 0

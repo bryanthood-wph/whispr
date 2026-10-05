@@ -87,12 +87,139 @@ class TestClassify(unittest.TestCase):
         self.assertIsNone(session_subject("Microsoft Teams", CFG))          # no suffix
 
 
-class TestCounterpart(unittest.TestCase):
-    def test_parse(self):
-        from whispr.metadata import _counterpart_from_title
-        self.assertEqual(_counterpart_from_title("Calls | Bob Jones"), "Bob Jones")
-        self.assertEqual(_counterpart_from_title("Bob Jones | Microsoft Teams"), "Bob Jones")
-        self.assertIsNone(_counterpart_from_title(""))
+class TestSubjectCore(unittest.TestCase):
+    """Titles observed in whispr.log, 2026-09-18..10-02."""
+
+    def test_named_meeting_behind_join_label_and_account(self):
+        from whispr.metadata import subject_core
+        t = "Meeting join | Kroger FIH Onboarding | Deloitte (O365D) | cohood@deloitte.com | Microsoft Teams"
+        self.assertEqual(subject_core(t, CFG), "Kroger FIH Onboarding")
+
+    def test_counterpart_of_ad_hoc_call(self):
+        from whispr.metadata import subject_core
+        self.assertEqual(subject_core("Cosby, Cecile | Deloitte (O365D) | cohood@deloitte.com", CFG), "Cosby, Cecile")
+        self.assertEqual(subject_core("Bob Jones | Microsoft Teams", CFG), "Bob Jones")
+
+    def test_generic_titles_have_no_core(self):
+        from whispr.metadata import subject_core
+        self.assertEqual(subject_core("Deloitte (O365D) | cohood@deloitte.com | Microsoft Teams", CFG), "")
+        self.assertEqual(subject_core(
+            "Meeting join | Microsoft Teams meeting | Deloitte (O365D) | cohood@deloitte.com", CFG), "")
+        self.assertEqual(subject_core("", CFG), "")
+
+
+def _appt(**kw):
+    from types import SimpleNamespace
+    base = dict(AllDayEvent=False, MeetingStatus=3, ResponseStatus=3,
+                Body="Join: https://teams.microsoft.com/l/meetup-join/x")
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+class TestOverlapCandidate(unittest.TestCase):
+    MARKER = "teams.microsoft.com"
+
+    def test_accepted_teams_meeting_is_candidate(self):
+        from whispr.metadata import _is_overlap_candidate
+        self.assertTrue(_is_overlap_candidate(_appt(), self.MARKER))
+
+    def test_rejects_items_that_overlap_everything(self):
+        # Each of these overlapped 100% of a real recording in the 2026-10-02 probe.
+        from whispr.metadata import _is_overlap_candidate
+        self.assertFalse(_is_overlap_candidate(_appt(AllDayEvent=True), self.MARKER))   # 'Neil - OOO'
+        self.assertFalse(_is_overlap_candidate(_appt(MeetingStatus=0), self.MARKER))    # personal 'Block'
+        self.assertFalse(_is_overlap_candidate(_appt(MeetingStatus=5), self.MARKER))    # cancelled
+        self.assertFalse(_is_overlap_candidate(_appt(ResponseStatus=4), self.MARKER))   # declined
+        self.assertFalse(_is_overlap_candidate(_appt(Body="On Air"), self.MARKER))      # no Teams link
+
+
+class TestPickByOverlap(unittest.TestCase):
+    def test_single_dominant_event_wins(self):
+        from whispr.metadata import _pick_by_overlap
+        # 2026-09-22 12:06, 55.5 min: Databricks covered 54%, the WAYMO demo 42%.
+        self.assertEqual(_pick_by_overlap([("waymo", 1404), ("databricks", 1800)], 3330, 0.5),
+                         ("databricks", 1800))
+
+    def test_tie_is_ambiguous(self):
+        from whispr.metadata import _pick_by_overlap
+        # 2026-09-23 10:00: two meetings in the same slot, both covering 100%.
+        self.assertIsNone(_pick_by_overlap([("loop", 762), ("kroger", 762)], 762, 0.5))
+
+    def test_nothing_covers_enough(self):
+        from whispr.metadata import _pick_by_overlap
+        self.assertIsNone(_pick_by_overlap([("a", 100)], 1000, 0.5))
+        self.assertIsNone(_pick_by_overlap([], 1000, 0.5))
+
+
+class TestRetryWhenBusy(unittest.TestCase):
+    BUSY = Exception(-2147418111, "Call was rejected by callee.", None, None)
+
+    def _cfg(self, retries=2):
+        return {"metadata": {"outlook_busy_retries": retries, "outlook_busy_retry_seconds": 0}}
+
+    def test_busy_then_success(self):
+        from whispr.metadata import _retry_when_busy
+        calls = []
+
+        def fn():
+            calls.append(1)
+            if len(calls) < 3:
+                raise self.BUSY
+            return "ok"
+        self.assertEqual(_retry_when_busy(fn, self._cfg()), "ok")
+        self.assertEqual(len(calls), 3)
+
+    def test_busy_past_retries_raises(self):
+        from whispr.metadata import _retry_when_busy
+
+        def fn():
+            raise self.BUSY
+        with self.assertRaises(Exception):
+            _retry_when_busy(fn, self._cfg(retries=1))
+
+    def test_other_errors_are_not_retried(self):
+        from whispr.metadata import _retry_when_busy
+        calls = []
+
+        def fn():
+            calls.append(1)
+            raise ValueError("boom")
+        with self.assertRaises(ValueError):
+            _retry_when_busy(fn, self._cfg())
+        self.assertEqual(len(calls), 1)
+
+
+class TestFetchMetadataRouting(unittest.TestCase):
+    def _route(self, **session_kw):
+        from unittest import mock
+        from whispr import metadata
+        with mock.patch.object(metadata, "_fetch_from_outlook", return_value=None) as fetch:
+            meta = metadata.fetch_metadata(_session(**session_kw), CFG)
+        _session_arg, _cfg_arg, core, allow_overlap = fetch.call_args.args
+        return meta, core, allow_overlap
+
+    def test_named_call_matches_by_subject_only(self):
+        # Overlap for a named call grabbed a stray 'Enter MySource' placeholder.
+        meta, core, allow_overlap = self._route(
+            call_type="call", window_title="Cosby, Cecile | Deloitte (O365D) | cohood@deloitte.com | Microsoft Teams")
+        self.assertEqual(core, "Cosby, Cecile")
+        self.assertFalse(allow_overlap)
+        self.assertEqual(meta.call_title, "Cosby, Cecile")
+        self.assertEqual(meta.attendees, ["Cosby, Cecile"])
+
+    def test_generic_call_may_use_overlap(self):
+        title = "Deloitte (O365D) | cohood@deloitte.com | Microsoft Teams"
+        meta, core, allow_overlap = self._route(call_type="call", window_title=title)
+        self.assertEqual(core, "")
+        self.assertTrue(allow_overlap)
+        self.assertEqual(meta.call_title, title)
+        self.assertEqual(meta.attendees, [])
+
+    def test_meeting_fallback_does_not_list_subject_as_attendee(self):
+        meta, _core, allow_overlap = self._route(call_type="meeting")
+        self.assertTrue(allow_overlap)
+        self.assertEqual(meta.call_title, "Weekly Sync")
+        self.assertEqual(meta.attendees, [])
 
 
 class TestSlugAndTime(unittest.TestCase):
@@ -485,6 +612,32 @@ class TestWatcherSuppression(unittest.TestCase):
         self.assertEqual(started, [])
         self.assertFalse(w._recording)
 
+    def test_decline_discards_and_suppresses_until_window_closes(self):
+        # 2026-10-02: answering No to one Teams recording playback was followed by
+        # 7 more prompts for the same still-open window.
+        w = self._watcher()
+        discarded = []
+        w._on_discard = lambda: discarded.append(True)
+        w._recording = True
+        w._active_subject = "Kroger FIH Onboarding"
+        w._decline("Kroger FIH Onboarding")
+        self.assertEqual(discarded, [True])
+        self.assertFalse(w._recording)
+        self.assertTrue(w._start_suppressed("Kroger FIH Onboarding"))
+        w.notify_stopped()  # the real _finish path must not clear the latch
+        self.assertEqual(w._suppressed_subject, "Kroger FIH Onboarding")
+
+    def test_late_decline_never_stops_a_different_session(self):
+        w = self._watcher()
+        discarded = []
+        w._on_discard = lambda: discarded.append(True)
+        w._recording = True
+        w._active_subject = "Other Call"
+        w._decline("Kroger FIH Onboarding")
+        self.assertEqual(discarded, [])
+        self.assertTrue(w._recording)
+        self.assertEqual(w._active_subject, "Other Call")
+
 
 class TestIsTooShort(unittest.TestCase):
     """Pure predicate gating auto-discard of short false-positive sessions
@@ -581,6 +734,121 @@ class TestLoadConfig(unittest.TestCase):
             cfg = load_config(str(cfg_path))
             self.assertEqual(cfg["paths"]["transcripts"], transcripts)
             self.assertTrue(transcripts.exists())
+
+
+class _FakeStream:
+    """Stand-in for sd.InputStream: one 0.1 s chunk per read, paced like real audio."""
+
+    def __init__(self, chunk_value: float = 0.5):
+        self._value = chunk_value
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, frames):
+        import time
+        import numpy as np
+        time.sleep(frames / 16000)
+        return np.full((frames, 1), self._value, dtype="float32"), False
+
+
+class TestMicRecovery(unittest.TestCase):
+    """The mic stream used to end for the whole call on its first error (18 calls
+    lost the user's side, 2026-08-10..09-29). It must now reopen and keep "Me"
+    aligned with "Others" by padding the outage with silence."""
+
+    def _run_mic_loop(self, open_results, run_seconds=0.6):
+        import copy
+        import threading
+        import time
+        from unittest import mock
+        from whispr import capture
+
+        cfg = copy.deepcopy(CFG)
+        cfg["audio"]["mic_retry_seconds"] = 0.1
+        attempts = []
+
+        def fake_input_stream(**_kw):
+            outcome = open_results[min(len(attempts), len(open_results) - 1)]
+            attempts.append(outcome)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return _FakeStream()
+
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(capture.sd, "InputStream", side_effect=fake_input_stream), \
+                mock.patch.object(capture, "_refresh_devices") as refresh, \
+                mock.patch.object(capture, "resolve_mic", return_value=(7, "Headset Mic")):
+            rec = capture.DualStreamRecorder(cfg, str(Path(d) / "m.wav"), str(Path(d) / "l.wav"))
+            rec._mic_writer = capture._WavWriter(rec._mic_wav, rec._sr)
+            rec._running.set()
+            t = threading.Thread(target=rec._mic_loop, args=(1,))
+            t.start()
+            time.sleep(run_seconds)
+            rec._running.clear()
+            t.join(timeout=5)
+            rec._mic_writer.close()
+            return rec, attempts, refresh
+
+    def test_reopens_after_failed_open_and_pads_the_gap(self):
+        boom = RuntimeError("A device ID has been used that is out of range [MME error 2]")
+        rec, attempts, refresh = self._run_mic_loop([boom, None])
+        self.assertGreaterEqual(len(attempts), 2)
+        self.assertTrue(refresh.called)
+        self.assertEqual(rec._mic_dropouts, 1)
+        self.assertEqual(rec.mic_device_name, "Headset Mic")
+        # Wall-clock coverage: padded gap + captured audio ~= the whole run.
+        covered = rec._mic_writer.frames_written / rec._sr
+        self.assertGreater(covered, 0.4)
+        self.assertGreater(rec._mic_lost_seconds, 0.05)
+
+    def test_never_recovering_counts_one_dropout_and_the_lost_time(self):
+        boom = RuntimeError("There is no driver installed on your system.")
+        rec, attempts, _ = self._run_mic_loop([boom])
+        self.assertGreater(len(attempts), 1)          # it kept trying
+        self.assertEqual(rec._mic_dropouts, 1)        # one outage, not one per attempt
+        self.assertEqual(rec._mic_writer.frames_written, 0)
+        self.assertGreater(rec._mic_lost_seconds, 0.4)
+
+
+class TestNoSpeechKeepsAudio(unittest.TestCase):
+    """2026-09-28: a 26-min meeting captured only silence; whispr wrote 'No speech
+    detected', deleted both WAVs and told no one."""
+
+    def _transcribed(self, result):
+        import copy
+        from types import SimpleNamespace
+        from unittest import mock
+        from whispr import metadata
+        from whispr.__main__ import Orchestrator
+        from whispr.incidents import read_incidents
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg = copy.deepcopy(CFG)
+            cfg["paths"]["logs"] = Path(d)
+            deleted, notes = [], []
+            fake = SimpleNamespace(_cfg=cfg, _delete_wavs=lambda s: deleted.append(s),
+                                   _tray=SimpleNamespace(notify=notes.append))
+            with mock.patch.object(metadata, "fetch_metadata", return_value=CallMetadata(source="none")):
+                Orchestrator._on_transcribed(fake, _session(), result)
+            return deleted, notes, read_incidents(cfg)
+
+    def test_stub_keeps_wavs_records_incident_and_notifies(self):
+        deleted, notes, incidents = self._transcribed(TranscriptResult(turns=[], is_stub=True))
+        self.assertEqual(deleted, [])
+        self.assertEqual(len(notes), 1)
+        self.assertEqual([i["kind"] for i in incidents], ["no-speech"])
+        self.assertEqual(incidents[0]["loopback_wav"], "l.wav")
+
+    def test_real_transcript_still_deletes_audio(self):
+        result = TranscriptResult(turns=[Turn(start_seconds=0.0, speaker="Me", text="hi")])
+        deleted, notes, incidents = self._transcribed(result)
+        self.assertEqual(len(deleted), 1)
+        self.assertEqual(notes, [])
+        self.assertEqual(incidents, [])
 
 
 if __name__ == "__main__":

@@ -11,9 +11,9 @@ counterpart name out of the Teams window title.
 
 from __future__ import annotations
 
-import re
+import time
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Callable, Optional, TypeVar
 
 from whispr.log import get_logger
 from whispr.models import CallMetadata, CallSession
@@ -21,7 +21,92 @@ from whispr.winutil import com_initialized
 
 log = get_logger("metadata")
 
+_T = TypeVar("_T")
+
+# Outlook object-model constants.
 _OL_FOLDER_CALENDAR = 9
+_OL_NON_MEETING = 0                 # olNonMeeting: a personal appointment (blocks, reminders)
+_OL_CANCELED = (5, 7)               # olMeetingCanceled, olMeetingReceivedAndCanceled
+_OL_RESPONSE_DECLINED = 4           # olResponseDeclined
+
+# HRESULTs Outlook returns while busy (modal dialog, send/receive). Transient.
+_OUTLOOK_BUSY_HRESULTS = (
+    -2147418111,  # 0x80010001 RPC_E_CALL_REJECTED: "Call was rejected by callee."
+    -2147417846,  # 0x8001010A RPC_E_SERVERCALL_RETRYLATER
+)
+
+
+def _is_outlook_busy(exc: Exception) -> bool:
+    return bool(exc.args) and exc.args[0] in _OUTLOOK_BUSY_HRESULTS
+
+
+def _retry_when_busy(fn: Callable[[], _T], cfg: dict) -> _T:
+    """Run `fn`, retrying while Outlook reports busy. Other errors propagate."""
+    retries = cfg["metadata"]["outlook_busy_retries"]
+    wait = cfg["metadata"]["outlook_busy_retry_seconds"]
+    attempt = 0
+    while True:
+        try:
+            return fn()
+        except Exception as exc:
+            if attempt >= retries or not _is_outlook_busy(exc):
+                raise
+            attempt += 1
+            log.info("Outlook busy (%s); retry %d/%d in %.1fs", exc, attempt, retries, wait)
+            time.sleep(wait)
+
+
+def subject_core(title: str, cfg: dict) -> str:
+    """The part of a Teams session-window title that names the meeting or person.
+
+    Drops the ' | Microsoft Teams' suffix, every segment listed in
+    trigger.generic_title_segments, and any segment containing '@' (the account).
+    'Meeting join | Kroger FIH Onboarding | Deloitte (O365D) | me@x.com' -> 'Kroger FIH
+    Onboarding'. Returns '' for a generic title that names nothing, e.g. 'Deloitte
+    (O365D) | me@x.com' — Teams shows that for some meeting windows.
+    """
+    trg = cfg["trigger"]
+    text = (title or "").strip()
+    suffix = trg["session_title_suffix"].strip()
+    if suffix and text.endswith(suffix):
+        text = text[: -len(suffix)]
+    generic = {s.strip().lower() for s in trg.get("generic_title_segments", [])}
+    kept = [
+        seg.strip() for seg in text.split("|")
+        if seg.strip() and seg.strip().lower() not in generic and "@" not in seg
+    ]
+    return " | ".join(kept)
+
+
+def _is_overlap_candidate(appt, online_marker: str) -> bool:
+    """True if a calendar item is plausibly a Teams meeting the user attended.
+
+    Overlap alone is weak evidence: an all-day event or a personal 'Block' overlaps
+    100% of any recording (observed: transcripts titled 'Neil - OOO' and 'The fourth
+    snapshot deadline for PMY27...').
+    """
+    if getattr(appt, "AllDayEvent", False):
+        return False
+    status = getattr(appt, "MeetingStatus", None)
+    if status == _OL_NON_MEETING or status in _OL_CANCELED:
+        return False
+    if getattr(appt, "ResponseStatus", None) == _OL_RESPONSE_DECLINED:
+        return False
+    body = str(getattr(appt, "Body", "") or "")
+    return online_marker.lower() in body.lower()
+
+
+def _pick_by_overlap(candidates: list[tuple[object, float]], recording_seconds: float,
+                     min_fraction: float) -> Optional[tuple[object, float]]:
+    """Return the single (event, overlap) covering >= min_fraction of the recording.
+
+    None when no candidate qualifies, or when more than one does (two meetings at the
+    same time, or a recording spanning back-to-back meetings) — guessing there
+    mislabels the transcript, which is worse than the window-title fallback.
+    """
+    floor = recording_seconds * min_fraction
+    qualifying = [c for c in candidates if c[1] >= floor]
+    return qualifying[0] if len(qualifying) == 1 else None
 
 
 def _to_naive(dt: datetime) -> datetime:
@@ -81,15 +166,21 @@ def _restricted_calendar_items(ns, win_start: datetime, win_end: datetime, max_i
         yield appt
 
 
-def _fetch_from_outlook(session: CallSession, cfg: dict) -> Optional[CallMetadata]:
-    """Return CallMetadata from the best-overlapping calendar item, or None."""
-    tol = timedelta(seconds=cfg["metadata"]["calendar_match_tolerance_seconds"])
-    notes_max = cfg["metadata"]["invite_notes_max_chars"]
-    connect_retries = cfg["metadata"].get("outlook_connect_retries", 3)
-    max_items = cfg["metadata"].get("max_calendar_items", 200)
+def _fetch_from_outlook(session: CallSession, cfg: dict, core: str, allow_overlap: bool) -> Optional[CallMetadata]:
+    """Return CallMetadata for the calendar item this session was, or None.
+
+    A subject match on `core` wins. Otherwise, if `allow_overlap`, the single
+    candidate event (see _is_overlap_candidate) covering most of the recording.
+    """
+    mcfg = cfg["metadata"]
+    tol = timedelta(seconds=mcfg["calendar_match_tolerance_seconds"])
+    notes_max = mcfg["invite_notes_max_chars"]
+    connect_retries = mcfg.get("outlook_connect_retries", 3)
+    max_items = mcfg.get("max_calendar_items", 200)
 
     session_start = _to_naive(session.start)
     session_end = _to_naive(session.end) if session.end else session_start + timedelta(minutes=1)
+    recording_seconds = max(1.0, (session_end - session_start).total_seconds())
     win_start = session_start - tol
     win_end = session_end + tol
 
@@ -98,17 +189,10 @@ def _fetch_from_outlook(session: CallSession, cfg: dict) -> Optional[CallMetadat
         if app is None:
             return None
 
-        try:
+        def _match():
             ns = app.GetNamespace("MAPI")
-
-            suffix = cfg["trigger"].get("session_title_suffix", "")
-            wanted = session.window_title
-            if suffix and wanted.endswith(suffix):
-                wanted = wanted[: -len(suffix)].strip()
-
-            best = None
-            best_overlap = 0.0
             subject_match = None
+            candidates: list[tuple[object, float]] = []
             for appt in _restricted_calendar_items(ns, win_start, win_end, max_items):
                 a_start = _com_datetime_to_naive(getattr(appt, "Start", None))
                 a_end = _com_datetime_to_naive(getattr(appt, "End", None))
@@ -117,16 +201,20 @@ def _fetch_from_outlook(session: CallSession, cfg: dict) -> Optional[CallMetadat
                 ov = _overlap_seconds(a_start, a_end, session_start, session_end)
                 if ov <= 0.0:
                     continue
-                if subject_match is None and wanted and _subject_matches(wanted, str(getattr(appt, "Subject", "") or "")):
-                    subject_match = appt
-                if ov > best_overlap:
-                    best_overlap = ov
-                    best = appt
+                if core and _subject_matches(core, str(getattr(appt, "Subject", "") or "")):
+                    return appt, ov, "subject"
+                if allow_overlap and _is_overlap_candidate(appt, mcfg["online_meeting_marker"]):
+                    candidates.append((appt, ov))
+            picked = _pick_by_overlap(candidates, recording_seconds, mcfg["overlap_min_fraction"])
+            return None if picked is None else (*picked, "overlap")
 
-            best = subject_match or best
-            if best is None:
-                log.info("no overlapping calendar item found for recording window")
+        try:
+            found = _retry_when_busy(_match, cfg)
+            if found is None:
+                log.info("no calendar item identifies this recording (core=%r, overlap allowed=%s)",
+                         core, allow_overlap)
                 return None
+            best, best_overlap, how = found
 
             title = str(getattr(best, "Subject", "") or "") or None
             organizer = str(getattr(best, "Organizer", "") or "") or None
@@ -148,7 +236,8 @@ def _fetch_from_outlook(session: CallSession, cfg: dict) -> Optional[CallMetadat
             except Exception as exc:  # pragma: no cover
                 log.warning("could not read body: %s", exc)
 
-            log.info("matched calendar item %r (overlap %.0fs, %d attendees)", title, best_overlap, len(attendees))
+            log.info("matched calendar item %r by %s (overlap %.0fs, %d attendees)",
+                     title, how, best_overlap, len(attendees))
             return CallMetadata(
                 source="outlook",
                 call_title=title,
@@ -180,7 +269,8 @@ def is_live_meeting(window_x: str, when: datetime, cfg: dict) -> bool:
     rather than an ad-hoc call. Best-effort; returns False on any error or no match
     (so an unmatched window is treated as an ad-hoc call and prompts).
 
-    Uses 1 Outlook connect attempt (fail-fast on the recording-start hot path).
+    Uses 1 Outlook connect attempt (fail-fast on the recording-start hot path), but
+    retries a busy Outlook briefly — see metadata.outlook_busy_retries.
     """
     tol = timedelta(seconds=cfg["metadata"]["calendar_match_tolerance_seconds"])
     max_items = cfg["metadata"].get("max_calendar_items", 200)
@@ -188,48 +278,44 @@ def is_live_meeting(window_x: str, when: datetime, cfg: dict) -> bool:
     win_start = when_naive - tol
     win_end = when_naive + tol
 
+    core = subject_core(window_x, cfg)
+    if not core:
+        log.info("window %r names no meeting -> classify as ad-hoc call", window_x)
+        return False
+
     with com_initialized():
         app = _connect_outlook(1)  # fail-fast: 1 attempt on the hot path
         if app is None:
             return False
-        try:
+
+        def _lookup() -> Optional[str]:
             ns = app.GetNamespace("MAPI")
             for appt in _restricted_calendar_items(ns, win_start, win_end, max_items):
                 subject = str(getattr(appt, "Subject", "") or "")
-                if _subject_matches(window_x, subject):
-                    log.info("window %r matches live meeting %r -> classify as meeting", window_x, subject)
-                    return True
-            log.info("window %r matches no live calendar event -> classify as ad-hoc call", window_x)
-            return False
+                if _subject_matches(core, subject):
+                    return subject
+            return None
+
+        try:
+            subject = _retry_when_busy(_lookup, cfg)
         except Exception as exc:  # pragma: no cover
             log.warning("is_live_meeting lookup failed: %s", exc)
             return False
+        if subject is None:
+            log.info("window %r matches no live calendar event -> classify as ad-hoc call", window_x)
+            return False
+        log.info("window %r matches live meeting %r -> classify as meeting", window_x, subject)
+        return True
 
 
-def _counterpart_from_title(title: str) -> Optional[str]:
-    """Extract the other party's name from a Teams call window title.
-
-    Handles 'Calls | Alice Smith', 'Alice Smith | Microsoft Teams', etc.
-    """
-    if not title:
-        return None
-    cleaned = title.strip()
-    # Strip a leading 'Calls |' / 'Meeting |' style prefix.
-    cleaned = re.sub(r"^(calls|meeting|meet)\s*\|\s*", "", cleaned, flags=re.IGNORECASE)
-    # Strip a trailing '| Microsoft Teams' style suffix.
-    cleaned = re.sub(r"\s*\|\s*microsoft teams\s*$", "", cleaned, flags=re.IGNORECASE)
-    cleaned = cleaned.strip(" |")
-    return cleaned or None
-
-
-def _fallback_from_title(session: CallSession) -> CallMetadata:
-    counterpart = _counterpart_from_title(session.window_title)
-    log.info("using window-title fallback; counterpart=%r", counterpart)
+def _fallback_from_title(session: CallSession, core: str) -> CallMetadata:
+    log.info("using window-title fallback; core=%r", core)
     return CallMetadata(
         source="window-title",
-        call_title=session.window_title.strip() or None,
+        call_title=core or session.window_title.strip() or None,
         organizer=None,
-        attendees=[counterpart] if counterpart else [],
+        # An ad-hoc call's title is the other party; a meeting's is its subject.
+        attendees=[core] if core and session.call_type == "call" else [],
         invite_notes=None,
     )
 
@@ -237,16 +323,19 @@ def _fallback_from_title(session: CallSession) -> CallMetadata:
 def fetch_metadata(session: CallSession, cfg: dict) -> CallMetadata:
     """Best-effort metadata for a finished session. Never raises.
 
-    Only MEETINGS consult the Outlook calendar (they have a scheduled item to match).
-    Ad-hoc CALLS use the window-title counterpart directly — matching a call against
-    the calendar by time overlap grabs whatever unrelated event happens to be on the
-    calendar at that moment (observed: a stray 'Enter MySource' placeholder).
+    Every session tries a calendar SUBJECT match on the title's core. Falling back to
+    time OVERLAP is allowed only for meetings and for generic titles that name
+    nothing. A call titled with a person's name must not take overlap: it grabs
+    whatever unrelated event fills that slot (observed: a stray 'Enter MySource'
+    placeholder). A generic title has no other evidence, so overlap is its only
+    chance, held to the filters in _is_overlap_candidate / _pick_by_overlap.
     """
-    if session.call_type == "meeting":
-        try:
-            meta = _fetch_from_outlook(session, cfg)
-            if meta is not None:
-                return meta
-        except Exception as exc:  # pragma: no cover
-            log.warning("metadata: outlook path errored: %s", exc)
-    return _fallback_from_title(session)
+    core = subject_core(session.window_title, cfg)
+    allow_overlap = session.call_type == "meeting" or not core
+    try:
+        meta = _fetch_from_outlook(session, cfg, core, allow_overlap)
+        if meta is not None:
+            return meta
+    except Exception as exc:  # pragma: no cover
+        log.warning("metadata: outlook path errored: %s", exc)
+    return _fallback_from_title(session, core)

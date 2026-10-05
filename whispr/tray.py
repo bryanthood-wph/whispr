@@ -151,6 +151,13 @@ class TrayController:
         if running:
             self._icon.update_menu()
 
+    def notify(self, message: str) -> None:
+        """Best-effort Windows notification from the tray icon. Never raises."""
+        try:
+            self._icon.notify(message, "whispr")
+        except Exception:
+            log.warning("tray notification failed: %s", message, exc_info=True)
+
     def stop(self) -> None:
         """Tear down the tray icon."""
         log.info("Stopping tray icon")
