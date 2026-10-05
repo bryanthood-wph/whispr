@@ -33,3 +33,14 @@ unnamed_speaker:
   subject_extra_words: 3
   speech_verbs: [said, says, noted, notes, mentioned, asked, explained, reported, suggested,
                  confirmed, stated, added, argued, warned, proposed, thought, felt]
+
+# deleted_my_task: a my-task is deleted only when no other free text of the summary
+# restates it. A text restates it when it holds at least restated_min_overlap of the
+# task action's distinct words of restated_min_word_chars characters or more (so "to" and
+# "the" don't count), so a paraphrase counts: the extractor often restates a task in a
+# section point in other words (pilot 2026-10-05: 2 of 3 deleted tasks were still
+# stated there, 71% and 73% of their words, and the judge rightly answered "present").
+# Across the pilot's summaries true restatements held 60-100% of a task's words; the
+# 50% matches were a headline sharing one word, so the bar is 60%.
+restated_min_overlap: 0.6
+restated_min_word_chars: 4

@@ -174,11 +174,13 @@
           }
         },
         "reference": {
-          "type": "object", "additionalProperties": false, "required": ["min_quote_words", "near_miss_max_turns", "overlap_min_tokens"],
+          "type": "object", "additionalProperties": false, "required": ["min_quote_words", "near_miss_max_turns", "overlap_min_tokens", "utterance_end_chars", "utterance_closing_chars"],
           "properties": {
             "min_quote_words": {"type": "integer", "minimum": 1},
             "near_miss_max_turns": {"type": "integer", "minimum": 0},
-            "overlap_min_tokens": {"type": "integer", "minimum": 1}
+            "overlap_min_tokens": {"type": "integer", "minimum": 1},
+            "utterance_end_chars": {"type": "string", "minLength": 1},
+            "utterance_closing_chars": {"type": "string"}
           }
         }
       }

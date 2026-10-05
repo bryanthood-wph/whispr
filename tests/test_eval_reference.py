@@ -364,9 +364,13 @@ class TestReviewFixes(_Base):
         b = [ref("b0", "b", "Migration", "the data migration slips", type="fact"),       # next turn
              ref("b1", "b", "Migration risk", "the data migration slips", type="risk")]  # same turn
         negatives = R.calibration_pairs(a, b, self.prep, self.cfg)[1]
+        quotes = R._quotes([*a, *b], self.prep)
         self.assertIn((a[0], b[0]), negatives)          # "the" edge, but different turns
-        self.assertIn((a[1], b[1]), negatives)          # same turn, 1-token edge: below the floor
-        self.assertNotIn((a[2], b[1]), negatives)       # same turn, "the data" edge: may be one statement
+        # same turn, 1-token edge: below the floor (one sentence, so not a negative either)
+        self.assertEqual(R.quote_relation(quotes["a1"], quotes["b1"], self.cfg), R.NEAR)
+        self.assertNotIn((a[1], b[1]), negatives)
+        # same turn, "the data" edge: may be one statement
+        self.assertEqual(R.quote_relation(quotes["a2"], quotes["b1"], self.cfg), R.OVERLAP)
         self.assertEqual(self.cfg["eval"]["reference"]["overlap_min_tokens"], 2)
 
     # Fix 6: the collapse pass contests a mine contradiction instead of keeping both.
@@ -412,6 +416,45 @@ class TestReviewFixes(_Base):
         self.assertTrue(all("Send deck" in p and "Ship Friday" not in p for p in presence))
         self.assertEqual([i.id for i in out.accepted], ["a.1.0"])
         self.assertEqual(out.contested, ())                             # the decision is not escalated at all
+
+
+class TestNearMissUtterances(_Base):
+    """A near miss quotes two utterances; the recogniser splits one sentence across turns
+    (pilot 2026-10-05: 5 of 6 "failed" negatives were halves of one sentence)."""
+    SPLIT = [
+        ("00:00:05", "Others", "Right now they just do everything"),
+        ("00:00:08", "Others", "manually in a tracker every single week."),
+        ("00:00:20", "Others", "The vendor list is due on Friday."),
+        ("00:00:31", "Me", "Who keeps the tracker for them"),
+        ("00:00:36", "Others", "The finance team keeps the tracker."),
+    ]
+
+    def negatives(self, i, j, cfg=None):
+        cfg = cfg or self.cfg
+        prep = prepared(cfg, "2026-09-01T09:00:00-04:00", self.SPLIT)
+        quote = lambda n: " ".join(self.SPLIT[n][2].rstrip(".").split()[:4])
+        a, b = [ref("a0", "a", "One", quote(i), type="fact")], [ref("b0", "b", "Two", quote(j), type="fact")]
+        return R.calibration_pairs(a, b, prep, cfg)[1]
+
+    def test_halves_of_one_sentence_are_not_a_near_miss(self):
+        self.assertEqual(self.negatives(0, 1), [])
+
+    def test_a_finished_sentence_starts_a_new_utterance(self):
+        self.assertEqual(len(self.negatives(1, 2)), 1)
+
+    def test_a_new_speaker_starts_a_new_utterance(self):
+        self.assertEqual(len(self.negatives(3, 4)), 1)
+
+    def test_a_closing_quote_after_the_stop_still_ends_the_sentence(self):
+        self.SPLIT = [*self.SPLIT[:1], ("00:00:08", "Others", 'manually in a tracker every single week."'),
+                      *self.SPLIT[2:]]
+        self.assertEqual(len(self.negatives(1, 2)), 1)
+
+    def test_the_sentence_ends_come_from_config(self):
+        ov = overlay(Path(self._tmp.name))
+        ov["eval"]["reference"] = {"utterance_end_chars": "!"}
+        cfg = load_config(overlay=ov)
+        self.assertEqual(self.negatives(1, 2, cfg), [])
 
 
 if __name__ == "__main__":

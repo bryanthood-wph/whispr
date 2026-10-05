@@ -313,14 +313,35 @@ def _edit(doc: dict, parts: dict[tuple, str], path: tuple, new: str) -> str:
     return _changed_claim(doc, path, before)
 
 
-def _held_elsewhere(doc: dict, phrase: str, skip: Optional[dict] = None) -> bool:
-    """`phrase` occurs, as whole words in any case, in some free text of the summary
-    other than task `skip`'s: a claim-bearing field or a task's action or context."""
+def _other_texts(doc: dict, skip: Optional[dict] = None) -> list[str]:
+    """The summary's free text other than task `skip`'s: every claim-bearing field and
+    every task's action and context."""
     texts = [_get(doc, p) for p in _text_slots(doc)]
     for lst, _ in render.TASK_LISTS:
         texts += [x for t in doc[lst] if t is not skip for x in (t["action"], t["context"])]
+    return texts
+
+
+def _held_elsewhere(doc: dict, phrase: str, skip: Optional[dict] = None) -> bool:
+    """`phrase` occurs, as whole words in any case, in some free text of the summary
+    other than task `skip`'s (`_other_texts`)."""
     rx = re.compile(whole_words([phrase]), re.IGNORECASE)
-    return any(rx.search(text) for text in texts)
+    return any(rx.search(text) for text in _other_texts(doc, skip))
+
+
+def _restated_elsewhere(doc: dict, action: str, skip: dict) -> bool:
+    """A task's `action` is restated in some free text other than task `skip`'s: the
+    phrase itself, or a text holding at least planting.yaml `restated_min_overlap` of its
+    distinct words of `restated_min_word_chars` characters or more (a paraphrase). An
+    action with no such word is restated only by the phrase itself."""
+    cfg = planting()
+
+    def words(text: str) -> set[str]:
+        return {w for w in word_tokens(text) if len(w) >= cfg["restated_min_word_chars"]}
+    mine = words(action)
+    need = cfg["restated_min_overlap"] * len(mine)
+    return _held_elsewhere(doc, action, skip) or bool(mine) and any(
+        len(mine & words(text)) >= need for text in _other_texts(doc, skip))
 
 
 def _get(doc: dict, path: tuple):
@@ -366,7 +387,7 @@ def _owner_swap(doc: dict, rng: random.Random, people: _People) -> str:
 def _deleted_my_task(doc: dict, rng: random.Random) -> str:
     """Delete a my-task that nothing else in the summary restates, other tasks
     included (otherwise the item would still be present and the plant undetectable)."""
-    indexes = [i for i, t in enumerate(doc["my_actions"]) if not _held_elsewhere(doc, t["action"], skip=t)]
+    indexes = [i for i, t in enumerate(doc["my_actions"]) if not _restated_elsewhere(doc, t["action"], skip=t)]
     return doc["my_actions"].pop(_pick(rng, indexes, "no my-task that only the My Actions section holds"))["action"]
 
 

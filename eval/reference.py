@@ -197,6 +197,23 @@ def _turn_tokens(prep: Prepared) -> list[str]:
     return [_joined(_tokens(t.text)) for t in prep.turns]
 
 
+def _utterances(prep: Prepared, cfg: dict) -> list[int]:
+    """Each turn's utterance number. A turn continues the previous turn's utterance when
+    the speaker is the same and the previous turn's text, less any trailing
+    `eval.reference.utterance_closing_chars`, does not end with one of
+    `eval.reference.utterance_end_chars` (the recogniser split one sentence)."""
+    limits = cfg["eval"]["reference"]
+    ends = tuple(limits["utterance_end_chars"])
+    closing = limits["utterance_closing_chars"]
+    out: list[int] = []
+    for n, t in enumerate(prep.turns):
+        prev = prep.turns[n - 1] if n else None
+        joined = (prev is not None and prev.speaker == t.speaker
+                  and not prev.text.rstrip().rstrip(closing).endswith(ends))
+        out.append(out[-1] if joined else (out[-1] + 1 if out else 0))
+    return out
+
+
 def _quote_turns(tokens: Sequence[str], turns: Sequence[str]) -> frozenset[int]:
     """Indexes of the turns whose token sequence contains `tokens`, contiguously. A
     quote never matches across a turn boundary."""
@@ -443,13 +460,18 @@ def calibration_pairs(a: Sequence[RefItem], b: Sequence[RefItem], prep: Prepared
 
     Positive (paraphrase): SAME quote, carried by no other item in either list.
     Negative (near miss): NEAR quotes (not overlapping, within
-    `eval.reference.near_miss_max_turns` turns), and not two tasks with compatible owners
-    (they may be the request and the reply of one task).
+    `eval.reference.near_miss_max_turns` turns) in different utterances (`_utterances`:
+    two halves of one split sentence may be one item), and not two tasks with compatible
+    owners (they may be the request and the reply of one task).
 
     Known limitation: a quote carried by several tasks (two tasks from one sentence)
     never yields a positive, since no code-only signal tells that from a paraphrase."""
     quotes = _quotes([*a, *b], prep)
     carriers = Counter(q.tokens for q in quotes.values())
+    utterance = _utterances(prep, cfg)
+
+    def apart(x: RefItem, y: RefItem) -> bool:
+        return not {utterance[t] for t in quotes[x.id].turns} & {utterance[t] for t in quotes[y.id].turns}
     positives, negatives = [], []
     for x in a:
         for y in b:
@@ -458,7 +480,7 @@ def calibration_pairs(a: Sequence[RefItem], b: Sequence[RefItem], prep: Prepared
             where = quote_relation(quotes[x.id], quotes[y.id], cfg)
             if where == SAME and carriers[quotes[x.id].tokens] == 2:
                 positives.append((x, y))
-            elif where == NEAR and not (x.type == TASK and _owners_compatible(x, y)):
+            elif where == NEAR and apart(x, y) and not (x.type == TASK and _owners_compatible(x, y)):
                 negatives.append((x, y))
     return positives, negatives
 

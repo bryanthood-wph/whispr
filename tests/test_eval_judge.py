@@ -299,14 +299,40 @@ class TestReview3DueElsewhere(unittest.TestCase):
 
 class TestReview4TaskElsewhere(unittest.TestCase):
     def test_my_task_restated_in_another_task_is_skipped(self):
+        # "Send the deck" holds most of "Send the deck to finance" (and the reverse), and
+        # the other task's context restates the budget sheet: only the room is deletable.
         mine = EXTRACT_SAMPLE["my_actions"][0]
-        doc = _doc(my_actions=[dict(mine, action="Send the deck"), dict(mine, action="Send the deck to finance")],
+        doc = _doc(my_actions=[dict(mine, action="Send the deck"), dict(mine, action="Send the deck to finance"),
+                               dict(mine, action="Update the budget sheet")],
                    other_tasks=[_task("Chase the budget", context="After we update the budget sheet")])
+        with self.assertRaises(J.NotApplicable):
+            J.plant("deleted_my_task", doc, seed=1)
+        doc["my_actions"].append(dict(mine, action="Book the review room"))
         for seed in SEEDS:
-            self.assertEqual(J.plant("deleted_my_task", doc, seed=seed).target, "Send the deck to finance")
-        doc["my_actions"].append(dict(mine, action="Update the budget sheet"))
-        for seed in SEEDS:
-            self.assertEqual(J.plant("deleted_my_task", doc, seed=seed).target, "Send the deck to finance")
+            self.assertEqual(J.plant("deleted_my_task", doc, seed=seed).target, "Book the review room")
+
+    def test_an_action_of_short_words_needs_the_phrase_itself(self):
+        # No word of 4+ characters: overlap proves nothing, so only the phrase restates it.
+        mine = EXTRACT_SAMPLE["my_actions"][0]
+        doc = _doc(my_actions=[dict(mine, action="Fix it")], other_tasks=[],
+                   sections=[{"heading": "Next", "points": ["The team agreed to ship the deck Friday."]}])
+        self.assertEqual(J.plant("deleted_my_task", doc, seed=1).target, "Fix it")
+        doc["sections"][0]["points"].append("Pat said they would fix it today.")
+        with self.assertRaises(J.NotApplicable):
+            J.plant("deleted_my_task", doc, seed=1)
+
+    def test_a_paraphrase_in_a_point_counts_as_restated(self):
+        # Pilot 2026-10-05: the task deleted from My Actions was still a section point.
+        mine = EXTRACT_SAMPLE["my_actions"][0]
+        doc = _doc(my_actions=[dict(mine, action="Read materials tagged in the project and report assessment")],
+                   other_tasks=[],
+                   sections=[{"heading": "Next", "points": ["Pat will read all materials tagged to them tonight "
+                                                            "and report an assessment."]}])
+        with self.assertRaises(J.NotApplicable):
+            J.plant("deleted_my_task", doc, seed=1)
+        doc["sections"][0]["points"] = ["The team agreed to ship the deck Friday."]
+        self.assertEqual(J.plant("deleted_my_task", doc, seed=1).target,
+                         "Read materials tagged in the project and report assessment")
 
 
 class TestReview5NoConfigKey(unittest.TestCase):
