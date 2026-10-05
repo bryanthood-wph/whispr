@@ -19,7 +19,9 @@
       Running, and its last line reports neither success nor failure — i.e.
       a run started and never reached a terminal state. This is today's
       exact signature (external kill, no FAILED sentinel because the kill
-      preempted the script's own error handling).
+      preempted the script's own error handling). Also fires when there is no
+      log at all but Task Scheduler shows a run today that exited non-zero —
+      a kill before the first log line.
 
   C — the recorder's periodic recovery is not armed (runs FIRST; see the block
       comment above it for why the ordering is load-bearing).
@@ -156,7 +158,18 @@ Write-Log -Message "Check A OK: task '$TaskName' exists and is enabled."
 $todayLog = Join-Path $LogDir ('nightly-ingest-{0}.log' -f (Get-Date -Format 'yyyy-MM-dd'))
 
 if (-not (Test-Path -LiteralPath $todayLog)) {
-    Write-Log -Message "Check B OK: no nightly-ingest log for today yet (nothing has started; not itself a failure — day-of-week/laptop-off deferral is normal, see .SYNOPSIS)."
+    # "No log" used to be read as "nothing started", but a run can be killed before
+    # its first line (2026-10-02: woke at 05:00:17, back in standby at 05:00:29,
+    # exit 0xC000013A, no log, and this check said OK). Task Scheduler's own record
+    # tells the two apart. 0x41301 = still running.
+    $taskInfo = Get-ScheduledTaskInfo -TaskName $TaskName
+    $ranToday = $taskInfo.LastRunTime -and $taskInfo.LastRunTime.Date -eq (Get-Date).Date
+    if ($ranToday -and $taskInfo.LastTaskResult -notin 0, 0x41301) {
+        $detail = "the task started today at $($taskInfo.LastRunTime) and exited 0x{0:X} without writing $todayLog — killed before its first log line (standby, shutdown, or an external kill). Its transcripts wait for the next run." -f $taskInfo.LastTaskResult
+        Invoke-CheckFailure -Check 'B' -StepName 'watchdog-killed-before-log' -Detail $detail -FileContext $TaskName
+    } else {
+        Write-Log -Message "Check B OK: no nightly-ingest log for today and no run today per Task Scheduler (day-of-week/laptop-off deferral is normal, see .SYNOPSIS)."
+    }
 } else {
     # Success and failure are NOT symmetric at "last line": a genuine failure
     # exits immediately inside Invoke-JobFailure (exit 1 right after logging
