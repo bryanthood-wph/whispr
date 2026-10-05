@@ -1,6 +1,7 @@
 """Stand-in for the claude CLI in tests: emits a stream-json init + result.
 
-Behavior comes from FAKE_CLAUDE_MODE: ok | apikey | noinit | error | nostructured | hang.
+Behavior comes from FAKE_CLAUDE_MODE: ok | apikey | noinit | error | nostructured | hang |
+badargs (rejects its arguments: stderr only, no events, exit 1).
 FAKE_CLAUDE_ARGS_OUT, if set, receives {"argv", "stdin", "env_keys"} as JSON.
 FAKE_CLAUDE_STRUCTURED, if set, is the structured_output JSON to return.
 FAKE_CLAUDE_BY_PROPERTY, if set, is {property: structured_output}: the first entry whose
@@ -19,6 +20,9 @@ if os.environ.get("FAKE_CLAUDE_ARGS_OUT"):
     with open(os.environ["FAKE_CLAUDE_ARGS_OUT"], "w", encoding="utf-8") as fh:
         json.dump({"argv": sys.argv[1:], "stdin": stdin, "env_keys": sorted(os.environ)}, fh)
 
+if mode == "badargs":
+    print("Error: --json-schema is not a valid JSON Schema (test)", file=sys.stderr)
+    sys.exit(1)
 model = sys.argv[sys.argv.index("--model") + 1] if "--model" in sys.argv else "unknown"
 if mode != "noinit":
     print(json.dumps({"type": "system", "subtype": "init", "model": model,

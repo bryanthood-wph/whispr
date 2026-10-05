@@ -108,6 +108,26 @@ class TestModelsCall(unittest.TestCase):
         self.assertEqual(self._ledger()[0]["cost_usd"], 0.0123)
         self.assertTrue(self._ledger()[0]["is_error"])
 
+    def test_rejected_arguments_record_no_spend(self):
+        # No init event and no result: the CLI never started a session, so nothing was
+        # spent; booking the cap would charge the budget for a call that never ran.
+        os.environ["FAKE_CLAUDE_MODE"] = "badargs"
+        with self.assertRaises(models.ModelCallError) as ctx:
+            self._call(request_key="k1")
+        self.assertIn("not a valid JSON Schema", str(ctx.exception))
+        row = self._ledger()[0]
+        self.assertEqual((row["request_key"], row["cost_usd"], row["cost_is_upper_bound"], row["is_error"]),
+                         ("k1", 0.0, False, True))
+
+    def test_schema_dialect_is_not_sent_to_the_cli(self):
+        schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object",
+                  "properties": {"ok": {"type": "boolean"}}}
+        self._call(json_schema=schema)
+        argv = json.loads(self.args_out.read_text(encoding="utf-8"))["argv"]
+        sent = json.loads(argv[argv.index("--json-schema") + 1])
+        self.assertEqual(sent, {k: v for k, v in schema.items() if k != "$schema"})
+        self.assertIn("$schema", schema)                    # the caller's schema is untouched
+
     def test_missing_structured_output_fails(self):
         os.environ["FAKE_CLAUDE_MODE"] = "nostructured"
         with self.assertRaises(models.ModelCallError):

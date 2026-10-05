@@ -12,7 +12,9 @@ and the event stream on stdout. Before and during each call this module:
 - passes --max-budget-usd, and appends model, effort, tokens, cost and auth source
   to the run ledger for every launched call, including ones that fail or are killed
   (the money may be spent either way). A call with no result event is recorded at
-  its budget cap, flagged as an upper bound, so the eval budget never undercounts.
+  its budget cap, flagged as an upper bound, so the eval budget never undercounts,
+  unless the CLI exited without even an init event: init is the stream's first event
+  and precedes any API request, so such a call (rejected arguments, say) spent nothing.
 
 The API path is deferred (README §3) and would sit behind this same `call` function.
 """
@@ -96,7 +98,12 @@ def build_args(cfg: dict, role: str, json_schema: Optional[dict], system_prompt:
     if spec["effort"]:
         args += ["--effort", spec["effort"]]
     if json_schema is not None:
-        args += ["--json-schema", json.dumps(json_schema, separators=(",", ":"))]
+        # The CLI validates --json-schema against its own default draft and rejects a
+        # "$schema" naming any other (2026-10-05: "no schema with key or ref
+        # .../draft/2020-12/schema"). The declaration only names the dialect; local
+        # validation and request keys still use the schema file unchanged.
+        cli_schema = {k: v for k, v in json_schema.items() if k != "$schema"}
+        args += ["--json-schema", json.dumps(cli_schema, separators=(",", ":"))]
     if system_prompt is not None:
         args += ["--system-prompt", system_prompt]
     args += ["--max-budget-usd", f"{max_budget_usd:.2f}"]
@@ -182,6 +189,7 @@ def call(cfg: dict, role: str, prompt: str, *, max_budget_usd: float,
     drain = threading.Thread(target=lambda: stderr_chunks.append(proc.stderr.read()), daemon=True)
     drain.start()
     auth_source: Optional[str] = None
+    started_session = False           # an init event arrived: the CLI may have reached the API
     model = spec["model"]
     result: dict[str, Any] = {}
     failure: Optional[ModelCallError] = None
@@ -197,6 +205,7 @@ def call(cfg: dict, role: str, prompt: str, *, max_budget_usd: float,
             except json.JSONDecodeError:
                 continue
             if event.get("type") == "system" and event.get("subtype") == "init":
+                started_session = True
                 auth_source = event.get("apiKeySource")
                 model = event.get("model") or model
                 if auth_source not in approved:
@@ -221,16 +230,17 @@ def call(cfg: dict, role: str, prompt: str, *, max_budget_usd: float,
         failure = AuthError(f"{role} call reported no auth source (no init event); failing closed")
     usage = result.get("usage") or {}
     has_cost = "total_cost_usd" in result
+    spent_nothing = not result and not started_session
     out = CallResult(
         role=role, model=model, effort=spec["effort"], auth_source=auth_source,
         structured=result.get("structured_output"), text=result.get("result") or "",
-        cost_usd=float(result["total_cost_usd"]) if has_cost else max_budget_usd,
+        cost_usd=float(result["total_cost_usd"]) if has_cost else 0.0 if spent_nothing else max_budget_usd,
         input_tokens=int(usage.get("input_tokens") or 0), output_tokens=int(usage.get("output_tokens") or 0),
         cache_read_tokens=int(usage.get("cache_read_input_tokens") or 0),
         cache_creation_tokens=int(usage.get("cache_creation_input_tokens") or 0),
         duration_ms=int((time.monotonic() - started) * 1000),
         is_error=bool(result.get("is_error")) or not result or proc.returncode != 0,
-        request_key=request_key, raw_result=result, cost_is_upper_bound=not has_cost,
+        request_key=request_key, raw_result=result, cost_is_upper_bound=not has_cost and not spent_nothing,
     )
     record = {k: v for k, v in asdict(out).items() if k not in ("structured", "text", "raw_result")}
     record["ts"] = datetime.now(timezone.utc).isoformat()
