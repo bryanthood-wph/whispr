@@ -15,7 +15,7 @@ from pathlib import Path
 
 from pipeline import prompts
 from pipeline.config import CONFIG_DIR, load_config
-from pipeline.extract import _canonical
+from pipeline.calls import canonical as _canonical
 from pipeline_helpers import overlay
 
 PREREG = Path(__file__).resolve().parent.parent / "eval" / "PREREGISTRATION.md"

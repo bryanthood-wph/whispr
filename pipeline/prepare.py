@@ -110,6 +110,16 @@ def _person(name: str) -> str:
     return f"{parts[1]} {parts[0]}" if len(parts) == 2 and all(parts) else name.strip()
 
 
+MEETING = "meeting"
+CALL = "call"
+OUTLOOK_SOURCE = "outlook"   # the recorder's metadata_source for an Outlook-matched call
+
+
+def call_type(meta: dict) -> str:
+    """MEETING when the recorder matched the call to an Outlook item, else CALL."""
+    return MEETING if meta.get("metadata_source") == OUTLOOK_SOURCE else CALL
+
+
 def rederive_meta(meta: dict, cfg: dict) -> dict:
     """Metadata a model may see: no invite text, people only, no generic titles."""
     p = cfg["prepare"]
@@ -139,7 +149,7 @@ def rederive_meta(meta: dict, cfg: dict) -> dict:
     return {
         "call_title": clean_title(meta.get("call_title")),
         "date": str(meta.get("date") or ""),
-        "call_type": "meeting" if meta.get("metadata_source") == "outlook" else "call",
+        "call_type": call_type(meta),
         "organizer": _person(organizer) if organizer else None,
         "attendees": attendees,
         "start": str(meta.get("start") or ""),
@@ -209,7 +219,10 @@ def remove_echo(turns: list[Turn], window_s: float, overlap: float, min_words: i
     return kept, dropped
 
 
-def _iso(value: str) -> Optional[datetime]:
+def parse_iso(value) -> Optional[datetime]:
+    """A datetime, or None for a missing or malformed value."""
+    if isinstance(value, datetime):     # an unquoted YAML timestamp
+        return value
     try:
         return datetime.fromisoformat(value)
     except (TypeError, ValueError):
@@ -227,7 +240,7 @@ def group_episodes(transcripts: list[Transcript], cfg: dict) -> list[list[Transc
         prev = groups[-1][-1] if groups else None
         if prev is not None and title:
             prev_title = rederive_meta(prev.meta, cfg)["call_title"]
-            prev_end, start = _iso(str(prev.meta.get("end"))), _iso(str(t.meta.get("start")))
+            prev_end, start = parse_iso(prev.meta.get("end")), parse_iso(t.meta.get("start"))
             if (prev_title and prev_title.lower() == title.lower()
                     and str(prev.meta.get("date")) == str(t.meta.get("date"))
                     and prev_end and start and 0 <= (start - prev_end).total_seconds() < gap_s):
@@ -252,10 +265,10 @@ def prepare(group: list[Transcript], cfg: dict, aliases: Optional[dict] = None) 
     p = cfg["prepare"]
     aliases = aliases or {}
     first = group[0]
-    first_start = _iso(str(first.meta.get("start")))
+    first_start = parse_iso(first.meta.get("start"))
     turns: list[Turn] = []
     for t in group:
-        start = _iso(str(t.meta.get("start")))
+        start = parse_iso(t.meta.get("start"))
         offset = (start - first_start).total_seconds() if start and first_start else 0.0
         turns += [Turn(x.seconds + offset, x.speaker, x.text) for x in t.turns]
 

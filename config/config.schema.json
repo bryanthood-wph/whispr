@@ -40,8 +40,9 @@
       }
     },
     "paths": {
-      "type": "object", "additionalProperties": false, "required": ["transcripts", "data_dir"],
-      "properties": {"transcripts": {"$ref": "#/$defs/str"}, "data_dir": {"$ref": "#/$defs/str"}}
+      "type": "object", "additionalProperties": false, "required": ["transcripts", "data_dir", "recorder_log"],
+      "properties": {"transcripts": {"$ref": "#/$defs/str"}, "data_dir": {"$ref": "#/$defs/str"},
+                     "recorder_log": {"type": ["string", "null"]}}
     },
     "auth": {
       "type": "object", "additionalProperties": false, "required": ["approved_sources", "strip_env_prefixes", "refuse_if_set"],
@@ -102,7 +103,7 @@
     },
     "eval": {
       "type": "object", "additionalProperties": false,
-      "required": ["budget_usd", "stop_margin_usd", "max_budget_per_call_usd", "cost_overrun_factor", "min_effective_tasks", "stability_n", "stability_min_jaccard", "seed", "bootstrap_replicates", "alpha", "judge", "calibration_min_sensitivity", "bar", "sample", "regress"],
+      "required": ["budget_usd", "stop_margin_usd", "max_budget_per_call_usd", "cost_overrun_factor", "min_effective_tasks", "stability_n", "stability_min_jaccard", "seed", "bootstrap_replicates", "alpha", "judge", "calibration_min_sensitivity", "bar", "sample", "run_tag", "stages", "regress"],
       "properties": {
         "budget_usd": {"$ref": "#/$defs/money"},
         "stop_margin_usd": {"$ref": "#/$defs/money"},
@@ -130,13 +131,26 @@
         },
         "sample": {
           "type": "object", "additionalProperties": false,
-          "required": ["frame_cutoff", "pilot_n", "cells", "speaker_device_pattern"],
+          "required": ["frame_cutoff", "pilot_n", "cells", "speaker_device_pattern", "low_mic"],
           "properties": {
             "frame_cutoff": {"$ref": "#/$defs/str"},
             "pilot_n": {"type": "integer", "minimum": 1},
+            "low_mic": {
+              "type": "object", "additionalProperties": false,
+              "required": ["min_duration_min", "max_mic_ratio", "join_tolerance_s"],
+              "properties": {"min_duration_min": {"type": "number", "minimum": 0},
+                             "max_mic_ratio": {"$ref": "#/$defs/frac"},
+                             "join_tolerance_s": {"type": "number", "minimum": 0}}
+            },
             "cells": {"type": "array", "items": {"$ref": "#/$defs/cell"}, "minItems": 1},
             "speaker_device_pattern": {"$ref": "#/$defs/str"}
           }
+        },
+        "run_tag": {"$ref": "#/$defs/str"},
+        "stages": {
+          "type": "object", "additionalProperties": false, "required": ["pilot"],
+          "properties": {"pilot": {"type": "object", "additionalProperties": false, "required": ["cap_usd"],
+                                   "properties": {"cap_usd": {"$ref": "#/$defs/money"}}}}
         },
         "regress": {
           "type": "object", "additionalProperties": false, "required": ["n", "budget_usd", "tolerance"],

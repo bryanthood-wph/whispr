@@ -116,6 +116,23 @@ class TestExtract(unittest.TestCase):
         argv = json.loads(self.args_out.read_text(encoding="utf-8"))["argv"]
         self.assertEqual(argv[argv.index("--system-prompt") + 1], "SYS")
 
+    def test_budget_hook_runs_only_on_a_miss_and_can_stop_the_call(self):
+        seen = []
+        first = self.run_extract(before_call=lambda key, cap: seen.append((key, cap)))
+        self.run_extract(before_call=lambda key, cap: seen.append((key, cap)))   # cache hit: no hook
+        self.assertEqual(seen, [(first.key, 0.5)])
+
+        class Stop(Exception):
+            pass
+
+        def refuse(key, cap):
+            raise Stop(cap)
+
+        self.args_out.unlink()
+        with self.assertRaises(Stop):
+            self.run_extract(cache_dir=None, before_call=refuse)
+        self.assertFalse(self.args_out.exists())            # stopped before launching
+
     def test_corrupt_cache_entry_is_ignored(self):
         first = self.run_extract()
         (self.cache / f"{first.key}.json").write_text("{not json", encoding="utf-8")

@@ -73,9 +73,20 @@ class TestModelsCall(unittest.TestCase):
 
     def test_refuses_inside_a_claude_session(self):
         os.environ["CLAUDECODE"] = "1"
+        hook = mock.Mock()
         with self.assertRaises(models.ModelCallError):
-            self._call()
+            self._call(before_launch=hook)
         self.assertFalse(self.args_out.exists())  # never launched
+        hook.assert_not_called()                  # so no budget reservation is left behind
+
+    def test_launch_failure_still_writes_a_row(self):
+        hook = mock.Mock()
+        with mock.patch("pipeline.models.subprocess.Popen", side_effect=OSError("no such file")):
+            with self.assertRaises(models.ModelCallError):
+                self._call(before_launch=hook, request_key="k1")
+        hook.assert_called_once()
+        row = self._ledger()[0]                   # settles the reservation the hook made
+        self.assertEqual((row["request_key"], row["cost_usd"], row["is_error"]), ("k1", 0.0, True))
 
     def test_api_key_auth_fails_closed(self):
         os.environ["FAKE_CLAUDE_MODE"] = "apikey"

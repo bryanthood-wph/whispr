@@ -77,3 +77,4 @@ def data_dir(cfg: dict, *parts: str) -> Path:
     path = Path(cfg["paths"]["data_dir"]).joinpath(*parts)
     path.mkdir(parents=True, exist_ok=True)
     return path
+

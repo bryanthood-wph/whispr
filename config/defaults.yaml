@@ -16,6 +16,7 @@ owner:
 paths:
   transcripts: null     # overlay: folder the recorder writes transcripts to
   data_dir: null        # overlay: per-user data outside git (results, cache, ledger, database, backups)
+  recorder_log: null    # overlay: the recorder's whispr.log; the eval needs it (low-mic, B.3), nothing else does
 
 auth:
   # Accepted values of the CLI's init-event `apiKeySource`. "none" = the user's
@@ -128,6 +129,18 @@ eval:
       - {name: stub,          kind: stub,    min_exclusive: null, max_inclusive: null, core: 3,  task_only: 0}
     # Second stratum (B.3): output devices matching this are "speakers" (echo-prone).
     speaker_device_pattern: '(?i)speaker'
+    # Low mic coverage (B.3, L5) from the recorder log's mic/loopback frame counts.
+    # This rule recovers exactly the 13 known sessions in the log; any ratio 0.5-0.9 gives
+    # the same set. 12 are in the frame: 2026-08-31-1604 was removed after ingest.
+    low_mic:
+      min_duration_min: 5
+      max_mic_ratio: 0.5
+      join_tolerance_s: 2
+  # A scored run starts only from a commit carrying this tag for its stage (G.3).
+  run_tag: 'eval-{stage}'
+  # Hard spend cap per stage (B.9); the overall limit is budget_usd - stop_margin_usd.
+  stages:
+    pilot: {cap_usd: 3}
   regress:
     n: 10
     budget_usd: 3

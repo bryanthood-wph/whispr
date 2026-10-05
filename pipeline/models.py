@@ -28,7 +28,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from pipeline.config import data_dir
 
@@ -99,29 +99,46 @@ def build_args(cfg: dict, role: str, json_schema: Optional[dict], system_prompt:
     return args
 
 
-def _append_ledger(ledger: Path, record: dict) -> None:
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    with open(ledger, "a", encoding="utf-8") as fh:
+def append_jsonl(path: Path, record: dict) -> None:
+    """Append one JSON line (the call ledger and the eval's run records)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(record) + "\n")
+
+
+def refused_env(cfg: dict) -> list[str]:
+    """Set variables that mark a nested Claude session; a model call refuses while any is set."""
+    return [name for name in cfg["auth"]["refuse_if_set"] if os.environ.get(name)]
 
 
 def call(cfg: dict, role: str, prompt: str, *, max_budget_usd: float,
          ledger: Path, json_schema: Optional[dict] = None, system_prompt: Optional[str] = None,
-         request_key: Optional[str] = None) -> CallResult:
+         request_key: Optional[str] = None,
+         before_launch: Optional[Callable[[], None]] = None) -> CallResult:
     """Run one model call for `role`. Raises AuthError / ModelCallError on failure.
-    `ledger` is required: no paid call may go unrecorded."""
-    for name in cfg["auth"]["refuse_if_set"]:
-        if os.environ.get(name):
-            raise ModelCallError(f"refusing to call the model: {name} is set (nested Claude session)")
+    `ledger` is required: no paid call may go unrecorded. `before_launch` runs after
+    every pre-launch check, immediately before the CLI starts (the eval's budget guard
+    reserves there, so a call refused before launch never leaves a reservation); once
+    it has run, a ledger row is always written, even if the CLI fails to start."""
+    if refused := refused_env(cfg):
+        raise ModelCallError(f"refusing to call the model: {refused[0]} is set (nested Claude session)")
 
     args = build_args(cfg, role, json_schema, system_prompt, max_budget_usd)
     spec = cfg["models"][role]
     approved = set(cfg["auth"]["approved_sources"])
+    if before_launch:
+        before_launch()
     started = time.monotonic()
-    proc = subprocess.Popen(
-        args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        cwd=data_dir(cfg, "work"), env=child_env(cfg), text=True, encoding="utf-8", errors="replace",
-    )
+    try:
+        proc = subprocess.Popen(
+            args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=data_dir(cfg, "work"), env=child_env(cfg), text=True, encoding="utf-8", errors="replace",
+        )
+    except OSError as exc:            # nothing ran, so nothing was spent; the row settles any reservation
+        append_jsonl(ledger, {"role": role, "model": spec["model"], "request_key": request_key, "cost_usd": 0.0,
+                              "is_error": True, "error": f"launch failed: {exc}",
+                              "ts": datetime.now(timezone.utc).isoformat()})
+        raise ModelCallError(f"{role} call could not start the CLI: {exc}") from exc
     timed_out = threading.Event()
 
     def _kill_on_timeout() -> None:
@@ -186,7 +203,7 @@ def call(cfg: dict, role: str, prompt: str, *, max_budget_usd: float,
     )
     record = {k: v for k, v in asdict(out).items() if k not in ("structured", "text", "raw_result")}
     record["ts"] = datetime.now(timezone.utc).isoformat()
-    _append_ledger(ledger, record)
+    append_jsonl(ledger, record)
 
     if failure is not None:
         raise failure
