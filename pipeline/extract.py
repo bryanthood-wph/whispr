@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from pipeline import calls, config, prompts
-from pipeline.prepare import Prepared
+from pipeline.prepare import Prepared, owner_name
 
 
 class ExtractError(RuntimeError):
@@ -44,7 +44,7 @@ def prompt_values(prep: Prepared, cfg: dict) -> dict[str, str]:
         "CALL_TYPE": meta["call_type"],
         "ORGANIZER": meta["organizer"] or missing,
         "ATTENDEES": cfg["extract"]["list_separator"].join(meta["attendees"]) or missing,
-        "OWNER_NAME": cfg["owner"]["name"],
+        "OWNER_NAME": owner_name(cfg),
         "TRANSCRIPT": prep.render(),
     }
 

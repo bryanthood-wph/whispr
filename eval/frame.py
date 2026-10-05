@@ -172,8 +172,11 @@ def draw(frame: list[FrameItem], cfg: dict) -> Sample:
 def design(sample: Sample, frame: list[FrameItem], *, include_task_only: bool, low_mic: bool = False) -> Design:
     """A scoring design. The primary one: core units, plus task-only units for task
     metrics. With low_mic=True, the drawn-then-replaced low-mic units alone, reported
-    separately (B.3). They are never mixed: Design.weight divides a cell's frame size
-    by every unit of that cell in the design."""
+    separately (B.3). Low-mic transcripts are excluded from the primary analysis (B.3),
+    so each cell's frame size counts the subpopulation its units stand for: the cell's
+    low-mic transcripts for the low-mic design, all the others (unscreened included)
+    for the primary one, and the two partition the frame. They are never mixed:
+    Design.weight divides a cell's frame size by every unit of that cell in the design."""
     by_id = {i.id: i for i in frame}
     if low_mic:
         ids = [x for cell in sample.low_mic.values() for x in cell]
@@ -184,5 +187,6 @@ def design(sample: Sample, frame: list[FrameItem], *, include_task_only: bool, l
     units = tuple(Unit(x, by_id[x].cell, by_id[x].device, low_mic) for x in ids)
     frame_n: dict[str, int] = {}
     for i in frame:
-        frame_n[i.cell] = frame_n.get(i.cell, 0) + 1
+        if bool(i.low_mic) == low_mic:
+            frame_n[i.cell] = frame_n.get(i.cell, 0) + 1
     return Design(frame_n, units)

@@ -44,6 +44,14 @@ class TestAsk(unittest.TestCase):
         keys = {calls.request_key(self.cfg, "judge", "P", SCHEMA, None, r) for r in range(3)}
         self.assertEqual(len(keys), 3)
 
+    def test_cli_base_args_are_in_the_key(self):
+        base = calls.request_key(self.cfg, "judge", "P", SCHEMA, None)
+        same = {**self.cfg, "cli": {**self.cfg["cli"], "base_args": list(self.cfg["cli"]["base_args"])}}
+        self.assertEqual(base, calls.request_key(same, "judge", "P", SCHEMA, None))
+        other = {**self.cfg, "cli": {**self.cfg["cli"], "base_args": [*self.cfg["cli"]["base_args"],
+                                                                      "--setting-sources", ""]}}
+        self.assertNotEqual(base, calls.request_key(other, "judge", "P", SCHEMA, None))
+
     def test_ask_caches_per_replicate_and_reports_to_the_guard(self):
         seen, cap = [], self.cfg["eval"]["max_budget_per_call_usd"]
         ask = make_ask(self.cfg, ledger=self.ledger, cache_dir=self.root / "cache", max_budget_usd=cap,

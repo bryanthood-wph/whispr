@@ -3,12 +3,19 @@ every call by pipeline/models.py, which fails closed before the model runs."""
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
+from pipeline.calls import canonical, config_file_sha
+from pipeline.config import CONFIG_DIR, PLANTING_PATH
 from pipeline.models import refused_env
+from pipeline.prompts import sha256_text
 
 REPO = Path(__file__).resolve().parent.parent
+PREREG = REPO / "eval" / "PREREGISTRATION.md"
+# A row of the preregistration's Hashes table: | `config/<relative path>` | `<sha256>` |
+_HASH_ROW = re.compile(r"^\|\s*`config/([^`]+)`\s*\|\s*`([0-9a-f]{64})`\s*\|", re.MULTILINE)
 
 
 def git(*args: str) -> str:
@@ -16,8 +23,37 @@ def git(*args: str) -> str:
     return out.stdout.strip()
 
 
-def provenance() -> dict:
-    return {"commit": git("rev-parse", "HEAD"), "tags": git("tag", "--points-at", "HEAD").split()}
+def registered_files(cfg: dict) -> list[str]:
+    """Config-relative paths of the files the preregistration hashes (B.2): every
+    configured prompt and schema, the ontology, and the planting seed data."""
+    return [*cfg["prompts"].values(), *cfg["schemas"].values(), cfg["ontology"],
+            PLANTING_PATH.relative_to(CONFIG_DIR).as_posix()]
+
+
+def registered_hashes() -> dict[str, str]:
+    """The Hashes table of eval/PREREGISTRATION.md: config-relative path -> sha256."""
+    return dict(_HASH_ROW.findall(PREREG.read_text(encoding="utf-8")))
+
+
+def hash_refusals(cfg: dict) -> list[str]:
+    """One reason per registered file whose hash (calls.config_file_sha) differs from its
+    Hashes-table row, or that has no row."""
+    table, reasons = registered_hashes(), []
+    for rel in registered_files(cfg):
+        if rel not in table:
+            reasons.append(f"{rel} has no row in the {PREREG.name} Hashes table (register it first)")
+        elif config_file_sha(rel) != table[rel]:
+            reasons.append(f"{rel} differs from its registered hash in {PREREG.name} "
+                           "(re-register it, or the run is exploratory)")
+    return reasons
+
+
+def provenance(cfg: dict) -> dict:
+    """The run's commit and tags, the hash of the effective (merged) config, and each
+    registered file's hash as registered, so a run is tied to eval/PREREGISTRATION.md."""
+    return {"commit": git("rev-parse", "HEAD"), "tags": git("tag", "--points-at", "HEAD").split(),
+            "effective_config_sha256": sha256_text(canonical(cfg)),
+            "config_sha256": {rel: config_file_sha(rel) for rel in registered_files(cfg)}}
 
 
 def run_tag(cfg: dict, stage: str) -> str:
@@ -31,4 +67,4 @@ def refusals(cfg: dict, stage: str) -> list[str]:
     tag = run_tag(cfg, stage)
     if tag not in git("tag", "--points-at", "HEAD").split():
         reasons.append(f"HEAD is not tagged {tag} (G.3)")
-    return reasons
+    return reasons + hash_refusals(cfg)

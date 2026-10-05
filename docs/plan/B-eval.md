@@ -288,14 +288,17 @@ replaces every estimate.
   - if `CLAUDECODE` is set
   - if the auth source isn't the approved one
   - on a dirty tree or an untagged commit
+  - if a registered file (prompt, schema, ontology, planting seed data) has
+    no row in, or differs from, the preregistration's Hashes table
 - **Spend limits:**
   - every call carries `--max-budget-usd` = `eval.max_budget_per_call_usd`
   - the ledger hard-stops at `eval.budget_usd`
   - it **stops and asks** rather than shrink n
 - **Caching.** Each call is cached by the sha256 of the **exact request**:
-  model, effort, system prompt, schema hash, and the input text actually
-  sent. Raw and prepared inputs therefore never share a cache entry, and a
-  restarted run skips finished calls.
+  the CLI base arguments (`cli.base_args`), model, effort, system prompt,
+  schema hash, and the input text actually sent. Raw and prepared inputs
+  therefore never share a cache entry, output made under other CLI
+  arguments is never reused, and a restarted run skips finished calls.
 - **Sleep.** The harness holds a keep-awake. Closing the lid still sleeps
   the machine, hence the AC-power start.
 - **Kill handling.** A killed run is marked **failed** in the run ledger.

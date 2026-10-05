@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import unittest
+from collections import Counter
 from contextlib import redirect_stdout
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -21,7 +22,8 @@ from eval import frame as F
 from eval import ledger as L
 from eval import lowmic, preflight
 from eval.records import DEVICE_OTHER, DEVICE_SPEAKER
-from pipeline.config import load_config
+from pipeline import calls, prompts
+from pipeline.config import config_file, load_config
 from pipeline_helpers import EXTRACT_SAMPLE, overlay, transcript
 
 FAKE = str(Path(__file__).with_name("fake_claude.py"))
@@ -180,6 +182,8 @@ class TestDraw(_Base):
         sample = F.draw(frame, self.cfg)
         self.assertFalse(unknown & {*sample.pilot, *sample.core["call_15_30"], *sample.task_only["call_15_30"]})
         self.assertEqual(set(sample.unscreened["call_15_30"]), unknown)
+        # Not flagged low mic, so in the primary population: counted in the primary frame size.
+        self.assertEqual(F.design(sample, frame, include_task_only=False).frame_n["call_15_30"], len(unknown))
 
     def test_low_mic_units_never_dilute_primary_weights(self):
         self.populate(per_cell=12)
@@ -190,9 +194,30 @@ class TestDraw(_Base):
         primary = F.design(sample, frame, include_task_only=False)
         self.assertFalse(any(u.low_mic for u in primary.units))
         unit = next(u for u in primary.units if u.cell == "call_le15")
-        self.assertEqual(primary.weight(unit), 12 / len(sample.core["call_le15"]))
+        self.assertEqual(primary.weight(unit), (12 - len(low)) / len(sample.core["call_le15"]))
+        self.assertEqual(primary.frame_n["meeting_15_30"], 12)          # no low-mic transcripts there
         separate = F.design(sample, frame, include_task_only=False, low_mic=True)
         self.assertTrue(separate.units and all(u.low_mic for u in separate.units))
+
+    def test_low_mic_design_weights_by_low_mic_frame_count(self):
+        self.populate(per_cell=12)
+        frame = F.build_frame(self.cfg)
+        low = {cell: set(sorted(i.id for i in frame if i.cell == cell)[:k])
+               for cell, k in (("call_le15", 2), ("meeting_15_30", 3))}
+        all_low = set().union(*low.values())
+        frame = [replace(i, low_mic=i.id in all_low) for i in frame]
+        sample = F.draw(frame, self.cfg)    # both cells want more than 12, so every low-mic one is reached
+        separate = F.design(sample, frame, include_task_only=False, low_mic=True)
+        self.assertEqual(separate.frame_n, {"call_le15": 2, "meeting_15_30": 3})
+        for cell, ids in low.items():
+            units = [u for u in separate.units if u.cell == cell]
+            self.assertEqual({u.id for u in units}, ids)
+            self.assertEqual(sum(separate.weight(u) for u in units), len(ids))
+        primary = F.design(sample, frame, include_task_only=False)
+        self.assertEqual(primary.frame_n["call_le15"], 12 - 2)
+        self.assertEqual(primary.frame_n["meeting_15_30"], 12 - 3)
+        partition = {c: primary.frame_n.get(c, 0) + separate.frame_n.get(c, 0) for c in primary.frame_n}
+        self.assertEqual(partition, Counter(i.cell for i in frame))
 
 
 class TestLedger(_Base):
@@ -297,6 +322,52 @@ class TestCli(CliBase):
             self.assertEqual(preflight.refusals(self.cfg, "pilot"), ["HEAD is not tagged eval-pilot (G.3)"])
             tags["tag"] = "v0.1.0 eval-pilot"
             self.assertEqual(preflight.refusals(self.cfg, "pilot"), [])
+
+    def test_provenance_records_every_registered_hash(self):
+        with mock.patch("eval.preflight.git", return_value="abc"):
+            hashes = preflight.provenance(self.cfg)["config_sha256"]
+        configured = {*self.cfg["prompts"].values(), *self.cfg["schemas"].values(), self.cfg["ontology"]}
+        self.assertEqual(set(hashes), configured | {"planting.yaml"})
+        registered = preflight.registered_hashes()
+        self.assertEqual(hashes, {rel: registered[rel] for rel in hashes})
+
+    def test_provenance_records_the_effective_config_hash(self):
+        with mock.patch("eval.preflight.git", return_value="abc"):
+            digest = preflight.provenance(self.cfg)["effective_config_sha256"]
+            self.assertEqual(digest, prompts.sha256_text(calls.canonical(self.cfg)))
+            self.ov["eval"]["seed"] = self.cfg["eval"]["seed"] + 1
+            other = preflight.provenance(load_config(overlay=self.ov))["effective_config_sha256"]
+        self.assertNotEqual(digest, other)
+
+    def test_unregistered_prompt_is_refused_and_shown_by_the_dry_run(self):
+        rel = self.cfg["prompts"]["extract"]
+        edited = self.root / "extract-edited.md"
+        edited.write_text(config_file(rel).read_text(encoding="utf-8") + "Also list every risk.\n",
+                          encoding="utf-8")
+        self.ov["prompts"] = {"extract": str(edited)}
+        self.ov_path.write_text(yaml.safe_dump(self.ov), encoding="utf-8")
+        tags = {"status": "", "tag": "eval-pilot"}
+        with mock.patch("eval.preflight.git", side_effect=lambda *a: tags[a[0]]):
+            reasons = preflight.refusals(load_config(overlay=self.ov), "pilot")
+            self.assertEqual(len(reasons), 1)
+            self.assertIn(str(edited), reasons[0])
+            self.assertIn("no row", reasons[0])
+            code, out = self.main("run", "--stage", "pilot", "--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"would refuse a scored run: {str(edited)}", out)
+
+    def test_hash_differing_from_its_registered_row_is_refused(self):
+        rel = self.cfg["prompts"]["extract"]
+        table = preflight.PREREG.read_text(encoding="utf-8")
+        digest = preflight.registered_hashes()[rel]
+        tampered = self.root / "PREREGISTRATION.md"
+        tampered.write_text(table.replace(digest, "0" * 64), encoding="utf-8")
+        tags = {"status": "", "tag": "eval-pilot"}
+        with mock.patch("eval.preflight.git", side_effect=lambda *a: tags[a[0]]), \
+             mock.patch("eval.preflight.PREREG", tampered):
+            reasons = preflight.refusals(self.cfg, "pilot")
+        self.assertEqual(len(reasons), 1)
+        self.assertTrue(reasons[0].startswith(f"{rel} differs from its registered hash"), reasons[0])
 
     def test_scored_run_refused_on_dirty_or_untagged(self):
         with mock.patch("eval.preflight.refusals", return_value=["HEAD has no tag"]):

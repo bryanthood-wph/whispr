@@ -196,8 +196,9 @@ def _nullable(x: float) -> Optional[float]:
 # ------------------------------------------------------------------ the analyses
 
 def exclude_low_mic(design: Design) -> Design:
-    """The design for the primary my-task analysis (B.3): low-mic units removed, frame_n
-    kept, so the remaining units in a cell stand for the whole cell."""
+    """`design` with its low-mic units removed and frame_n kept as given. The harness's
+    primary design (eval.frame.design) already holds no low-mic units and counts only
+    non-low-mic transcripts in frame_n (B.3), so there this changes nothing."""
     return Design(dict(design.frame_n), tuple(u for u in design.units if not u.low_mic))
 
 

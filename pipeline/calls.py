@@ -1,8 +1,10 @@
 """Cached, schema-validated model calls: the layer every structured call goes through
 (extract here; reference, matcher and judges in the eval).
 
-Cache key (D.1, B.9): sha256 of the exact request: model, effort, system prompt,
-schema hash and the prompt actually sent, plus a replicate index when it is nonzero.
+Cache key (D.1, B.9): sha256 of the exact request: the CLI's base arguments, model,
+effort, system prompt, schema hash and the prompt actually sent, plus a replicate
+index when it is nonzero. Base arguments are in it because they change how the CLI
+runs (setting sources, tools), so output made under other arguments is no hit.
 Repeated samples of one request (judge votes, the reference stability rerun) use
 replicate 1, 2, ... so each is a real call rather than a cache hit of the first;
 replicate 0 leaves the key exactly as it was. The model is the configured name; an alias
@@ -24,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from pipeline import models
+from pipeline.config import config_file
 from pipeline.prompts import sha256_text
 from pipeline.jsonschema_lite import validate
 from whispr.fileio import atomic_write_text
@@ -51,11 +54,20 @@ def schema_sha(schema: dict) -> str:
     return sha256_text(canonical(schema))
 
 
+def config_file_sha(relative: str) -> str:
+    """sha256 of a config-relative file the way eval/PREREGISTRATION.md registers it: a
+    JSON file in canonical form, any other file as UTF-8 text with CRLF converted to LF,
+    so git's line-ending conversion on checkout never changes it."""
+    path = config_file(relative)
+    text = path.read_text(encoding="utf-8")
+    return schema_sha(json.loads(text)) if path.suffix == ".json" else sha256_text(text.replace("\r\n", "\n"))
+
+
 def request_key(cfg: dict, role: str, prompt: str, schema: dict, system_prompt: Optional[str],
                 replicate: int = 0) -> str:
     spec = cfg["models"][role]
-    request = {"model": spec["model"], "effort": spec["effort"], "system_prompt": system_prompt,
-               "schema": schema_sha(schema), "prompt": prompt}
+    request = {"base_args": cfg["cli"]["base_args"], "model": spec["model"], "effort": spec["effort"],
+               "system_prompt": system_prompt, "schema": schema_sha(schema), "prompt": prompt}
     if replicate:
         request["replicate"] = replicate
     return sha256_text(canonical(request))

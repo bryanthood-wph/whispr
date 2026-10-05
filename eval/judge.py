@@ -31,7 +31,7 @@ from types import MappingProxyType
 from typing import Callable, Iterable, Mapping, Optional
 
 from pipeline import prompts, render
-from pipeline.config import DEFAULTS_PATH, _read_yaml, load_schema
+from pipeline.config import PLANTING_PATH, _read_yaml, load_schema
 from pipeline.jsonschema_lite import validate
 from pipeline.prepare import Prepared
 
@@ -70,11 +70,7 @@ KIND_DECISION = {
 }
 POSITIVE = "positive"               # Planted.kind of a verbatim transcript claim
 
-# Planting seed data: part of the pre-registered eval, not a user tunable, so it sits
-# next to defaults.yaml rather than behind a config key an overlay could change.
-PLANTING_PATH = DEFAULTS_PATH.with_name("planting.yaml")
-
-_NOT_STATED = "not_stated"          # extract.json due.basis when no due date is stated
+_NOT_STATED = "not_stated"          # extract.json due.basis when no due date is stated (a test checks the enum)
 _QUESTION = re.compile(r"\?[\"'”’)\]}]*$")   # a question, even inside closing quotes or brackets
 _HEADING = re.compile(r"^#{1,6}\s")
 _LIST_MARKER = re.compile(r"^(?:[-*+]|\d+[.)]|>)\s+")

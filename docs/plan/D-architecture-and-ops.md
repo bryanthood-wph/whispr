@@ -16,7 +16,7 @@
 | Stage | Kind | Input → output | Idempotency key |
 |---|---|---|---|
 | **prepare** | code | transcript → prepared transcript + metadata (D.4) | transcript sha256 + prepare version + hash of the `prepare.*` config and the alias table |
-| **extract** | 1 model call | prepared transcript → unified JSON (summary, required `my_actions`, tasks, entities, facts, edges with quotes) validated against `config/schema/extract.json` | sha256 of the exact request (model, effort, system prompt, schema hash, input text) |
+| **extract** | 1 model call | prepared transcript → unified JSON (summary, required `my_actions`, tasks, entities, facts, edges with quotes) validated against `config/schema/extract.json` | sha256 of the exact request (CLI base args, model, effort, system prompt, schema hash, input text) |
 | **write** | code | JSON → graph rows + rendered summary note | episode id |
 | **maintain** | code + typed decisions | graph → repaired graph + health metrics (Appendix C.5) | run id |
 

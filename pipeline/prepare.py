@@ -108,6 +108,17 @@ def redact(text: str, patterns: list[re.Pattern], token: str) -> tuple[str, int]
     return text, count
 
 
+def owner_name(cfg: dict) -> str:
+    """The recording owner's configured full name (owner.name)."""
+    return cfg["owner"]["name"]
+
+
+def owner_names(cfg: dict) -> tuple[str, ...]:
+    """The recording owner's spellings: the configured full name and its first word."""
+    name = owner_name(cfg)
+    return tuple(dict.fromkeys([name, name.split()[0]]))
+
+
 def _person(name: str) -> str:
     """'Last, First' -> 'First Last'; anything else unchanged."""
     parts = [p.strip() for p in name.split(",")]

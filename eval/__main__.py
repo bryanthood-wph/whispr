@@ -110,7 +110,7 @@ def cmd_run(cfg: dict, args) -> int:
             print(f"REFUSED: {r}")
         return 2
 
-    with L.Run(cfg, args.stage, preflight.provenance()) as run:
+    with L.Run(cfg, args.stage, preflight.provenance(cfg)) as run:
         run_dir = L.eval_dir(cfg) / "results" / run.run_id
         run_dir.mkdir(parents=True)
         pilot.execute(cfg, run, run_dir, jobs, cache, cap)   # stages.plan refuses every other stage

@@ -34,12 +34,16 @@ from pipeline.config import load_schema
 from pipeline.extract import prompt_values
 from pipeline.prepare import Prepared, word_tokens
 
+# reference.json's item type enum, in order. The reference contract pins this tuple, and a
+# test checks it against the schema and the ontology's fact_types plus task.
 ITEM_TYPES = ("decision", "task", "number", "risk", "open_question", "fact")
 TASK = "task"
 FAMILY_ROLES = {"a": "reference_a", "b": "reference_b"}   # family -> config `models` key
 MATCHER_ROLE = "matcher"
 PRESENT = "present"
-MINE_BASES = ("assigned", "volunteered")       # the ontology's owner_basis values for the owner's own task
+# The ontology's owner_basis values for the owner's own task. No config file marks which
+# bases those are, so this stays here; a test checks each is a schema and ontology owner_basis.
+MINE_BASES = ("assigned", "volunteered")
 
 # relation(): may two items from different families be one item?
 PAIR, CONFLICT, REJECT = "pair", "conflict", "reject"
@@ -127,6 +131,23 @@ def item_json(item: RefItem, *, with_id: bool) -> str:
 
 # ---------------------------------------------------------------- extraction
 
+def owner_spellings(cfg: dict) -> frozenset[tuple[str, ...]]:
+    """The token multisets (sorted `_tokens`) that name the recording owner: the Me label
+    and the configured full name (prepare.owner_name). A first name alone is not one: it
+    can be another attendee."""
+    return frozenset(tuple(sorted(_tokens(s))) for s in (prepare.ME, prepare.owner_name(cfg)))
+
+
+def owner_label(owner: Optional[str], spellings: frozenset[tuple[str, ...]]) -> Optional[str]:
+    """prepare.ME when the owner's tokens, in any order, are one of `spellings`
+    (`owner_spellings`), so case, punctuation, spacing and "Last, First" don't matter:
+    the prompt shows the owner's name, so a model may write it, or "me", where the
+    schema asks for "Me". Any other owner is returned unchanged."""
+    if owner is None:
+        return None
+    return prepare.ME if tuple(sorted(_tokens(owner))) in spellings else owner
+
+
 def is_mine(owner: Optional[str], owner_basis: str) -> bool:
     """The recording owner's own task: owner is the Me label, basis assigned or volunteered."""
     return owner == prepare.ME and owner_basis in MINE_BASES
@@ -138,9 +159,10 @@ def _extract(prep: Prepared, cfg: dict, family: str, ask: Ask, replicate: int) -
         return [], 0
     out = ask(_role(cfg, family), _prompt(cfg, "reference", prep), load_schema(cfg, "reference"),
               replicate=replicate)
-    items, disagreements = [], 0
+    items, disagreements, spellings = [], 0, owner_spellings(cfg)
     for n, raw in enumerate(out["items"]):
         values = {k: raw[k] for k in _MODEL_FIELDS}
+        values["owner"] = owner_label(values["owner"], spellings)
         mine = is_mine(values["owner"], values["owner_basis"])
         disagreements += mine != values["mine"]
         items.append(RefItem(f"{family}.{replicate}.{n}", family, **{**values, "mine": mine}))
@@ -150,7 +172,8 @@ def _extract(prep: Prepared, cfg: dict, family: str, ask: Ask, replicate: int) -
 def extract(prep: Prepared, cfg: dict, family: str, ask: Ask, *, replicate: int = 0) -> list[RefItem]:
     """One family's items for one episode. A stub makes no call and has no items. Ids
     are deterministic: family, replicate and position, so a rerun never collides.
-    `mine` is derived from owner and owner_basis, not taken from the model's flag."""
+    `mine` is derived from owner (normalized by `owner_label`) and owner_basis, not
+    taken from the model's flag."""
     return _extract(prep, cfg, family, ask, replicate)[0]
 
 

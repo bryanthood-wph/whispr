@@ -20,6 +20,10 @@ from pipeline.jsonschema_lite import validate
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 DEFAULTS_PATH = CONFIG_DIR / "defaults.yaml"
 SCHEMA_PATH = CONFIG_DIR / "config.schema.json"
+# Planting seed data (eval judge calibration, B.5): part of the pre-registered eval, not a
+# user tunable, so it sits next to defaults.yaml rather than behind a config key an overlay
+# could change.
+PLANTING_PATH = DEFAULTS_PATH.with_name("planting.yaml")
 
 
 class ConfigError(ValueError):

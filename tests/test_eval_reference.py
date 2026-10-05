@@ -72,6 +72,17 @@ class TestArtifacts(_Base):
         self.assertEqual(set(props["owner_basis"]["enum"]), set(onto["owner_basis"]))
         self.assertEqual(tuple(props), R._MODEL_FIELDS)
 
+    def test_mine_bases_are_schema_and_ontology_owner_bases(self):
+        # No file marks which bases mean the owner's own task, so MINE_BASES stays a
+        # literal; every value must still be a real owner_basis wherever one is defined.
+        with open(config_file(self.cfg["ontology"]), encoding="utf-8") as fh:
+            onto = yaml.safe_load(fh)
+        ref_bases = self.schema("reference")["properties"]["items"]["items"]["properties"]["owner_basis"]["enum"]
+        my_action = self.schema("extract")["properties"]["my_actions"]["items"]["properties"]["owner_basis"]["enum"]
+        for bases in (ref_bases, my_action, list(onto["owner_basis"])):
+            self.assertLessEqual(set(R.MINE_BASES), set(bases))
+        self.assertEqual(len(set(R.MINE_BASES)), len(R.MINE_BASES))
+
     def test_schemas_use_only_structured_output_keywords(self):
         banned = {"minimum", "maximum", "minLength", "maxLength", "pattern", "format"}
         for key in ("reference", "matcher", "presence"):
@@ -325,6 +336,28 @@ class TestReviewFixes(_Base):
         items = R.extract(self.prep, self.cfg, "a", ask)
         self.assertEqual([i.mine for i in items], [True, False])
         self.assertEqual(R.build(self.prep, self.cfg, ask).mine_disagreements, 2)
+
+    def test_me_or_the_full_owner_name_in_any_spelling_is_the_me_label(self):
+        first, last = self.cfg["owner"]["name"].split()
+        spellings = ["me", " ME ", "Me.", f"{first} {last}", f"{first} {last}".upper(), f"{last}, {first}",
+                     f"{first}\u00a0{last}", f"{first.lower()}  {last.lower()}."]
+        others = [first, f" {first.lower()} ", f"{first} Jones", "Pattern", "Jamie"]   # a first name can be anyone's
+        mine = [dict(raw("Send deck", "I will send the revised deck to Jamie", mine=True), owner=s)
+                for s in spellings]
+        theirs = [raw("Jamie ships", "we ship the Oracle forms deck", owner=s) for s in others]
+        ask = self.fake_ask({"reference_a": self.present([*mine, *theirs]), "reference_b": self.present([])})
+        items = R.extract(self.prep, self.cfg, "a", ask)
+        self.assertEqual([i.owner for i in items], [prepare.ME] * len(spellings) + others)
+        self.assertEqual([i.mine for i in items], [True] * len(spellings) + [False] * len(others))
+        self.assertEqual(R.build(self.prep, self.cfg, ask).mine_disagreements, 0)
+        self.assertIsNone(R.owner_label(None, R.owner_spellings(self.cfg)))
+
+    def test_owner_spellings_are_built_once_per_extract_call(self):
+        items = [raw("Send deck", "I will send the revised deck to Jamie", mine=True)] * 3
+        ask = self.fake_ask({"reference_a": self.present(items)})
+        with mock.patch.object(R, "owner_spellings", wraps=R.owner_spellings) as built:
+            R.extract(self.prep, self.cfg, "a", ask)
+        self.assertEqual(built.call_count, 1)
 
     # Fix 5: quotes overlap only within one turn, by containment or a 2-token edge.
     def test_overlap_needs_one_turn_and_a_real_edge(self):

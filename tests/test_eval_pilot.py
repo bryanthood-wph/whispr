@@ -149,7 +149,7 @@ class TestFixes(_PilotBase):
         keys = list(dict.fromkeys(c["key"] for c in result.calls))
         old = [{"request_key": k, "cost_usd": 0.01} for k in keys]          # an earlier invocation's rows
         new = [{"request_key": keys[0], "cost_usd": 0.02},                   # a fresh call of the first key
-               {"request_key": P.probe_key(self.cfg), "cost_usd": 0.003},
+               *({"request_key": k, "cost_usd": 0.0015} for k in P.probe_keys(self.cfg).values()),
                {"request_key": "stray", "cost_usd": 0.004}]
         rep = P.report(result, old + new, self.cfg, new_rows=new)
         steps = rep["cost_by_step"].values()
@@ -159,7 +159,7 @@ class TestFixes(_PilotBase):
         fresh = Counter(c["step"] for c in result.calls if c["key"] == keys[0])
         self.assertEqual({s: c["cached_calls"] for s, c in rep["cost_by_step"].items()},
                          {s: n - fresh[s] for s, n in logged.items()})
-        self.assertEqual((rep["probe_cost"]["calls"], rep["probe_cost"]["usd"]), (1, 0.003))
+        self.assertEqual((rep["probe_cost"]["calls"], rep["probe_cost"]["usd"]), (2, 0.003))
         self.assertEqual((rep["unattributed_cost"]["calls"], rep["unattributed_cost"]["usd"]), (1, 0.004))
         self.assertAlmostEqual(rep["spent_this_invocation_usd"], 0.027)
 

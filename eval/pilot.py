@@ -53,7 +53,7 @@ from eval import stages
 from eval.ask import Ask, make_ask
 from pipeline import calls, extract, render
 from pipeline.models import TOKEN_FIELDS, ModelCallError, append_jsonl, read_jsonl
-from pipeline.prepare import Prepared
+from pipeline.prepare import Prepared, owner_names   # names a plant must never choose as a person
 from whispr.fileio import atomic_write_text
 
 # Record steps. extract..calibration are the priority order; the rest are bookkeeping.
@@ -93,13 +93,6 @@ class Result:
 
 
 # --- helpers the run and the tests share ---------------------------------------------
-
-def owner_names(cfg: dict) -> tuple[str, ...]:
-    """The recording owner's spellings, which a plant must never choose as a person
-    (judge.plant cannot read cfg): the configured name and its first word."""
-    name = cfg["owner"]["name"]
-    return tuple(dict.fromkeys([name, name.split()[0]]))
-
 
 def detected(decision: str, value: str) -> bool:
     """Whether a verdict flags an error (judge.PASS); ValueError for an unknown decision."""
@@ -385,9 +378,11 @@ def _judge_values(records: list[dict]) -> dict:
             for d in J.DECISIONS if d in shares}
 
 
-def probe_key(cfg: dict) -> str:
-    """The request key of the probe's call (both variants share it: base_args are not in it)."""
-    return calls.request_key(cfg, stages.EXTRACTOR, PROBE_PROMPT, PROBE_SCHEMA, None)
+def probe_keys(cfg: dict) -> dict[str, str]:
+    """Each probe variant's request key, by variant name (base_args are in the key, so
+    the variants differ)."""
+    return {name: calls.request_key(variant, stages.EXTRACTOR, PROBE_PROMPT, PROBE_SCHEMA, None)
+            for name, variant in probe_variants(cfg)}
 
 
 def report(result: Result, ledger_rows: Iterable[dict], cfg: dict, *, new_rows: Optional[Iterable[dict]] = None,
@@ -421,11 +416,11 @@ def report(result: Result, ledger_rows: Iterable[dict], cfg: dict, *, new_rows: 
     for c in result.calls:
         step = by_step.setdefault(c["step"], _cost())
         step["cached_calls"] = step.get("cached_calls", 0) + (fresh[c["key"]] == 0)
-    probe_cost, unattributed, probed = _cost(), _cost(), probe_key(cfg)
+    probe_cost, unattributed, probed = _cost(), _cost(), set(probe_keys(cfg).values())
     for row in new:
         key = row.get("request_key")
         if key not in by_key:
-            _add(probe_cost if key == probed else unattributed, row)
+            _add(probe_cost if key in probed else unattributed, row)
 
     variants = list(stages.system_variants(cfg))
     judged = [r for r in recs if r["step"] == JUDGE]
@@ -545,17 +540,22 @@ def report_markdown(rep: dict) -> str:
 
 # --- --setting-sources probe --------------------------------------------------------
 
-def probe(cfg: dict, make_ask_fn: Callable[[dict], Ask]) -> dict:
-    """One tiny extractor-role call with the configured cli.base_args ("default") and
-    with `--setting-sources ""` appended ("no_settings"), on a deep copy (cfg is never
-    changed). A failing variant is reported as data, never raised; a budget stop is
-    recorded too (`budget_stop: True`) for the caller to act on. Pass an uncached ask:
-    the request key does not cover base_args, so the second variant would otherwise be
-    a cache hit of the first."""
+def probe_variants(cfg: dict) -> list[tuple[str, dict]]:
+    """The probe's configs: cfg itself ("default") and a deep copy with
+    `--setting-sources ""` appended to cli.base_args ("no_settings"); cfg is never changed."""
     no_settings = copy.deepcopy(cfg)
     no_settings["cli"]["base_args"] = [*cfg["cli"]["base_args"], *NO_SETTINGS_ARGS]
+    return [("default", cfg), ("no_settings", no_settings)]
+
+
+def probe(cfg: dict, make_ask_fn: Callable[[dict], Ask]) -> dict:
+    """One tiny extractor-role call per `probe_variants` config. A failing variant is
+    reported as data, never raised; a budget stop is recorded too (`budget_stop: True`)
+    for the caller to act on. Pass an uncached ask: the probe tests whether the CLI
+    accepts the arguments now, and a cached answer from an earlier run (or an earlier
+    CLI version) would be no evidence of that."""
     out = {}
-    for name, variant in (("default", cfg), ("no_settings", no_settings)):
+    for name, variant in probe_variants(cfg):
         entry = {"base_args": list(variant["cli"]["base_args"])}
         try:
             entry.update(ok=True, output=make_ask_fn(variant)(stages.EXTRACTOR, PROBE_PROMPT, PROBE_SCHEMA))
