@@ -124,6 +124,30 @@ function Get-FrontmatterScalar {
     return $null
 }
 
+# Frontmatter keys that must never leave the machine (decision 2026-10-04).
+# `invite_notes` is the Outlook invite body whispr copies verbatim: it carries
+# the Teams join link, meeting ID and passcode, which add nothing to a summary
+# but let anyone who reads the vault join the meeting. The local transcript
+# keeps it; only what is sent to claude or written into the vault drops it.
+$EgressExcludedFrontmatterKeys = @('invite_notes')
+
+function Remove-FrontmatterKeys {
+    # Drops each key's line plus its indented continuation lines (how whispr's
+    # YAML emitter wraps a long scalar). Column-0 lines — the next key, or a
+    # `- item` of a block list — end the skip, so neighbouring keys survive.
+    param([Parameter(Mandatory)][string]$Frontmatter, [Parameter(Mandatory)][string[]]$Keys)
+    $keyPattern = '^(?:' + (($Keys | ForEach-Object { [regex]::Escape($_) }) -join '|') + '):'
+    $kept = New-Object System.Collections.Generic.List[string]
+    $skipping = $false
+    foreach ($line in ($Frontmatter -split "`n")) {
+        if ($line -match $keyPattern) { $skipping = $true; continue }
+        if ($skipping -and $line -match '^[ \t]') { continue }
+        $skipping = $false
+        $kept.Add($line)
+    }
+    return ($kept -join "`n")
+}
+
 function Get-FrontmatterListArray {
     # Generic frontmatter list-value parser: handles both flow form
     # (`key: [a, b, c]`) and block form (`key:` / `- a` / `- b`). Returns a

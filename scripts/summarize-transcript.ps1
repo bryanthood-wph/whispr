@@ -101,7 +101,9 @@ if (-not $parsed.Valid) {
     Write-Error "'$($fileInfo.Name)' has no valid '---'-delimited frontmatter block — refusing to proceed."
     exit 1
 }
-$frontmatter = $parsed.Frontmatter
+# Same egress rule as nightly: the prompt goes to claude, so the join
+# link/passcode keys are dropped before anything reads the frontmatter.
+$frontmatter = Remove-FrontmatterKeys -Frontmatter $parsed.Frontmatter -Keys $EgressExcludedFrontmatterKeys
 $body = $parsed.Body
 
 # (b) partial: flag — hard stop (this is a single-file tool, no batch to

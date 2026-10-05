@@ -507,7 +507,9 @@ try {
             Move-ToNeedsAttention -File $file -Reason 'no valid frontmatter block — not a transcript'
             continue
         }
-        $frontmatter = $parsed.Frontmatter
+        # Everything below either goes to claude or into the vault, so the
+        # egress-excluded keys (join link/passcode) are dropped up front.
+        $frontmatter = Remove-FrontmatterKeys -Frontmatter $parsed.Frontmatter -Keys $EgressExcludedFrontmatterKeys
         $body = $parsed.Body
 
         # (b) partial: / context fields.
