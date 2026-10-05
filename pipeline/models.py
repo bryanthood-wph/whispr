@@ -8,8 +8,11 @@ and the event stream on stdout. Before and during each call this module:
   the user's sign-in rather than an API key
 - reads the init event and kills the process if its apiKeySource is not approved,
   before the model is called
+- fails closed if the stream never reports an auth source at all
 - passes --max-budget-usd, and appends model, effort, tokens, cost and auth source
-  to the run ledger, including for calls that then fail (the money is spent either way)
+  to the run ledger for every launched call, including ones that fail or are killed
+  (the money may be spent either way). A call with no result event is recorded at
+  its budget cap, flagged as an upper bound, so the eval budget never undercounts.
 
 The API path is deferred (README §3) and would sit behind this same `call` function.
 """
@@ -57,6 +60,7 @@ class CallResult:
     duration_ms: int
     is_error: bool
     request_key: Optional[str] = None
+    cost_is_upper_bound: bool = False
     raw_result: dict = field(default_factory=dict, repr=False)
 
 
@@ -95,18 +99,17 @@ def build_args(cfg: dict, role: str, json_schema: Optional[dict], system_prompt:
     return args
 
 
-def _append_ledger(ledger: Optional[Path], record: dict) -> None:
-    if ledger is None:
-        return
+def _append_ledger(ledger: Path, record: dict) -> None:
     ledger.parent.mkdir(parents=True, exist_ok=True)
     with open(ledger, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(record) + "\n")
 
 
 def call(cfg: dict, role: str, prompt: str, *, max_budget_usd: float,
-         json_schema: Optional[dict] = None, system_prompt: Optional[str] = None,
-         ledger: Optional[Path] = None, request_key: Optional[str] = None) -> CallResult:
-    """Run one model call for `role`. Raises AuthError / ModelCallError on failure."""
+         ledger: Path, json_schema: Optional[dict] = None, system_prompt: Optional[str] = None,
+         request_key: Optional[str] = None) -> CallResult:
+    """Run one model call for `role`. Raises AuthError / ModelCallError on failure.
+    `ledger` is required: no paid call may go unrecorded."""
     for name in cfg["auth"]["refuse_if_set"]:
         if os.environ.get(name):
             raise ModelCallError(f"refusing to call the model: {name} is set (nested Claude session)")
@@ -133,9 +136,13 @@ def call(cfg: dict, role: str, prompt: str, *, max_budget_usd: float,
     auth_source: Optional[str] = None
     model = spec["model"]
     result: dict[str, Any] = {}
+    failure: Optional[ModelCallError] = None
     try:
-        proc.stdin.write(prompt)
-        proc.stdin.close()
+        try:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        except OSError as exc:  # the child exited before reading its prompt
+            failure = ModelCallError(f"{role} call: could not send the prompt ({exc})")
         for line in proc.stdout:
             try:
                 event = json.loads(line)
@@ -146,7 +153,8 @@ def call(cfg: dict, role: str, prompt: str, *, max_budget_usd: float,
                 model = event.get("model") or model
                 if auth_source not in approved:
                     proc.kill()
-                    raise AuthError(f"auth source {auth_source!r} is not approved {sorted(approved)}; call killed before the model ran")
+                    failure = AuthError(f"auth source {auth_source!r} is not approved {sorted(approved)}; call killed")
+                    break
             elif event.get("type") == "result":
                 result = event
         proc.wait()
@@ -159,24 +167,29 @@ def call(cfg: dict, role: str, prompt: str, *, max_budget_usd: float,
         proc.stdout.close()
         proc.stderr.close()
 
+    if failure is None and timed_out.is_set():
+        failure = ModelCallError(f"{role} call timed out after {cfg['cli']['timeout_s']}s")
+    if failure is None and result and auth_source is None:
+        failure = AuthError(f"{role} call reported no auth source (no init event); failing closed")
     usage = result.get("usage") or {}
+    has_cost = "total_cost_usd" in result
     out = CallResult(
         role=role, model=model, effort=spec["effort"], auth_source=auth_source,
         structured=result.get("structured_output"), text=result.get("result") or "",
-        cost_usd=float(result.get("total_cost_usd") or 0.0),
+        cost_usd=float(result["total_cost_usd"]) if has_cost else max_budget_usd,
         input_tokens=int(usage.get("input_tokens") or 0), output_tokens=int(usage.get("output_tokens") or 0),
         cache_read_tokens=int(usage.get("cache_read_input_tokens") or 0),
         cache_creation_tokens=int(usage.get("cache_creation_input_tokens") or 0),
         duration_ms=int((time.monotonic() - started) * 1000),
         is_error=bool(result.get("is_error")) or not result or proc.returncode != 0,
-        request_key=request_key, raw_result=result,
+        request_key=request_key, raw_result=result, cost_is_upper_bound=not has_cost,
     )
     record = {k: v for k, v in asdict(out).items() if k not in ("structured", "text", "raw_result")}
     record["ts"] = datetime.now(timezone.utc).isoformat()
     _append_ledger(ledger, record)
 
-    if timed_out.is_set():
-        raise ModelCallError(f"{role} call timed out after {cfg['cli']['timeout_s']}s")
+    if failure is not None:
+        raise failure
     if out.is_error:
         tail = "".join(stderr_chunks)[-500:]
         raise ModelCallError(f"{role} call failed (exit {proc.returncode}): {out.text[:300]!r} {tail!r}")

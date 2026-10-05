@@ -30,8 +30,34 @@ class SchemaError(ValueError):
     """The schema itself uses something this validator does not enforce."""
 
 
+def _types(schema: dict) -> list[str]:
+    t = schema.get("type", [])
+    return t if isinstance(t, list) else [t]
+
+
+def check_schema(schema: dict, path: str = "#") -> None:
+    """Walk every node of the schema, not just the ones an instance reaches, so an
+    unsupported keyword under an empty array or an absent property still raises."""
+    unknown = set(schema) - SUPPORTED
+    if unknown:
+        raise SchemaError(f"unsupported schema keyword(s) at {path}: {sorted(unknown)}")
+    for t in _types(schema):
+        if t not in _TYPES:
+            raise SchemaError(f"unknown type {t!r} at {path}")
+    for group in ("properties", "$defs"):
+        for name, sub in schema.get(group, {}).items():
+            check_schema(sub, f"{path}/{group}/{name}")
+    if "items" in schema:
+        if not isinstance(schema["items"], dict):
+            raise SchemaError(f"only a single-schema 'items' is supported at {path}")
+        check_schema(schema["items"], f"{path}/items")
+    if isinstance(schema.get("additionalProperties"), dict):
+        check_schema(schema["additionalProperties"], f"{path}/additionalProperties")
+
+
 def validate(instance: Any, schema: dict) -> list[str]:
     """Return a list of error strings ("<path>: <problem>"); empty means valid."""
+    check_schema(schema)
     errors: list[str] = []
     _check(instance, schema, schema, "$", errors)
     return errors
@@ -47,14 +73,11 @@ def _resolve(ref: str, root: dict) -> dict:
 
 
 def _check(value: Any, schema: dict, root: dict, path: str, errors: list[str]) -> None:
-    unknown = set(schema) - SUPPORTED
-    if unknown:
-        raise SchemaError(f"unsupported schema keyword(s) at {path}: {sorted(unknown)}")
     if "$ref" in schema:
         _check(value, _resolve(schema["$ref"], root), root, path, errors)
         return
     if "type" in schema:
-        types = schema["type"] if isinstance(schema["type"], list) else [schema["type"]]
+        types = _types(schema)
         if not any(_TYPES[t](value) for t in types):
             errors.append(f"{path}: expected {'/'.join(types)}, got {type(value).__name__}")
             return

@@ -72,6 +72,12 @@ class TestJsonSchemaLite(unittest.TestCase):
         with self.assertRaises(SchemaError):
             validate("x", {"type": "string", "pattern": "^x$"})
 
+    def test_unsupported_keyword_raises_even_where_no_data_reaches(self):
+        schema = {"type": "object", "properties": {
+            "a": {"type": "array", "items": {"type": "string", "pattern": "^x$"}}}}
+        with self.assertRaises(SchemaError):
+            validate({"a": []}, schema)
+
 
 if __name__ == "__main__":
     unittest.main()

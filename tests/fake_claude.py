@@ -1,6 +1,6 @@
 """Stand-in for the claude CLI in tests: emits a stream-json init + result.
 
-Behavior comes from FAKE_CLAUDE_MODE: ok | apikey | error | nostructured | hang.
+Behavior comes from FAKE_CLAUDE_MODE: ok | apikey | noinit | error | nostructured | hang.
 FAKE_CLAUDE_ARGS_OUT, if set, receives {"argv", "stdin", "env_keys"} as JSON.
 FAKE_CLAUDE_STRUCTURED, if set, is the structured_output JSON to return.
 """
@@ -17,8 +17,9 @@ if os.environ.get("FAKE_CLAUDE_ARGS_OUT"):
         json.dump({"argv": sys.argv[1:], "stdin": stdin, "env_keys": sorted(os.environ)}, fh)
 
 model = sys.argv[sys.argv.index("--model") + 1] if "--model" in sys.argv else "unknown"
-print(json.dumps({"type": "system", "subtype": "init", "model": model,
-                  "apiKeySource": "ANTHROPIC_API_KEY" if mode == "apikey" else "none"}), flush=True)
+if mode != "noinit":
+    print(json.dumps({"type": "system", "subtype": "init", "model": model,
+                      "apiKeySource": "ANTHROPIC_API_KEY" if mode == "apikey" else "none"}), flush=True)
 if mode == "hang":
     time.sleep(60)
 structured = json.loads(os.environ.get("FAKE_CLAUDE_STRUCTURED", '{"ok": true}'))

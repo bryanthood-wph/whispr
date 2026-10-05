@@ -81,7 +81,14 @@ class TestModelsCall(unittest.TestCase):
         os.environ["FAKE_CLAUDE_MODE"] = "apikey"
         with self.assertRaises(models.AuthError):
             self._call()
-        self.assertEqual(self._ledger(), [])
+        row = self._ledger()[0]   # recorded anyway, at the budget cap as an upper bound
+        self.assertEqual((row["auth_source"], row["cost_usd"], row["cost_is_upper_bound"]), ("ANTHROPIC_API_KEY", 0.5, True))
+
+    def test_missing_init_event_fails_closed(self):
+        os.environ["FAKE_CLAUDE_MODE"] = "noinit"
+        with self.assertRaises(models.AuthError):
+            self._call()
+        self.assertEqual(len(self._ledger()), 1)
 
     def test_error_still_records_spend(self):
         os.environ["FAKE_CLAUDE_MODE"] = "error"
@@ -101,6 +108,8 @@ class TestModelsCall(unittest.TestCase):
         with self.assertRaises(models.ModelCallError) as ctx:
             self._call()
         self.assertIn("timed out", str(ctx.exception))
+        row = self._ledger()[0]
+        self.assertEqual((row["cost_usd"], row["cost_is_upper_bound"]), (0.5, True))
 
 
 class TestResolveExecutable(unittest.TestCase):

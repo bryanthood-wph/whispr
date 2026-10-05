@@ -159,13 +159,39 @@ def load_aliases(path: Optional[Path]) -> dict[str, list[str]]:
     return table
 
 
-def rewrite_aliases(text: str, aliases: dict[str, list[str]]) -> tuple[str, int]:
-    count = 0
+def compile_aliases(aliases: dict[str, list[str]]) -> list[tuple[str, re.Pattern]]:
+    """One case-insensitive regex per canonical name. The canonical spelling is itself
+    an alternative, longest first, so a variant inside an already-canonical name
+    ("Jamie" in "Jamie Doe") matches as the canonical name and is left alone."""
+    compiled = []
     for canonical, variants in aliases.items():
-        for variant in variants:
-            text, n = re.subn(rf"\b{re.escape(variant)}\b", canonical, text, flags=re.IGNORECASE)
-            count += n
+        alts = sorted({canonical, *variants}, key=len, reverse=True)
+        compiled.append((canonical, re.compile(r"\b(?:" + "|".join(map(re.escape, alts)) + r")\b", re.IGNORECASE)))
+    return compiled
+
+
+def rewrite_aliases(text: str, compiled: list[tuple[str, re.Pattern]]) -> tuple[str, int]:
+    """Rewrite variants to their canonical spelling; count only real changes. The
+    replacement is a function, so a backslash in a name is never read as an escape."""
+    count = 0
+    for canonical, rx in compiled:
+        count += sum(m.group(0) != canonical for m in rx.finditer(text))
+        text = rx.sub(lambda _m, c=canonical: c, text)
     return text, count
+
+
+def redact_tree(value: Any, patterns: list[re.Pattern], token: str) -> tuple[Any, int]:
+    """Redact every string inside a metadata value (str, list or dict), so a field
+    added later can't bypass redaction on its way to the prompt."""
+    if isinstance(value, str):
+        return redact(value, patterns, token)
+    if isinstance(value, list):
+        pairs = [redact_tree(v, patterns, token) for v in value]
+        return [v for v, _ in pairs], sum(n for _, n in pairs)
+    if isinstance(value, dict):
+        pairs = {k: redact_tree(v, patterns, token) for k, v in value.items()}
+        return {k: v for k, (v, _) in pairs.items()}, sum(n for _, n in pairs.values())
+    return value, 0
 
 
 def remove_echo(turns: list[Turn], window_s: float, overlap: float, min_words: int) -> tuple[list[Turn], list[Turn]]:
@@ -235,12 +261,14 @@ def prepare(group: list[Transcript], cfg: dict, aliases: Optional[dict] = None) 
 
     check_encoding([x.text for x in turns] + [str(v) for v in first.meta.values()], p["mojibake_markers"])
 
-    patterns = [re.compile(x) for x in p["redaction_patterns"]]
+    # Case-insensitive for every pattern, so a new one can't forget (?i).
+    patterns = [re.compile(x, re.IGNORECASE) for x in p["redaction_patterns"]]
+    compiled = compile_aliases(aliases)
     redactions = rewritten = 0
     cleaned = []
     for x in turns:
         text, n = redact(x.text, patterns, p["redaction_token"])
-        text, a = rewrite_aliases(text, aliases)
+        text, a = rewrite_aliases(text, compiled)
         redactions += n
         rewritten += a
         cleaned.append(Turn(x.seconds, x.speaker, text))
@@ -248,10 +276,8 @@ def prepare(group: list[Transcript], cfg: dict, aliases: Optional[dict] = None) 
     meta = rederive_meta(first.meta, cfg)
     if len(group) > 1:
         meta["end"] = rederive_meta(group[-1].meta, cfg)["end"]
-    for key in ("call_title", "organizer"):
-        if meta[key]:
-            meta[key], n = redact(meta[key], patterns, p["redaction_token"])
-            redactions += n
+    meta, n = redact_tree(meta, patterns, p["redaction_token"])
+    redactions += n
 
     kept, dropped = remove_echo(cleaned, p["echo_window_s"], p["echo_overlap"], p["echo_min_words"])
     words = sum(len(_words(x.text)) for x in kept)

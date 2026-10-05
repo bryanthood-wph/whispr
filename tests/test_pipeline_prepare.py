@@ -82,6 +82,14 @@ class TestRedaction(_Base):
         self.assertIn("change passcode on my phone", text)
         self.assertGreaterEqual(out.redactions, 4)
 
+    def test_new_domain_upper_case_and_attendee_dial_in_redacted(self):
+        out = self.prep("2026-10-01T10:00:00-04:00",
+                        [("00:00:01", "Others", "HTTPS://Teams.Cloud.Microsoft/meet/3616?p=pBlBbv3 ok")],
+                        attendees=["Doe, Jane", "+1 470-555-0100,,123456789#"])
+        self.assertNotIn("pBlBbv3", out.render())
+        self.assertNotIn("123456789", str(out.meta["attendees"]))
+        self.assertIn("Jane Doe", out.meta["attendees"])
+
     def test_invite_notes_never_reach_meta(self):
         out = self.prep("2026-10-01T10:00:00-04:00", [], extra_frontmatter="invite_notes: 'Passcode: x1'\n")
         self.assertNotIn("invite_notes", out.meta)
@@ -123,6 +131,13 @@ class TestAliases(_Base):
         with self.assertRaises(P.PrepareError):
             P.load_aliases(bad)
         self.assertEqual(P.load_aliases(self.root / "missing.yaml"), {})
+
+    def test_canonical_text_not_rewritten_again_and_backslash_safe(self):
+        rewrite = lambda text, table: P.rewrite_aliases(text, P.compile_aliases(table))
+        self.assertEqual(rewrite("Jamie Doe said, then jamie left", {"Jamie Doe": ["Jamie"]}),
+                         ("Jamie Doe said, then Jamie Doe left", 1))
+        self.assertEqual(rewrite("the r and d team", {r"R\D": ["r and d"]}), (r"the R\D team", 1))
+        self.assertEqual(rewrite("Jamieson spoke", {"Jamie Doe": ["Jamie"]}), ("Jamieson spoke", 0))  # whole words only
 
 
 class TestEpisodes(_Base):

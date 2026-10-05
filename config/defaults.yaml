@@ -61,14 +61,15 @@ prepare:
   echo_overlap: 0.8             # ...sharing at least this fraction of its words is dropped as echo
   echo_min_words: 4             # shorter Me lines are never treated as echo (a lone "yes" can accept a task)
   merge_gap_min: 10             # episode merge (L13): same calendar item or title, gap under this
-  # Redaction (L10): stripped from transcript text and metadata before any model sees it.
+  # Redaction (L10): stripped from transcript text and every metadata string before any
+  # model sees it. Patterns are compiled case-insensitive in code.
   # The passcode rule needs the invite's "Passcode:" form; spoken "passcode" (phone
   # unlock talk, 3 transcripts as of 2026-10-04) is ordinary speech and is kept.
   redaction_patterns:
-    - 'https?://\S*(teams\.microsoft\.com|teams\.live\.com|safelinks\.protection\.outlook\.com|aka\.ms/JoinTeamsMeeting)\S*'
-    - '(?i)\b(meeting|conference)\s*id\s*[:#]?\s*\d[\d ]{5,}'
-    - '(?i)\bpass\s*code\s*[:#]\s*\S+'
-    - '(?i)\bphone\s+conference\s+id\s*[:#]?\s*[\d ]+#?'
+    - 'https?://\S*(teams\.microsoft\.(com|us)|teams\.cloud\.microsoft|teams\.live\.com|safelinks\.protection\.outlook\.com|aka\.ms/JoinTeamsMeeting)\S*'
+    - '\b(meeting|conference)\s*id\s*[:#]?\s*\d[\d ]{5,}'
+    - '\bpass\s*code\s*[:#]\s*\S+'
+    - '\bphone\s+conference\s+id\s*[:#]?\s*[\d ]+#?'
     - '\+?\d[\d\s().-]{8,}\d,,\d+#?'
   redaction_token: '[redacted]'
   # Metadata re-derivation (L15). Window titles are segments joined by this separator;
