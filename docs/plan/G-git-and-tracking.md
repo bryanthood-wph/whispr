@@ -5,7 +5,8 @@
 > `rebuild` branch in a separate worktree, with `feat/<issue>-<slug>`
 > branches cut from it. Work is tracked in GitHub Issues: one milestone per
 > phase, one issue per deliverable, and a `gate` issue for each decision
-> that's yours. Cutover is one PR, after the gates pass.
+> that's yours. Each issue follows one loop (G.5), and every stop leaves a
+> `RESUME.md`. Cutover is one PR, after the gates pass.
 
 ## G.1 Why the main folder never changes branch (verified 2026-10-04)
 
@@ -25,7 +26,7 @@ mechanically.
 |---|---|---|
 | `master` | Production. Changes only through **gate-approved hotfixes** and the cutover. | `C:\github\whispr` |
 | `rebuild` | Integration branch for this plan. Always green on unit tests and the harness dry-run, plus `eval regress` once an accepted scorecard exists (B.7). | `git worktree add C:\github\whispr-rebuild rebuild` |
-| `feat/<issue#>-<slug>` | One per issue, cut from `rebuild`, squash-merged back by PR | in the rebuild worktree |
+| `feat/<issue#>-<slug>` | One per issue, cut from `rebuild`, squash-merged back (G.5) | in the rebuild worktree |
 | `hotfix/<slug>` | An urgent production fix. Cut from `master`, merged to `master`, then **`master` is merged into `rebuild` the same day** | main folder, briefly |
 
 ## G.3 Rules
@@ -54,7 +55,8 @@ mechanically.
 - **Pushing, `gh issue` and `gh pr`** all use the CLAUDE.md account-switch
   procedure. The repo is private to `bryanthood-wph`.
 - **Housekeeping:** the merged `fix/nightly-ingest-idempotency` branch,
-  local and remote, is deleted with your OK in Phase 0.
+  local and remote, is deleted by you (issue #2). The agent's attempt was
+  blocked by a permission rule.
 
 ## G.4 Work tracking: GitHub Issues + Milestones
 
@@ -70,7 +72,60 @@ mechanically.
     the decision recorded.
   - `blocked`
   - `lesson:Lnn`: an issue that implements a guardrail from Appendix E
-- **The change-record template** (README §5) is an issue template. A PR
-  that changes behavior must link the issue and its scorecard diff.
-- **PRs say `Closes #N`**, so the milestones show progress with no separate
+- **The change-record template** (README §5) is
+  `.github/ISSUE_TEMPLATE/change-record.md`. A change that alters behavior
+  must link the issue and its scorecard diff.
+- **Issues are closed by hand** with the squash commit's SHA. GitHub's
+  `Closes #N` only acts on the default branch (`master`), and features merge
+  into `rebuild`. The milestones still show progress, with no separate
   status document.
+
+## G.5 The per-issue loop (testing, one commit per feature, iterating on failure)
+
+The task list is the open issues, worked in milestone order. Within a
+milestone, work the lowest number that isn't `blocked` and isn't a `gate`.
+
+1. **Start.** Cut `feat/<issue#>-<slug>` from `rebuild` in
+   `C:\github\whispr-rebuild`. Re-read the issue's acceptance checks and
+   the plan section it cites, then check Appendix E for its lessons.
+2. **Test first.** Write or extend tests for each acceptance check before
+   or alongside the code. Tests never make model calls; they use a fake
+   CLI or a fake response.
+3. **Run.** Run the unit tests and, once it exists, the harness dry-run
+   (`python -m eval run --dry-run`).
+4. **When a test fails, iterate.**
+   - Fix and re-run.
+   - After **two failed attempts**, stop changing code. Write the
+     hypothesis in the issue ("X fails because Y"), re-read the code and
+     the error, then make one targeted change.
+   - After a third failure, check the system: env, auth, branch, config
+     drift. If it's still red, label the issue `blocked` with the evidence,
+     and move to the next issue.
+5. **Commit by feature.** One logical change per commit, and the message
+   says what and why. Squash-merge into `rebuild` as
+   `"<title> (#N)"`. `rebuild` must stay green.
+6. **Close.** Close the issue with the SHA and the evidence: what ran and
+   what it showed.
+7. **Push** `rebuild` using the CLAUDE.md account-switch procedure.
+
+**Model spend.** Any step that spends money runs as a one-shot scheduled
+task (G.3), never from a Claude session. Each run's cost goes into the
+run ledger, and `python -m eval status` reports the total against
+`eval.budget_usd`.
+
+**Stopping and resuming (`RESUME.md`).** The work stops at:
+- every `gate` issue, which waits for you
+- a cumulative spend within $5 of `eval.budget_usd` ($95 of $100)
+- a `blocked` issue that has nothing else workable behind it
+
+At a stop, the agent overwrites `RESUME.md` at the root of the rebuild
+worktree with:
+- the stop reason
+- the branch and HEAD SHA
+- spend to date from the ledger
+- the issue in progress and its next step
+- what you need to decide
+- the exact first command to run when you say "continue"
+
+"Continue" means: read `RESUME.md`, verify the branch and SHA match, and
+pick up at that step.
