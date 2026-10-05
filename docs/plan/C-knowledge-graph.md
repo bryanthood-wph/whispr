@@ -66,25 +66,55 @@ Every claim is verified from the tool's own repo, docs and license file.
 - **Phase 6:** for the survivors, a scored table including the smoke test,
   which you confirm at gate 3.
 
-**What preliminary research already shows (2026-10-04, secondary sources)**
-- **Graphify** (`pip install graphifyy`, a Claude Code skill):
-  - **Has:**
-    - `graph.json`, an interactive `graph.html` and a report
-    - edges tagged `EXTRACTED` / `INFERRED` / `AMBIGUOUS`
-    - Leiden communities
-    - a SHA256 cache with `--update`
-    - an MCP mode
-  - **Lacks:** a time model and documented entity resolution. It is
-    code-first, and **its README states no license**.
-- **Graphiti** (Apache-2.0):
-  - **Has:** episodes, bi-temporal invalidation, a Pydantic ontology,
-    hybrid retrieval and MCP.
-  - **Lacks:** a usable store on Windows. It needs Neo4j, FalkorDB or
-    Neptune. The Kuzu backend is deprecated (Kuzu was archived in Oct 2025),
-    and FalkorDBLite has no native Windows support. That likely fails the
-    first must-have.
-- **Batch GraphRAG-style tools** rebuild in batches, which doesn't fit a
-  nightly incremental ingest.
+**Must-haves table (desk survey, 2026-10-04; for you to confirm at gate 0, issue #1)**
+
+Every cell was checked against the tool's own repo, docs or LICENSE file.
+Columns: 1 Windows + embedded store · 2 supersede · 3 entity resolution ·
+4 Claude, no mandatory embedding API · 5 pre-extracted insert, no second
+extraction · 6 redistributable license · 7 maintained · 8 headless.
+
+| Tool | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | Survives |
+|---|---|---|---|---|---|---|---|---|---|
+| Graphify | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ Apache-2.0 | ✓ | ✓ | no (2) |
+| Cognee | ✓ | ✓ | ? | ✓ | ✓ | ✓ Apache-2.0 | ✓ | ✓ | **yes** |
+| LightRAG | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ MIT | ✓ | ✓ | no (2) |
+| MS GraphRAG | ✓ | ✗ | ? | ? | ✓ | ✓ MIT | ✓ (maintenance mode) | ✓ | no (2) |
+| Graphiti | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ Apache-2.0 | ✓ | ✓ | no (1) |
+| mem0 | ✗ | ? | ✗ | ? | ✗ | ✓ Apache-2.0 | ✓ | ✓ | no (1, 3, 5) |
+| MemPalace `KnowledgeGraph` | ✓ | ✓ | ? | ✓ | ✓ | ✓ MIT | ✓ | ✓ | **yes** |
+| DomLynch/Temporal | ? | ✓ | ✓ | ✓ | ✓ | ✓ MIT | ✓ (single author, 6 months old) | ✓ | yes, weak |
+| Mnemosyne `TripleStore` | ? | ✓ | ? | ? | ✓ | ✓ MIT | ✓ (6 months old) | ✓ | yes, weak |
+
+✓ pass · ✗ fail · ? unclear from the tool's own sources.
+
+**Why the failures fail**
+- **Graphify:** no time or validity model, and `update` re-extracts, which
+  overwrites. (Its license is now Apache-2.0, which corrects the earlier
+  "no license" note.) It stays the C.3 comparator.
+- **LightRAG, GraphRAG:** no supersede. GraphRAG's README also calls it
+  "largely in maintenance mode".
+- **Graphiti:** its core needs a Neo4j, FalkorDB or Neptune server. Kuzu is
+  deprecated, and FalkorDBLite isn't documented on Windows.
+- **mem0:** graph memory left the open-source SDK in v3 (it is hosted-only),
+  and `add()` always runs its own extraction.
+
+**Survivors go to the Phase 6 smoke test:** Cognee and MemPalace
+`KnowledgeGraph`. Temporal and Mnemosyne are optional extras.
+
+**Risks the smoke test must settle**
+- **Cognee:**
+  - Supersede is persisted only by its default store, Ladybug, a Kuzu fork
+    whose health is unverified.
+  - Search doesn't filter out superseded facts.
+  - An embedding provider must be configured. Local `fastembed` works, but
+    it downloads model weights once.
+- **MemPalace:**
+  - Its graph module is stdlib SQLite, but the wider package pulls in
+    ChromaDB, which has a known install regression.
+  - Entity resolution is name normalization only.
+- **Both:** fuzzy merge of pre-inserted entities is unverified. If either
+  one fails on merge or Windows, the fallback is the minimal SQLite core
+  (C.3).
 
 ## C.3 Step 2: adopt, or build the minimal core
 
