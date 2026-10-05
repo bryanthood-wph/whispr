@@ -60,7 +60,9 @@ models:
   reference_a:      {model: claude-opus-5-5, effort: high, thinking_tokens: null}
   reference_b:      {model: claude-sonnet-5-5, effort: high, thinking_tokens: null}
   matcher:          {model: haiku, effort: null, thinking_tokens: null}
-  judge:            {model: haiku, effort: null, thinking_tokens: null}
+  # judge thinking off (2026-10-05 amendment, pending its pilot A/B): the answer is ~20 tokens,
+  # but the pilot's judge averaged ~1,080 output tokens of default thinking, 58% of its cost.
+  judge:            {model: haiku, effort: null, thinking_tokens: 0}
   judge_escalate_1: {model: claude-sonnet-5-5, effort: null, thinking_tokens: null}
   judge_escalate_2: {model: claude-opus-5-5, effort: null, thinking_tokens: null}
 
