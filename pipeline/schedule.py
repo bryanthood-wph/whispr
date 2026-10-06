@@ -178,13 +178,19 @@ def resolve_interpreter(cfg: dict, executable: str = sys.executable) -> Path:
         raise ScheduleError(f"interpreter {path} is not an absolute path")
     if not path.is_file():
         raise ScheduleError(f"interpreter {path} does not exist")
-    for candidate in (str(path), *_venv_home(path)):
-        if _version_stamped(cfg, candidate):
-            raise ScheduleError(
-                f"interpreter {path} resolves through the version-stamped path {candidate}: the next "
-                "update deletes it and every task stops starting. Use an install with a stable path "
-                "(python.org installer, or set schedules.interpreter).")
+    stamped = version_stamp(cfg, path)
+    if stamped:
+        raise ScheduleError(
+            f"interpreter {path} resolves through the version-stamped path {stamped}: the next "
+            "update deletes it and every task stops starting. Use an install with a stable path "
+            "(python.org installer, or set schedules.interpreter).")
     return path
+
+
+def version_stamp(cfg: dict, path: Path) -> Optional[str]:
+    """The version-stamped path `path` runs through (itself, or its venv's base
+    interpreter folder), or None."""
+    return next((c for c in (str(path), *_venv_home(path)) if _version_stamped(cfg, c)), None)
 
 
 def _venv_home(interpreter: Path) -> list[str]:

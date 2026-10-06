@@ -57,6 +57,11 @@
       --ack KEY       acknowledge one by its key or id (exit 0; 2 no open alert has it)
       --session-start the SessionStart hook's message: one short line when alerts are
                       open, nothing when none; never fails, always exit 0
+  setup (plan [--json] | write [--set KEY=VALUE ...] [--yes] | init | test-alert)
+      the /whispr-setup steps (pipeline/setup.py): what the overlay would hold and where
+      each value comes from; write it (only with --yes); create the data folder and
+      database; raise the test alert and show it as the SessionStart hook will.
+      exit 0 ok, 1 nothing written (no --yes, or a value still to ask for), 2 bad config
 
 The `whispr-pipeline` scheduled task runs `run` at logon and every 15 minutes. Never run
 it without --dry-run from inside a Claude Code session: it refuses (and alerts). The
@@ -88,6 +93,7 @@ from pipeline import doctor as pipeline_doctor
 from pipeline import liveness as pipeline_liveness
 from pipeline import run as pipeline_run
 from pipeline import schedule as S
+from pipeline import setup as pipeline_setup
 from pipeline.config import ConfigError, load_config
 
 
@@ -187,6 +193,7 @@ def build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     which = al.add_mutually_exclusive_group()
     which.add_argument("--ack", metavar="KEY", help="acknowledge the open alert with this key (or id)")
     which.add_argument("--session-start", action="store_true", help="the SessionStart hook's message; always exit 0")
+    pipeline_setup.add_parser(sub)
     return ap, frozenset(sub.choices)
 
 
@@ -220,6 +227,8 @@ def _main(argv: Optional[list[str]], runner: Optional[Callable[[dict], S.Runner]
         except (ConfigError, S.ScheduleError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
+    if args.cmd == "setup":                             # loads the config itself: plan and write run before it is complete
+        return pipeline_setup.main(args)
     if args.cmd == "alerts" and args.session_start:     # before load_config: it must never fail
         return pipeline_alerts.session_start(args.overlay)
     if args.cmd == "doctor":

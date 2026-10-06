@@ -1,5 +1,5 @@
 {
-  "description": "whispr: show open alerts at session start (pipeline/alerts.py). Nothing when none are open; never blocks a session.",
+  "description": "whispr: open alerts at session start (pipeline/alerts.py; nothing when none are open, never blocks a session), and the /whispr-graph pane (graph.tsx)",
   "hooks": {
     "SessionStart": [
       {
@@ -7,11 +7,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\"",
+            "command": "${user_config.python}",
+            "args": ["-s", "${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py"],
             "timeout": 15
           }
         ]
       }
     ]
-  }
+  },
+  "modules": ["./graph.tsx"]
 }

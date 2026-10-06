@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
-from pipeline.config import DEFAULTS_PATH, ConfigError, load_config
+from pipeline.config import DEFAULTS_PATH, OVERLAY_ENV, ConfigError, default_overlay_path, load_config
 from pipeline.jsonschema_lite import SchemaError, validate
 from pipeline_helpers import overlay
 
@@ -49,6 +51,16 @@ class TestLoadConfig(unittest.TestCase):
         bad["models"] = {"extractor": {"model": "haiku", "effort": "turbo"}}
         with self.assertRaises(ConfigError):
             load_config(overlay=bad)
+
+    def test_the_overlay_env_names_another_overlay(self):
+        path = self.root / "other.yaml"
+        path.write_text(yaml.safe_dump(overlay(self.root)), encoding="utf-8")
+        with mock.patch.dict(os.environ, {OVERLAY_ENV: str(path), "APPDATA": str(self.root / "appdata")}):
+            self.assertEqual(default_overlay_path(), path)
+            self.assertEqual(load_config()["owner"]["name"], "Pat Example")
+        for unset in ("", "  "):
+            with self.subTest(value=unset),                     mock.patch.dict(os.environ, {OVERLAY_ENV: unset, "APPDATA": str(self.root)}):
+                self.assertEqual(default_overlay_path(), self.root / "whispr" / "config.yaml")
 
 
 class TestJsonSchemaLite(unittest.TestCase):

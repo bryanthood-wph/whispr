@@ -3,9 +3,13 @@
   "title": "whispr pipeline config (defaults.yaml merged with the user overlay)",
   "type": "object",
   "additionalProperties": false,
-  "required": ["config_version", "owner", "paths", "auth", "cli", "models", "prompts", "schemas", "ontology", "prepare", "extract", "pipeline", "kg", "alerts", "backup", "maintain", "reconcile", "liveness", "doctor", "schedules", "eval"],
+  "required": ["config_version", "owner", "paths", "auth", "cli", "models", "prompts", "schemas", "ontology", "prepare", "extract", "pipeline", "kg", "alerts", "backup", "maintain", "reconcile", "liveness", "doctor", "schedules", "eval", "setup"],
   "$defs": {
     "str": {"type": "string", "minLength": 1},
+    "folder_hint": {
+      "type": "object", "additionalProperties": false, "required": ["env", "name"],
+      "properties": {"env": {"type": "array", "items": {"$ref": "#/$defs/str"}}, "name": {"$ref": "#/$defs/str"}}
+    },
     "strs": {"type": "array", "items": {"type": "string"}},
     "money": {"type": "number", "minimum": 0},
     "frac": {"type": "number", "minimum": 0, "maximum": 1},
@@ -406,6 +410,22 @@
             "utterance_end_chars": {"type": "string", "minLength": 1},
             "utterance_closing_chars": {"type": "string"}
           }
+        }
+      }
+    },
+    "setup": {
+      "type": "object", "additionalProperties": false,
+      "required": ["keys", "ask", "recorder_args", "data_dir", "backup", "test_alert"],
+      "properties": {
+        "keys": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+        "ask": {"type": "array", "items": {"$ref": "#/$defs/str"}},
+        "recorder_args": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+        "data_dir": {"$ref": "#/$defs/folder_hint"},
+        "backup": {"$ref": "#/$defs/folder_hint"},
+        "test_alert": {
+          "type": "object", "additionalProperties": false, "required": ["kind", "key", "message", "fix"],
+          "properties": {"kind": {"$ref": "#/$defs/str"}, "key": {"$ref": "#/$defs/str"},
+                         "message": {"$ref": "#/$defs/str"}, "fix": {"$ref": "#/$defs/str"}}
         }
       }
     }

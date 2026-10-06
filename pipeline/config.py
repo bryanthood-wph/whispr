@@ -26,12 +26,19 @@ SCHEMA_PATH = CONFIG_DIR / "config.schema.json"
 PLANTING_PATH = DEFAULTS_PATH.with_name("planting.yaml")
 
 
+# Names another overlay for this process when set and non-empty. The plugin's MCP servers
+# get it from the plugin's `config` option (plugin/.mcp.json), since a server's argv
+# cannot leave out --config when that option is empty. Scheduled tasks never set it.
+OVERLAY_ENV = "WHISPR_OVERLAY"
+
+
 class ConfigError(ValueError):
     pass
 
 
 def default_overlay_path() -> Path:
-    return Path(os.environ["APPDATA"]) / "whispr" / "config.yaml"
+    named = os.environ.get(OVERLAY_ENV, "").strip()
+    return Path(named) if named else Path(os.environ["APPDATA"]) / "whispr" / "config.yaml"
 
 
 def _merge(base: dict, overlay: dict, path: str = "") -> dict:
@@ -56,14 +63,20 @@ def read_yaml(path: Path) -> dict:
     return data
 
 
+def merged(overlay: dict) -> dict[str, Any]:
+    """Defaults with `overlay` merged in, not yet validated: what /whispr-setup reads
+    before the overlay is complete (pipeline/setup.py). An unknown key still fails."""
+    return _merge(read_yaml(DEFAULTS_PATH), overlay)
+
+
 def load_config(overlay_path: Optional[Path] = None, overlay: Optional[dict] = None) -> dict[str, Any]:
-    """Return the validated config. `overlay` (a dict) is for tests; otherwise the
-    overlay file is read from `overlay_path` or the default %APPDATA% location."""
-    cfg = read_yaml(DEFAULTS_PATH)
+    """Return the validated config. `overlay` (a dict) is for tests and for setup's check
+    of an overlay before it is written; otherwise the overlay file is read from
+    `overlay_path` or the default %APPDATA% location."""
     if overlay is None:
         path = overlay_path or default_overlay_path()
         overlay = read_yaml(path) if path.exists() else {}
-    cfg = _merge(cfg, overlay)
+    cfg = merged(overlay)
     with open(SCHEMA_PATH, encoding="utf-8") as fh:
         schema = json.load(fh)
     errors = validate(cfg, schema)

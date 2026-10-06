@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "whispr-kg": {
+      "command": "${user_config.python}",
+      "args": ["-s", "-P", "-m", "kg.mcp"],
+      "env": {
+        "PYTHONPATH": "${user_config.whispr_root}",
+        "PYTHONNOUSERSITE": "1",
+        "WHISPR_OVERLAY": "${user_config.config}"
+      }
+    },
+    "whispr-tasks": {
+      "command": "${user_config.python}",
+      "args": ["-s", "-P", "-m", "kg.mcp_tasks"],
+      "env": {
+        "PYTHONPATH": "${user_config.whispr_root}",
+        "PYTHONNOUSERSITE": "1",
+        "WHISPR_OVERLAY": "${user_config.config}"
+      }
+    }
+  }
+}

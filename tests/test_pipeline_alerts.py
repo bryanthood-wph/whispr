@@ -24,6 +24,9 @@ from pipeline_helpers import overlay
 from test_pipeline_run import T0, PipelineCase
 
 HOOK = Path(__file__).resolve().parents[1] / "plugin" / "hooks" / "session_start.py"
+# The plugin options the hook reads, as Claude Code exports them (CLAUDE_PLUGIN_OPTION_<KEY>).
+ROOT_OPTION = "CLAUDE_PLUGIN_OPTION_WHISPR_ROOT"
+CONFIG_OPTION = "CLAUDE_PLUGIN_OPTION_CONFIG"
 
 
 class AlertsCase(PipelineCase):
@@ -125,11 +128,19 @@ class TestHook(AlertsCase):
         appdata = self.root / "appdata"
         (appdata / "whispr").mkdir(parents=True)
         (appdata / "whispr" / "config.yaml").write_text(yaml.safe_dump(overlay(self.root)), encoding="utf-8")
-        self.env = {**os.environ, "APPDATA": str(appdata)}
+        self.env = {k: v for k, v in os.environ.items() if k not in (ROOT_OPTION, CONFIG_OPTION)}
+        self.env["APPDATA"] = str(appdata)
 
-    def hook(self, stdin: str) -> subprocess.CompletedProcess:
-        return subprocess.run([sys.executable, str(HOOK)], input=stdin, capture_output=True, text=True,
-                              env=self.env, timeout=60)
+    def hook(self, stdin: str = "{}", **options: str) -> subprocess.CompletedProcess:
+        """Run the hook as hooks.json does (`-s`), with plugin options as Claude Code exports them."""
+        return subprocess.run([sys.executable, "-s", str(HOOK)], input=stdin, capture_output=True, text=True,
+                              env={**self.env, **options}, timeout=60)
+
+    def only_line(self, proc: subprocess.CompletedProcess) -> str:
+        self.assertEqual((proc.returncode, proc.stderr), (0, ""))
+        text = json.loads(proc.stdout)["systemMessage"]
+        self.assertNotIn("\n", text)
+        return text
 
     def test_malformed_stdin_still_exits_0(self):
         for stdin in ("", "not json{", "[1, 2]", '{"hook_event_name": null}'):
@@ -165,5 +176,36 @@ class TestHook(AlertsCase):
         spec = json.loads((HOOK.parent / "hooks.json").read_text(encoding="utf-8"))
         entry, = spec["hooks"]["SessionStart"]
         hook, = entry["hooks"]
-        self.assertIn("${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py", hook["command"])
+        # Exec form with the pinned interpreter: never the python on PATH, never a shell.
+        self.assertEqual(hook["command"], "${user_config.python}")
+        self.assertEqual(hook["args"], ["-s", "${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py"])
         self.assertGreater(hook["timeout"], self.cfg["alerts"]["session_start"]["timeout_s"])
+
+    def test_the_whispr_root_option_is_used(self):
+        self.raise_alerts(1)
+        self.assertIn("test:0", self.only_line(self.hook(**{ROOT_OPTION: str(HOOK.parents[2])})))
+
+    def test_no_install_at_the_root_is_one_line_not_nothing(self):
+        elsewhere = self.root / "not-whispr"
+        elsewhere.mkdir()
+        text = self.only_line(self.hook(**{ROOT_OPTION: str(elsewhere)}))
+        self.assertIn("no whispr install at", text)
+        self.assertIn("/whispr-setup", text)
+
+    def test_dotdot_in_an_option_is_refused(self):
+        for option, value in ((ROOT_OPTION, str(HOOK.parents[2] / "plugin" / "..")),
+                              (CONFIG_OPTION, str(self.root / "x" / ".." / "config.yaml"))):
+            with self.subTest(option=option):
+                self.assertIn("contains '..'", self.only_line(self.hook(**{option: value})))
+
+    def test_a_sensitive_or_non_yaml_overlay_is_refused(self):
+        for name in (".env", ".env.local", "credentials.yaml", "settings.local.json", "id.key", "config.txt",
+                     str(Path(".git") / "config.yaml")):
+            with self.subTest(name=name):
+                text = self.only_line(self.hook(**{CONFIG_OPTION: str(self.root / name)}))
+                self.assertIn("not a YAML overlay", text)
+
+    def test_the_config_option_names_the_overlay(self):
+        bad = self.root / "bad.yaml"
+        bad.write_text("owner: {unknown_key: 1}\n", encoding="utf-8")
+        self.assertIn("config does not load", self.only_line(self.hook(**{CONFIG_OPTION: str(bad)})))

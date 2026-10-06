@@ -593,3 +593,28 @@ eval:
     # the 6 "failed" negatives).
     utterance_end_chars: ".?!…"
     utterance_closing_chars: "\"')]”’"
+
+setup:
+  # /whispr-setup (pipeline/setup.py, `python -m pipeline setup ...`; D.7). It derives what
+  # it can from the whispr folder, suggests the rest and asks for anything it can't
+  # derive; it writes the overlay only with --yes.
+  # The overlay keys it manages: `setup write --set KEY=VALUE` takes only these (an empty
+  # VALUE is null). Every other key an existing overlay sets is kept as it is.
+  keys: [owner.name, owner.email, owner.tenant, paths.transcripts, paths.data_dir, paths.recorder_log,
+         pipeline.run.process_since, backup.destination, liveness.working_dir]
+  ask: [owner.name, owner.email, owner.tenant]   # never derived: always asked (the tenant may be left empty)
+  # liveness.command = schedules.interpreter_name beside the setup interpreter, then
+  # schedules.interpreter_args, then these.
+  recorder_args: [-m, whispr]
+  # Suggested folders: `name` under the folder in the first of `env` that is set; none
+  # set, setup asks. data_dir is local, never a synced folder (it holds the SQLite
+  # database); backups go to your OneDrive data folder (D.6).
+  data_dir: {env: [LOCALAPPDATA], name: whispr}
+  backup: {env: [OneDriveCommercial, OneDrive], name: whispr-backups}
+  # `setup test-alert` raises this so you see the alert surface work (the SessionStart
+  # hook shows it); /whispr-setup then acknowledges it. The acceptance check looks for it.
+  test_alert:
+    kind: setup
+    key: setup:test-alert
+    message: test alert from /whispr-setup, the alert surface works
+    fix: nothing to fix; acknowledge it with python -m pipeline alerts --ack setup:test-alert

@@ -1,0 +1,45 @@
+{
+  "name": "whispr",
+  "displayName": "whispr",
+  "version": "0.2.0",
+  "description": "Your whispr meeting graph in Claude Code: the read-only graph tools (whispr-kg), task review (whispr-tasks, /create-tasks), the /whispr-graph pane, open alerts at session start, and /whispr-setup",
+  "author": {
+    "name": "whispr"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "python": {
+      "type": "file",
+      "title": "whispr Python",
+      "description": "The python.exe of your whispr install: <install>\\python\\python.exe for the installed distribution, <repo>\\.venv\\Scripts\\python.exe for a checkout. Every server, hook and pane of this plugin runs it, never the python on PATH. The installer prints the value.",
+      "required": true
+    },
+    "whispr_root": {
+      "type": "directory",
+      "title": "whispr folder",
+      "description": "The folder holding whispr's pipeline\\, kg\\ and config\\: your install folder, or the repo checkout. The installer prints the value.",
+      "required": true
+    },
+    "config": {
+      "type": "string",
+      "title": "Config overlay",
+      "description": "A per-user config overlay file. Empty: whispr's default, %APPDATA%\\whispr\\config.yaml (the one /whispr-setup writes).",
+      "default": ""
+    },
+    "graph_max_hops": {
+      "type": "number",
+      "title": "Graph pane: most hops offered",
+      "description": "The /whispr-graph hops picker offers 1 to this many. kg.view cuts a larger request to kg.traverse.max_hops, so match that.",
+      "default": 3,
+      "min": 1
+    },
+    "graph_timeout_s": {
+      "type": "number",
+      "title": "Graph pane: read timeout (s)",
+      "description": "How long one graph read (python -m kg.view) may take before the pane reports it as failed.",
+      "default": 30,
+      "min": 1
+    }
+  }
+}
