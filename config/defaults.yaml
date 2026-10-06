@@ -265,6 +265,45 @@ kg:
       system: "#b07aa1"
       topic: "#9c755f"
 
+tasks:
+  # The intake that /whispr:create-tasks runs before a task is marked ready
+  # (docs/plan/task-intake-and-worker.md §3, §4; kg/store.py, kg/mcp_tasks.py). Checked at
+  # load (pipeline/config.py check_intake): required_fields and scope_field must name
+  # fields below (letter case ignored), and fields and scope_types must not be empty.
+  intake:
+    # The brief: field -> the one-line question the intake asks for it. Each answer is a
+    # task_note row (kind brief; the newest per field wins, the history is kept), given to
+    # task_update_status as `brief`, or as `scope` for the scope field.
+    fields:
+      deliverable: What is delivered, and in what format?
+      work_type: What type of work is it (it names the good\<work-type>\ folder)?
+      audience: Who is it for?
+      good: What does good look like for it?
+      due: When is it due, and under what constraints?
+      scope: Which sources may the work search (Teams channels and chats, email, folders, repos)?
+      budget: What may a run spend (USD), and why that figure?
+    # A move to ready_status is refused while any of these has no answer: the ready gate,
+    # enforced by the store under every caller, the task server included.
+    required_fields: [deliverable, audience, good, due, scope, budget]
+    ready_status: ready
+    # Who gave an answer: the user said it (stated), or confirmed one Claude proposed.
+    answer_sources: [stated, confirmed]
+    # The field that holds the task's scope: a list of {type, value}, type one of scope_types.
+    scope_field: scope
+    # Source type -> what its value records.
+    scope_types:
+      teams_channel: a team and one of its channels, as "team / channel"
+      teams_chat: a Teams chat the owner names as having context
+      email: senders, a thread or a mail folder, with a date window
+      folder: an absolute folder path
+      repo: the absolute path of a local clone
+    # The value meaning "this source type has nothing here". It is an answer, so the type
+    # is not asked again, and it stands alone: no other value of its type beside it.
+    scope_none: none
+    # The entity type whose entities carry a default scope (entity_scope, migration 0007;
+    # project_scope_get / project_scope_set). One of config/ontology.yaml's entity types.
+    scope_entity_type: project
+
 alerts:
   # D.1: an item quarantined this many days ago leaves the open alerts for a digest,
   # re-raised at most once per this many days, instead of re-alerting every day.

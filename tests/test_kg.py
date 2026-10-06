@@ -16,7 +16,7 @@ from kg import db
 from kg.state import KIND_DIGEST, KIND_QUARANTINE, KIND_REPEAT, KIND_RUN_FAILED, QUARANTINED, QUEUED, State, StateError
 from kg.store import AMBIGUOUS, EXTRACTED, Store, StoreError, provenance, task_id
 from pipeline.config import ConfigError, config_file, load_config, read_yaml
-from pipeline_helpers import overlay
+from pipeline_helpers import answer_brief, overlay
 
 T0 = datetime(2026, 10, 1, 9, 0, tzinfo=timezone.utc)
 EPISODE = "ep-2026-10-01-0900"
@@ -457,6 +457,7 @@ class TestTasks(StoreCase):
         t = self.store.add_task(self.task())
         with self.assertRaises(StoreError):
             self.store.set_task_status(t, "done")       # captured -> done skips review
+        answer_brief(self.store, t, "tester")          # the ready gate (tests/test_kg_tasks.py)
         for status in ("confirmed", "ready", "in_progress", "done"):
             self.store.set_task_status(t, status)
         with self.assertRaises(StoreError):
@@ -492,6 +493,8 @@ class TestTasks(StoreCase):
                   "Jamie Doe owns the pricing model", "Me: I'll"]
         ids = [self.store.add_task(self.task(quote=q), now=T0) for q in quotes]
         self.store.set_task_status(ids[1], "confirmed")
+        for t in ids[2:]:
+            answer_brief(self.store, t, "tester")
         for status in ("confirmed", "ready", "in_progress"):
             self.store.set_task_status(ids[2], status)
         for status in ("confirmed", "ready", "done"):

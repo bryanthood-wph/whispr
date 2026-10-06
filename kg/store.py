@@ -27,6 +27,12 @@ text search behind `search`, can move to Postgres in one place. The rules it enf
   so re-writing an episode never resets a task's lifecycle (lesson L19). A review
   change (`update_task`) moves a task only along an allowed transition and records
   who, why and when, with any clarification, inputs and granted tools, as rows.
+- **The brief and the ready gate** (docs/plan/task-intake-and-worker.md §3, §4). A brief
+  answer is a task_note row of kind `brief` (migration 0007): the field, the answer, who
+  gave it (stated or confirmed) and when; the newest row per field is the answer and the
+  rest its history. A move to tasks.intake.ready_status is refused (`BriefOpenError`)
+  while a required field has no answer, whoever asks. A project's default scope is its
+  `entity_scope` rows, read and replaced across the entity's merges.
 - **Idempotent writes.** Ids are derived from content, so writing the same episode
   twice adds nothing, after a merge too: an edge is matched by episode, relation,
   quote and live endpoints, since a merge repoints an edge but keeps its id.
@@ -42,7 +48,7 @@ from datetime import datetime
 from typing import Iterable, Optional
 
 from kg.db import fetch_all, fetch_one, new_id, stable_id, transaction, utc_now, utc_time
-from pipeline.config import config_file, load_schema, read_yaml
+from pipeline.config import config_file, load_schema, read_yaml, required_fields, scope_field
 from pipeline.jsonschema_lite import validate
 
 EXTRACTED = "EXTRACTED"
@@ -66,6 +72,11 @@ _SUPERSEDABLE = {"fact": "fact", "edge": "edge"}
 # task_note kinds (kg/migrations/0006_task_review.sql).
 NOTE_CLARIFICATION = "clarification"
 NOTE_INPUT = "input"
+# A brief answer (kg/migrations/0007_task_intake.sql): field, answer, source.
+NOTE_BRIEF = "brief"
+# An entity and every entity merged into it, however deep: the ids a scope is read across.
+_MERGE_GROUP = ("WITH RECURSIVE grp(id) AS (SELECT ? UNION SELECT e.id FROM entity e"
+                " JOIN grp ON e.merged_into = grp.id)")
 
 ACTIVE_FACT = "f.superseded_by IS NULL AND ep.deleted_at IS NULL"
 ACTIVE_EDGE = "g.superseded_by IS NULL AND ep.deleted_at IS NULL"
@@ -99,6 +110,16 @@ class TransitionError(StoreError):
         nxt = ", ".join(self.allowed) or "none (it is final)"
         super().__init__(f"task {task_id_!r}: {current} -> {wanted} is not an allowed transition; "
                          f"allowed next from {current}: {nxt}")
+
+
+class BriefOpenError(StoreError):
+    """A move to the ready status while required brief fields have no answer; `open`
+    names them, in tasks.intake.required_fields order."""
+
+    def __init__(self, task_id_: str, status: str, open_fields: Iterable[str]):
+        self.open = list(open_fields)
+        super().__init__(f"task {task_id_!r} can't be marked {status} while required brief field(s) are open: "
+                         f"{', '.join(self.open)}; answer them (brief, scope) first")
 
 
 def name_key(text: str) -> str:
@@ -155,6 +176,9 @@ class Store:
         self.task_schema = load_schema(cfg, "task")
         self._check_task_statuses()
         self.task_cfg = cfg["kg"]["tasks"]
+        self.intake = cfg["tasks"]["intake"]
+        self.required_fields = required_fields(cfg)
+        self.scope_field = scope_field(cfg)
         self._check_task_config()
 
     def _check_task_statuses(self) -> None:
@@ -184,6 +208,12 @@ class Store:
         outside = set(self.task_cfg["confirm_owner_basis"]) - set(self.task_cfg["mine_owner_basis"])
         if outside:
             raise StoreError(f"kg.tasks.confirm_owner_basis: {sorted(outside)} not in kg.tasks.mine_owner_basis")
+        if self.intake["ready_status"] not in statuses:
+            raise StoreError(f"tasks.intake.ready_status {self.intake['ready_status']!r} is not a task status "
+                             f"{sorted(statuses)}")
+        if self.intake["scope_entity_type"] not in self.entity_types:
+            raise StoreError(f"tasks.intake.scope_entity_type {self.intake['scope_entity_type']!r} is not an entity "
+                             f"type in {self.cfg['ontology']} {sorted(self.entity_types)}")
 
     # ---- episodes -------------------------------------------------------------------
 
@@ -505,7 +535,8 @@ class Store:
     def update_task(self, task_id_: str, *, actor: Optional[str], status: Optional[str] = None,
                     reason: Optional[str] = None, clarification: Optional[str] = None,
                     inputs: Iterable[str] = (), tools_allowed: Optional[list] = None,
-                    now: Optional[datetime] = None) -> dict:
+                    brief: Optional[dict] = None, scope: Optional[list] = None,
+                    brief_source: Optional[str] = None, now: Optional[datetime] = None) -> dict:
         """One review change, all of it or none of it (the /create-tasks review, D.5):
         - `status`: move along an allowed transition (task_transition, migration 0001),
           recorded as a task_event with `actor` (who), `reason` (why) and the time;
@@ -517,16 +548,92 @@ class Store:
           its scope changed inherits no earlier grant.
         - `clarification` and `inputs` (paths, links, values the work needs): task_note
           rows by `actor`, with or without a status change.
+        - `brief` (field -> answer, for fields of tasks.intake.fields other than the scope
+          field) and `scope` (the scope field's [{type, value}], see `_scope_items`):
+          brief rows by `actor`, each with `brief_source` (tasks.intake.answer_sources),
+          which they require.
+        - The ready gate: a move to tasks.intake.ready_status raises BriefOpenError while
+          a required field (tasks.intake.required_fields) has no answer, this call's
+          answers counted.
         The read, the checks and the writes share one write transaction (BEGIN IMMEDIATE
         first), so a change another process made meanwhile is never checked stale.
         Returns the task with its history (`task_record`). Never writes a file (L19)."""
         with transaction(self.conn):
             self._update_task(task_id_, actor=actor, status=status, reason=reason, clarification=clarification,
-                              inputs=inputs, tools_allowed=tools_allowed, now=now)
+                              inputs=inputs, tools_allowed=tools_allowed, brief=brief, scope=scope,
+                              brief_source=brief_source, now=now)
         return self.task_record(task_id_)
+
+    @staticmethod
+    def _known(name: object, known: Iterable[str], what: str) -> str:
+        """`name` as `known` spells it, letter case ignored; anything else is a StoreError
+        naming it and what is known."""
+        known = list(known)
+        if isinstance(name, str):
+            for k in known:
+                if k.casefold() == name.strip().casefold():
+                    return k
+        raise StoreError(f"unknown {what} {name!r}; known: {known}")
+
+    def _scope_items(self, items: object, *, allow_empty: bool) -> list[dict]:
+        """A scope checked and normalized: a list of {type, value}, each type one of
+        tasks.intake.scope_types (as written there), each value a non-empty string, each
+        pair once, in the order given. tasks.intake.scope_none stands alone in its type."""
+        if not isinstance(items, (list, tuple)):
+            raise StoreError("a scope is a list of {type, value} items")
+        if not items and not allow_empty:
+            raise StoreError(f"an empty scope is no answer; give {self.intake['scope_none']!r} as the value of "
+                             "each source type with nothing in scope")
+        none, found = self.intake["scope_none"], {}
+        for i, item in enumerate(items):
+            if not isinstance(item, dict) or set(item) != {"type", "value"}:
+                raise StoreError(f"scope[{i}] must be an object with exactly type and value")
+            type_ = self._known(item["type"], self.intake["scope_types"], "scope type")
+            value = item["value"]
+            if not isinstance(value, str) or not value.strip():
+                raise StoreError(f"scope[{i}].value must be a non-empty string")
+            value = none if value.strip().casefold() == none.casefold() else value.strip()
+            found.setdefault((type_, value), {"type": type_, "value": value})
+        for type_ in self.intake["scope_types"]:
+            values = [v for t, v in found if t == type_]
+            if none in values and len(values) > 1:
+                raise StoreError(f"scope type {type_!r}: {none!r} stands alone, not beside {values}")
+        return list(found.values())
+
+    def _brief_rows(self, brief: Optional[dict], scope: Optional[list]) -> list[tuple[str, str]]:
+        """(field, text) for each answer given: `brief` keys as tasks.intake.fields spells
+        them, values non-empty strings; `scope` as the scope field's JSON list."""
+        rows = []
+        if brief is not None:
+            if not isinstance(brief, dict) or not brief:
+                raise StoreError("brief is an object of field -> answer, with at least one field")
+            for name, value in brief.items():
+                field = self._known(name, self.intake["fields"], "brief field")
+                if field == self.scope_field:
+                    raise StoreError(f"the {field!r} field is given as scope (a list of {{type, value}}), "
+                                     "not in brief")
+                if not isinstance(value, str) or not value.strip():
+                    raise StoreError(f"brief.{field} must be a non-empty string")
+                rows.append((field, value.strip()))
+        if scope is not None:
+            rows.append((self.scope_field, json.dumps(self._scope_items(scope, allow_empty=False),
+                                                       ensure_ascii=False)))
+        if len({f for f, _ in rows}) != len(rows):
+            raise StoreError(f"brief names a field twice: {[f for f, _ in rows]}")
+        return rows
+
+    def open_fields(self, task_id_: str, answering: Iterable[str] = ()) -> list[str]:
+        """The required brief fields with no answer yet, besides those in `answering`,
+        in tasks.intake.required_fields order. An answer is never empty, so any brief row
+        answers its field."""
+        answered = {r[0] for r in self.conn.execute(
+            "SELECT DISTINCT field FROM task_note WHERE task_id = ? AND kind = ?", (task_id_, NOTE_BRIEF))}
+        answered |= set(answering)
+        return [f for f in self.required_fields if f not in answered]
 
     def _update_task(self, task_id_: str, *, actor: Optional[str], status: Optional[str], reason: Optional[str],
                      clarification: Optional[str], inputs: Iterable[str], tools_allowed: Optional[list],
+                     brief: Optional[dict], scope: Optional[list], brief_source: Optional[str],
                      now: Optional[datetime]) -> None:
         row = fetch_one(self.conn, "SELECT * FROM task WHERE id = ?", (task_id_,))
         if row is None:
@@ -539,13 +646,26 @@ class Store:
         for name, text in texts:
             if text is not None and (not isinstance(text, str) or not text.strip()):
                 raise StoreError(f"{name} must be a non-empty string")
-        if status is None and clarification is None and not inputs and tools_allowed is None:
-            raise StoreError("nothing to change: give a status, a clarification, inputs or tools_allowed")
-        if (clarification is not None or inputs) and actor is None:
-            raise StoreError("a clarification or an input needs the actor who attached it")
+        if (status is None and clarification is None and not inputs and tools_allowed is None
+                and brief is None and scope is None):
+            raise StoreError("nothing to change: give a status, a clarification, inputs, tools_allowed, "
+                             "brief or scope")
+        if (clarification is not None or inputs or brief is not None or scope is not None) and actor is None:
+            raise StoreError("a clarification, an input or a brief answer needs the actor who attached it")
+        answers = self._brief_rows(brief, scope)
+        if answers:
+            if brief_source is None:
+                raise StoreError(f"a brief answer needs brief_source, one of {self.intake['answer_sources']}")
+            brief_source = self._known(brief_source, self.intake["answer_sources"], "brief_source")
+        elif brief_source is not None:
+            raise StoreError("brief_source is given only with brief or scope")
         current = row["status"]
         if status is not None and status not in self.allowed_transitions(current):
             raise TransitionError(task_id_, current, status, self.allowed_transitions(current))
+        if status == self.intake["ready_status"]:
+            still_open = self.open_fields(task_id_, answering=[f for f, _ in answers])
+            if still_open:
+                raise BriefOpenError(task_id_, status, still_open)
         contract = self._contract(row)
         tools_status = self.task_cfg["tools_status"]
         tools = [] if status == tools_status else contract["tools_allowed"]       # each marking declares its own
@@ -573,6 +693,10 @@ class Store:
             for kind, text in notes + [(NOTE_INPUT, text) for text in inputs]:
                 self.conn.execute("INSERT INTO task_note (id, task_id, kind, text, actor, at) VALUES (?, ?, ?, ?, ?, ?)",
                                   (new_id(), task_id_, kind, text.strip(), actor, stamp))
+            for field, text in answers:
+                self.conn.execute("INSERT INTO task_note (id, task_id, kind, field, source, text, actor, at)"
+                                  " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                  (new_id(), task_id_, NOTE_BRIEF, field, brief_source, text, actor, stamp))
 
     def _contract(self, row: dict) -> dict:
         return {"id": row["id"], "owner": row["owner"], "owner_basis": row["owner_basis"],
@@ -616,9 +740,67 @@ class Store:
             ev["details"] = json.loads(ev["details"]) if ev["details"] else None
         notes = fetch_all(self.conn, "SELECT kind, text, actor, at FROM task_note WHERE task_id = ?"
                                      " ORDER BY at, rowid", (task_id_,))
+        history = self.brief_history(task_id_)
         return {**self._review_card(row), "events": events,
                 "clarifications": [n for n in notes if n["kind"] == NOTE_CLARIFICATION],
-                "inputs": [n for n in notes if n["kind"] == NOTE_INPUT]}
+                "inputs": [n for n in notes if n["kind"] == NOTE_INPUT],
+                "brief": {h["field"]: {k: v for k, v in h.items() if k != "field"} for h in history},
+                "brief_history": history, "open_fields": self.open_fields(task_id_)}
+
+    def brief_history(self, task_id_: str) -> list[dict]:
+        """Every brief answer, oldest first (field, value, source, actor, at); the scope
+        field's value as its list. Later rows win, so a dict of it is the brief now."""
+        rows = fetch_all(self.conn, "SELECT field, text AS value, source, actor, at FROM task_note"
+                                    " WHERE task_id = ? AND kind = ? ORDER BY at, rowid", (task_id_, NOTE_BRIEF))
+        for r in rows:
+            if r["field"] == self.scope_field:
+                r["value"] = json.loads(r["value"])
+        return rows
+
+    # ---- project scope (entity_scope, migration 0007) ---------------------------------
+
+    def _scope_entity(self, entity_id: str) -> dict:
+        """The live entity `entity_id` stands for, which must be of
+        tasks.intake.scope_entity_type: only those carry a default scope."""
+        ent = self.entity(self.live_id(entity_id))
+        if ent is None:
+            raise StoreError(f"no entity {entity_id!r}")
+        want = self.intake["scope_entity_type"]
+        if ent["type"] != want:
+            raise StoreError(f"entity {ent['id']!r} ({ent['canonical_name']}) is a {ent['type']}; only a {want} "
+                             "carries a default scope")
+        return ent
+
+    def entity_scope(self, entity_id: str) -> dict:
+        """A project's default scope: its rows and those of every entity merged into it,
+        by source type then value, and the source types with no row yet (`open_types`)."""
+        ent = self._scope_entity(entity_id)
+        scope = fetch_all(self.conn, _MERGE_GROUP + " SELECT DISTINCT source_type AS type, value FROM entity_scope"
+                                                    " WHERE entity_id IN (SELECT id FROM grp)"
+                                                    " ORDER BY source_type, value", (ent["id"],))
+        have = {s["type"] for s in scope}
+        return {"entity_id": ent["id"], "name": ent["canonical_name"], "scope": scope,
+                "open_types": [t for t in self.intake["scope_types"] if t not in have]}
+
+    def set_entity_scope(self, entity_id: str, items: list, *, now: Optional[datetime] = None) -> dict:
+        """Replace a project's default scope with `items` (checked as a task's scope; an
+        empty list clears it), on the live entity: rows kept keep their created_at, the
+        rest of the merge group's rows go. Returns `entity_scope`."""
+        with transaction(self.conn):
+            ent = self._scope_entity(entity_id)
+            want = {(s["type"], s["value"]) for s in self._scope_items(items, allow_empty=True)}
+            held = fetch_all(self.conn, _MERGE_GROUP + " SELECT entity_id, source_type, value FROM entity_scope"
+                                                       " WHERE entity_id IN (SELECT id FROM grp)", (ent["id"],))
+            for r in held:
+                if r["entity_id"] != ent["id"] or (r["source_type"], r["value"]) not in want:
+                    self.conn.execute("DELETE FROM entity_scope WHERE entity_id = ? AND source_type = ? AND value = ?",
+                                      (r["entity_id"], r["source_type"], r["value"]))
+            stamp = utc_now(now)
+            for type_, value in sorted(want):
+                self.conn.execute("INSERT INTO entity_scope (entity_id, source_type, value, created_at)"
+                                  " VALUES (?, ?, ?, ?) ON CONFLICT (entity_id, source_type, value) DO NOTHING",
+                                  (ent["id"], type_, value, stamp))
+        return self.entity_scope(ent["id"])
 
     def _review_card(self, row: dict) -> dict:
         task = self._contract(row)

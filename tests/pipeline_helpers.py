@@ -34,6 +34,17 @@ EXTRACT_SAMPLE = {
 }
 
 
+def answer_brief(store, task_id: str, actor: str, **kw) -> dict:
+    """Answer every required brief field of a task (kg.store.Store), so it can pass the
+    ready gate: each text field a placeholder, the scope tasks.intake.scope_none for every
+    source type. `kw` goes to update_task too (a status, a reason)."""
+    intake = store.intake
+    brief = {f: f"the {f}" for f in store.required_fields if f != store.scope_field}
+    scope = [{"type": t, "value": intake["scope_none"]} for t in intake["scope_types"]]
+    return store.update_task(task_id, actor=actor, brief=brief, scope=scope,
+                             brief_source=intake["answer_sources"][0], **kw)
+
+
 def overlay(root: Path) -> dict:
     """A complete, fake per-user overlay rooted in a temp dir."""
     (root / "transcripts").mkdir(exist_ok=True)
