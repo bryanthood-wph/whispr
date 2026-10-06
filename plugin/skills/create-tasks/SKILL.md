@@ -95,9 +95,11 @@ the way `/clarify` runs:
   never fill a field yourself.
 
 **Round 1: scope.**
-1. Find the task's project. `whispr-kg` `get` on the task id gives its `entity_ids`;
-   `get` each and keep the `project` ones. If there is none, or more than one, ask which
-   project it belongs to (candidates from `search`), with "no project" as an option.
+1. Find the task's project. `task_get`'s `projects` lists the projects it is linked to.
+   If there is none, or more than one, ask which project it belongs to (candidates from
+   `whispr-kg` `search`), with "no project" as an option. Save the answer: a project the
+   user named goes in this round's `task_update_status` call as `project` (its entity id),
+   which links the task to it. A link is only ever added, never removed.
 2. `project_scope_get` on that project: its saved items, and `open_types` (source types
    with nothing saved). A type saved as `none` has nothing in scope: don't ask about it.
 3. Add candidates from the call. Use `source` on the task's episode and `get` on what it
@@ -107,8 +109,15 @@ the way `/clarify` runs:
 4. Ask one question per source type: confirm or edit the saved values and candidates
    (multi-select), and for an open type offer **none** as a one-click option. Ask about
    Teams chats by name: which chats have context for this task?
-5. Record `scope`: every source type answered, `none` for a type with nothing in scope.
-6. If the answer differs from the project's saved scope, ask whether to save it back as
+5. **Teams is pasted, not read.** No tool on this machine can read Teams, so for each
+   `teams_channel` and `teams_chat` item in the answer, ask the user to paste the lines
+   that matter. Save each paste as one of the call's `inputs`, starting with the item's
+   name (e.g. `Teams chat "Apollo core team": <the pasted lines>`). Keep the item in the
+   scope too, so the worker's output can list it as pasted. If the user has nothing to
+   paste for an item, ask whether to drop it from the scope.
+6. Record `scope`: every source type answered, `none` for a type with nothing in scope,
+   in one call with `project` and the pasted `inputs`.
+7. If the answer differs from the project's saved scope, ask whether to save it back as
    the project's default. On yes, `project_scope_set` with the whole new list (it
    replaces the saved one). With no project, skip this.
 
@@ -121,9 +130,10 @@ the way `/clarify` runs:
   the folder is read-only here: this skill never writes it. With no rubric, say this work
   type has none yet, and ask from scratch.
 - **Due date and constraints.** Propose the task's `due` when one was stated.
-- **Budget.** A figure in USD, proposed with its reason and approved by the user. There
-  is no run history yet, so there is no seed figure for any work type: say so, and ask
-  the user for the amount rather than proposing one you can't ground.
+- **Budget.** Propose a figure with its reason, for the user to approve or change. There
+  is no run history yet, so there is no seed figure for any work type: say so, and base
+  the figure on the task's scope and size, saying how. Record it as the budget object the
+  `task_update_status` schema describes: the amount in USD (above the minimum the schema states) and the reason.
 
 **Round 3: residual clarify, then the gate.**
 1. Scan the brief the way `/clarify` does: the purpose behind the deliverable, forks

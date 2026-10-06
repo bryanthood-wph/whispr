@@ -268,12 +268,14 @@ kg:
 tasks:
   # The intake that /whispr:create-tasks runs before a task is marked ready
   # (docs/plan/task-intake-and-worker.md §3, §4; kg/store.py, kg/mcp_tasks.py). Checked at
-  # load (pipeline/config.py check_intake): required_fields and scope_field must name
-  # fields below (letter case ignored), and fields and scope_types must not be empty.
+  # load (pipeline/config.py check_intake): required_fields, scope_field and budget_field
+  # must name fields below (letter case ignored; the last two different ones), and fields
+  # and scope_types must not be empty.
   intake:
     # The brief: field -> the one-line question the intake asks for it. Each answer is a
     # task_note row (kind brief; the newest per field wins, the history is kept), given to
-    # task_update_status as `brief`, or as `scope` for the scope field.
+    # task_update_status as `brief`, or as `scope` for the scope field. A field's answer is
+    # text, except the scope field's (a list) and the budget field's (an object, below).
     fields:
       deliverable: What is delivered, and in what format?
       work_type: What type of work is it (it names the good\<work-type>\ folder)?
@@ -284,7 +286,8 @@ tasks:
       budget: What may a run spend (USD), and why that figure?
     # A move to ready_status is refused while any of these has no answer: the ready gate,
     # enforced by the store under every caller, the task server included.
-    required_fields: [deliverable, audience, good, due, scope, budget]
+    # work_type keys the good\<work-type>\ library and the per-work-type budget seeds (§3, §7 P3).
+    required_fields: [deliverable, work_type, audience, good, due, scope, budget]
     ready_status: ready
     # Who gave an answer: the user said it (stated), or confirmed one Claude proposed.
     answer_sources: [stated, confirmed]
@@ -292,8 +295,8 @@ tasks:
     scope_field: scope
     # Source type -> what its value records.
     scope_types:
-      teams_channel: a team and one of its channels, as "team / channel"
-      teams_chat: a Teams chat the owner names as having context
+      teams_channel: a team and one of its channels, as "team / channel"; its context is pasted at intake
+      teams_chat: a Teams chat the owner names as having context; its lines are pasted at intake
       email: senders, a thread or a mail folder, with a date window
       folder: an absolute folder path
       repo: the absolute path of a local clone
@@ -301,8 +304,17 @@ tasks:
     # is not asked again, and it stands alone: no other value of its type beside it.
     scope_none: none
     # The entity type whose entities carry a default scope (entity_scope, migration 0007;
-    # project_scope_get / project_scope_set). One of config/ontology.yaml's entity types.
+    # project_scope_get / project_scope_set) and that task_update_status `project` links a
+    # task to. One of config/ontology.yaml's entity types.
     scope_entity_type: project
+    # The field that holds the task's budget: an object of an amount in USD, more than
+    # budget.amount_above_usd, and the reason for that figure (non-empty text), under
+    # these key names. Stored as JSON, like the scope.
+    budget_field: budget
+    budget:
+      amount_key: amount_usd
+      reason_key: reason
+      amount_above_usd: 0
 
 alerts:
   # D.1: an item quarantined this many days ago leaves the open alerts for a digest,

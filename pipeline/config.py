@@ -117,22 +117,30 @@ def required_fields(cfg: dict) -> list[str]:
     return intake_fields(cfg, names, "required_fields")
 
 
-def scope_field(cfg: dict) -> str:
-    """The brief field that holds a task's scope (tasks.intake.scope_field)."""
-    return intake_fields(cfg, [cfg["tasks"]["intake"]["scope_field"]], "scope_field")[0]
+# tasks.intake keys that each name the one brief field with a structured answer.
+STRUCTURED_FIELD_KEYS = ("scope_field", "budget_field")
+
+
+def named_field(cfg: dict, key: str) -> str:
+    """The brief field tasks.intake.<key> names (scope_field, budget_field), as
+    tasks.intake.fields spells it."""
+    return intake_fields(cfg, [cfg["tasks"]["intake"][key]], key)[0]
 
 
 def check_intake(cfg: dict) -> None:
     """The intake's names must agree (docs/plan/task-intake-and-worker.md §3): fields and
-    scope types defined, no two alike but for letter case, and required_fields and
-    scope_field naming defined fields. Any break is a ConfigError at load."""
+    scope types defined, no two alike but for letter case, required_fields naming
+    defined fields, and scope_field and budget_field two different ones. Any break is a
+    ConfigError at load."""
     intake = cfg["tasks"]["intake"]
     for key in ("fields", "scope_types"):
         if not intake[key]:
             raise ConfigError(f"tasks.intake.{key} is empty")
     _folded(list(intake["scope_types"]), "tasks.intake.scope_types")
     required_fields(cfg)
-    scope_field(cfg)
+    named = [named_field(cfg, key) for key in STRUCTURED_FIELD_KEYS]
+    if len(set(named)) != len(named):
+        raise ConfigError(f"tasks.intake: {', '.join(STRUCTURED_FIELD_KEYS)} must name different fields, not {named}")
 
 
 def config_file(relative: str) -> Path:

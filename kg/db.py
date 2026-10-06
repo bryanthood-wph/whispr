@@ -25,7 +25,8 @@
   URI plus query_only, no migration, and a schema that must match this code exactly.
 - A writer allowed to change only a few tables (the task server, kg/mcp_tasks.py) uses
   `connect_limited`: the same checks, no migration, and an SQLite authorizer that
-  refuses any write to another table and any schema change, ATTACH or PRAGMA.
+  refuses any write to another table (or anything but an INSERT to an insert-only one)
+  and any schema change, ATTACH or PRAGMA.
 """
 
 from __future__ import annotations
@@ -260,13 +261,15 @@ _LIMITED_ALLOWED = {sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_F
 _LIMITED_WRITES = {sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE}
 
 
-def connect_limited(cfg: dict, tables: Iterable[str], *, directory: Path = MIGRATIONS_DIR) -> sqlite3.Connection:
-    """The database opened writable for `tables` only (least privilege, D.3): an
-    authorizer refuses an INSERT, UPDATE or DELETE on any other table, and any schema
-    change, ATTACH, PRAGMA or extension load, with "not authorized". Foreign keys are
-    enforced. Like connect_readonly it never creates or migrates the database, and its
-    schema must match this code exactly. The caller closes it."""
-    writable = frozenset(tables)
+def connect_limited(cfg: dict, tables: Iterable[str], *, insert_only: Iterable[str] = (),
+                    directory: Path = MIGRATIONS_DIR) -> sqlite3.Connection:
+    """The database opened writable for `tables` only (least privilege, D.3), and for
+    INSERTs only into `insert_only`: an authorizer refuses any other INSERT, UPDATE or
+    DELETE, and any schema change, ATTACH, PRAGMA or extension load, with "not
+    authorized". Foreign keys are enforced. Like connect_readonly it never creates or
+    migrates the database, and its schema must match this code exactly. The caller
+    closes it."""
+    writable, appendable = frozenset(tables), frozenset(insert_only)
     conn = _open_existing(cfg, directory, mode="rw")
     try:
         conn.execute("PRAGMA foreign_keys = ON")
@@ -274,6 +277,8 @@ def connect_limited(cfg: dict, tables: Iterable[str], *, directory: Path = MIGRA
         def authorize(action: int, arg1: Optional[str], _arg2: Optional[str], _db: Optional[str],
                       _trigger: Optional[str]) -> int:
             if action in _LIMITED_ALLOWED or (action in _LIMITED_WRITES and arg1 in writable):
+                return sqlite3.SQLITE_OK
+            if action == sqlite3.SQLITE_INSERT and arg1 in appendable:
                 return sqlite3.SQLITE_OK
             return sqlite3.SQLITE_DENY
 

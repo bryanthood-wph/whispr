@@ -21,10 +21,10 @@ import yaml
 
 from kg import db, tasks
 from kg.mcp_server import Server
-from kg.mcp_tasks import ACTOR, TASK_REVIEW_TABLES, TaskServer
+from kg.mcp_tasks import ACTOR, TASK_LINK_TABLES, TASK_REVIEW_TABLES, TaskServer
 from kg.store import BriefOpenError, Store, StoreError, TransitionError, task_id
 from pipeline.config import ConfigError, check_intake, load_config, required_fields
-from pipeline_helpers import answer_brief, overlay
+from pipeline_helpers import answer_brief, budget_answer, overlay
 
 REPO = Path(__file__).resolve().parent.parent
 T0 = datetime(2026, 10, 1, 9, 0, tzinfo=timezone.utc)
@@ -309,7 +309,7 @@ class TestTaskServer(TaskCase):
         self.mine = self.add()
         self.reader_conn = db.connect_readonly(self.cfg)
         self.addCleanup(self.reader_conn.close)
-        self.writer_conn = db.connect_limited(self.cfg, TASK_REVIEW_TABLES)
+        self.writer_conn = db.connect_limited(self.cfg, TASK_REVIEW_TABLES, insert_only=TASK_LINK_TABLES)
         self.addCleanup(self.writer_conn.close)
         self.server = TaskServer(self.reader_conn, self.writer_conn, self.cfg)
 
@@ -426,7 +426,9 @@ class IntakeCase(TaskCase):
         self.stated, self.confirmed = self.intake["answer_sources"][:2]
         self.none = self.intake["scope_none"]
         self.types = list(self.intake["scope_types"])
-        self.text_fields = [f for f in self.store.required_fields if f != self.store.scope_field]
+        self.text_fields = [f for f in self.store.required_fields
+                            if f not in (self.store.scope_field, self.store.budget_field)]
+        self.budget = self.store.budget_field
 
     def project(self, name: str = "Apollo") -> str:
         return self.store.upsert_entity(self.intake["scope_entity_type"], name, source="test", now=T0)
@@ -450,7 +452,8 @@ class TestBrief(IntakeCase):
         self.assertEqual(self.count("task_note"), notes)                # all or nothing: the call's answer too
         # Every field answered, in the same call as the move: allowed.
         record = self.store.update_task(self.tid, actor=WHO, status=self.ready, reason="go",
-                                        brief={f: f"the {f}" for f in rest},
+                                        brief={**{f: f"the {f}" for f in rest},
+                                               self.budget: budget_answer(self.store)},
                                         scope=[{"type": t, "value": self.none} for t in self.types],
                                         brief_source=self.confirmed)
         self.assertEqual((record["task"]["status"], record["open_fields"]), (self.ready, []))
@@ -495,6 +498,67 @@ class TestBrief(IntakeCase):
                 self.store.update_task(self.tid, **kw)
             self.assertIn(named, str(ctx.exception))
         self.assertEqual(self.store.brief_history(self.tid), [])
+
+
+class TestBudgetAndWorkType(IntakeCase):
+    def test_every_defined_field_is_required_by_default(self):
+        self.assertEqual(sorted(self.store.required_fields), sorted(self.intake["fields"]))
+
+    def test_budget_is_an_amount_and_a_reason_stored_as_json(self):
+        keys = self.intake["budget"]
+        answer = budget_answer(self.store, amount=12.5, reason="  two drafts and a review  ")
+        record = self.store.update_task(self.tid, actor=WHO, brief={self.budget: answer}, brief_source=self.stated)
+        want = {keys["amount_key"]: answer[keys["amount_key"]], keys["reason_key"]: "two drafts and a review"}
+        self.assertEqual(record["brief"][self.budget]["value"], want)
+        text = self.conn.execute("SELECT text FROM task_note WHERE field = ?", (self.budget,)).fetchone()[0]
+        self.assertEqual(json.loads(text), want)
+        self.assertNotIn(self.budget, record["open_fields"])
+
+    def test_bad_budgets_are_refused_naming_the_key(self):
+        amount, reason, floor = (self.intake["budget"][k] for k in ("amount_key", "reason_key", "amount_above_usd"))
+        bad = [({amount: floor, reason: "x"}, amount), ({amount: floor - 1, reason: "x"}, amount),
+               ({amount: "5", reason: "x"}, amount), ({amount: True, reason: "x"}, amount),
+               ({amount: float("inf"), reason: "x"}, amount), ({amount: floor + 1, reason: " "}, reason),
+               ({amount: floor + 1}, reason), ({amount: floor + 1, reason: "x", "extra": 1}, amount),
+               ("5 dollars", amount)]
+        for value, named in bad:
+            with self.subTest(value=value), self.assertRaises(StoreError) as ctx:
+                self.store.update_task(self.tid, actor=WHO, brief={self.budget: value}, brief_source=self.stated)
+            self.assertIn(named, str(ctx.exception))
+        self.assertEqual(self.store.brief_history(self.tid), [])
+
+    def test_budget_field_must_be_named_apart_from_the_scope(self):
+        for key, value in (("budget_field", self.intake["scope_field"]), ("budget_field", "budjet")):
+            cfg = copy.deepcopy(self.cfg)
+            cfg["tasks"]["intake"][key] = value
+            with self.subTest(value=value), self.assertRaises(ConfigError) as ctx:
+                check_intake(cfg)
+            self.assertIn(key, str(ctx.exception))
+
+
+class TestProjectLink(IntakeCase):
+    def test_a_task_is_linked_to_its_project(self):
+        pid = self.project()
+        record = self.store.update_task(self.tid, actor=WHO, project=pid)
+        self.assertEqual(record["projects"], [{"id": pid, "name": "Apollo"}])
+        self.store.update_task(self.tid, actor=WHO, project=pid)               # again: no second link
+        self.assertEqual(self.store.task_entities(self.tid), [pid])
+        self.assertEqual(len(self.events(self.tid)), 2)                         # no status event for a link
+
+    def test_a_merged_project_links_its_survivor(self):
+        keep, drop = self.project("Apollo"), self.project("Apollo Program")
+        self.conn.execute("UPDATE entity SET merged_into = ? WHERE id = ?", (keep, drop))
+        self.store.update_task(self.tid, actor=WHO, project=drop)
+        self.assertEqual(self.store.task_entities(self.tid), [keep])
+
+    def test_only_a_project_can_be_linked(self):
+        other = self.store.upsert_entity(self.other_type(), "Billing System", source="test")
+        for entity in (other, "no-such-entity"):
+            with self.subTest(entity=entity), self.assertRaises(StoreError):
+                self.store.update_task(self.tid, actor=WHO, project=entity,
+                                       brief={self.text_fields[0]: "x"}, brief_source=self.stated)
+        self.assertEqual(self.store.task_entities(self.tid), [])
+        self.assertEqual(self.store.brief_history(self.tid), [])               # all or nothing
 
 
 class TestScope(IntakeCase):
@@ -673,7 +737,7 @@ class TestIntakeServer(IntakeCase):
         self.pid = self.project()
         self.reader_conn = db.connect_readonly(self.cfg)
         self.addCleanup(self.reader_conn.close)
-        self.writer_conn = db.connect_limited(self.cfg, TASK_REVIEW_TABLES)
+        self.writer_conn = db.connect_limited(self.cfg, TASK_REVIEW_TABLES, insert_only=TASK_LINK_TABLES)
         self.addCleanup(self.writer_conn.close)
         self.server = TaskServer(self.reader_conn, self.writer_conn, self.cfg)
 
@@ -687,7 +751,8 @@ class TestIntakeServer(IntakeCase):
         self.assertEqual(payload["open_fields"], self.store.required_fields)
         self.assertEqual(self.store.get_task(self.tid)["status"], "confirmed")
         bad, record = self.call("task_update_status", {
-            "id": self.tid, "brief": {f: f"the {f}" for f in self.text_fields}, "brief_source": self.stated,
+            "id": self.tid, "brief": {**{f: f"the {f}" for f in self.text_fields},
+                                      self.budget: budget_answer(self.store)}, "brief_source": self.stated,
             "scope": [{"type": self.types[0], "value": "C:/apollo"}]})
         self.assertFalse(bad, record)
         self.assertEqual(record["open_fields"], [])
@@ -696,6 +761,33 @@ class TestIntakeServer(IntakeCase):
                                                        "tools_allowed": ["Read"]})
         self.assertFalse(bad, record)
         self.assertEqual(record["task"]["status"], self.ready)
+
+    def test_project_link_through_the_server_and_insert_only_links(self):
+        bad, record = self.call("task_update_status", {"id": self.tid, "project": self.pid})
+        self.assertFalse(bad, record)
+        self.assertEqual([p["id"] for p in record["projects"]], [self.pid])
+        other = self.store.upsert_entity(self.other_type(), "Billing System", source="test")
+        bad, payload = self.call("task_update_status", {"id": self.tid, "project": other})
+        self.assertTrue(bad)
+        self.assertIn(self.intake["scope_entity_type"], payload["error"])
+        # The writer may add a link but never change or remove one, its own task's included.
+        for sql in ("DELETE FROM task_entity", "UPDATE task_entity SET entity_id = entity_id"):
+            with self.subTest(sql=sql), self.assertRaises(sqlite3.DatabaseError) as ctx:
+                self.writer_conn.execute(sql)
+            self.assertIn("not authorized", str(ctx.exception))
+        self.assertEqual(self.store.task_entities(self.tid), [self.pid])
+
+    def test_budget_through_the_server(self):
+        bad, record = self.call("task_update_status", {"id": self.tid, "brief_source": self.stated,
+                                                       "brief": {self.budget: budget_answer(self.store)}})
+        self.assertFalse(bad, record)
+        self.assertEqual(record["brief"][self.budget]["value"], budget_answer(self.store))
+        amount = self.intake["budget"]["amount_key"]
+        for value in ("5", {amount: 0, self.intake["budget"]["reason_key"]: "x"}):
+            bad, payload = self.call("task_update_status", {"id": self.tid, "brief_source": self.stated,
+                                                            "brief": {self.budget: value}})
+            self.assertTrue(bad, value)
+            self.assertIn(self.budget, json.dumps(payload))
 
     def test_unknown_field_and_scope_type_are_errors_naming_them(self):
         for args, named in (({"brief": {"audiance": "x"}, "brief_source": self.stated}, "audiance"),

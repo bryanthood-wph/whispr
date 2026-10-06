@@ -11,7 +11,8 @@ registered with `claude mcp add whispr-tasks -- <repo>\\.venv\\Scripts\\python.e
 - **Two connections.** The reads go through kg.db.connect_readonly. The one writable
   connection (kg.db.connect_limited) is held by a Store used only by the two writing
   tools, and SQLite's authorizer lets it write the task review tables
-  (TASK_REVIEW_TABLES) and nothing else: no graph row, no schema change.
+  (TASK_REVIEW_TABLES) and add task-to-project links (TASK_LINK_TABLES: INSERT only, so
+  no link is ever changed or removed) and nothing else: no graph row, no schema change.
 - **Every task change is Store.update_task**: an allowed transition only (an invalid one
   is an isError result naming the allowed next states), recorded with this server as
   the actor, the reason as the why and the time; clarifications, inputs and brief answers
@@ -39,6 +40,9 @@ ACTOR = SERVER_NAME
 # the task ones, Store.set_entity_scope entity_scope. The writable connection may write
 # these and no other.
 TASK_REVIEW_TABLES = ("task", "task_event", "task_note", "entity_scope")
+# Tables the writable connection may only INSERT into: task_update_status's `project`
+# adds the task's own link (Store.update_task); merges and repairs stay the pipeline's.
+TASK_LINK_TABLES = ("task_entity",)
 
 INSTRUCTIONS = (
     "whispr's task review: the owner's tasks captured from meeting transcripts, each with its action, owner, "
@@ -46,7 +50,8 @@ INSTRUCTIONS = (
     "tasks waiting in a status, \"confirm?\" ones (ownership the transcript could not settle, or a quote removed "
     "as echo) first; task_get shows one task with its history, its brief and the brief fields still open; "
     "task_update_status records what the user decided (confirm, clarify, attach inputs, answer brief fields and "
-    "the scope, drop, mark ready with the tools the work may use). Marking ready is refused while a required "
+    "the scope, link the task to its project, drop, mark ready with the tools the work may use). Marking ready "
+    "is refused while a required "
     "brief field is open. project_scope_get and project_scope_set read and replace a project's default scope, "
     "which the intake proposes from. Only change what the user said; never edit notes or files to record a "
     "task's state.")
@@ -63,15 +68,28 @@ def _scope_schema(intake: dict, *, min_items: int) -> dict:
                                      "value": {"type": "string", "minLength": 1}}}}
 
 
-def tool_definitions(cfg: dict, statuses: list[str], first_stage: str, scope_field: str,
-                     required: list[str]) -> list[dict]:
-    """The five tools and their input schemas."""
+def _budget_schema(intake: dict, question: str) -> dict:
+    """The budget field's answer: {amount, reason} under tasks.intake.budget's key names."""
+    budget = intake["budget"]
+    return {"type": "object", "additionalProperties": False,
+            "required": [budget["amount_key"], budget["reason_key"]],
+            "description": f"{question} An object: the amount, and the reason for that figure",
+            "properties": {budget["amount_key"]: {"type": "number", "minimum": budget["amount_above_usd"],
+                                                  "description": f"USD, above {budget['amount_above_usd']}"},
+                           budget["reason_key"]: {"type": "string", "minLength": 1,
+                                                  "description": "Why that figure"}}}
+
+
+def tool_definitions(cfg: dict, statuses: list[str], first_stage: str, store: Store) -> list[dict]:
+    """The five tools and their input schemas (`store` gives the intake's field names)."""
     tasks_cfg, intake = cfg["kg"]["tasks"], cfg["tasks"]["intake"]
+    scope_field, budget_field, required = store.scope_field, store.budget_field, store.required_fields
     task_id = {"type": "string", "minLength": 1, "description": "A task id from task_list or task_get"}
     entity_id = {"type": "string", "minLength": 1,
                  "description": f"A {intake['scope_entity_type']} entity id (whispr-kg search or get, or the task's "
                                 "entity_ids)"}
-    brief_fields = {name: {"type": "string", "minLength": 1, "description": question}
+    brief_fields = {name: (_budget_schema(intake, question) if name == budget_field
+                           else {"type": "string", "minLength": 1, "description": question})
                     for name, question in intake["fields"].items() if name != scope_field}
     return [
         {"name": "task_list",
@@ -90,11 +108,12 @@ def tool_definitions(cfg: dict, statuses: list[str], first_stage: str, scope_fie
          "description": "One task with its history: the task, whether it needs confirm, the meeting, every "
                         "status change (from, to, actor, reason, details such as the tools granted, time), the "
                         "clarifications and inputs attached so far, the brief (field -> the newest answer with its "
-                        f"source, actor and time; {scope_field!r} holds the scope list), every earlier answer in "
-                        f"brief_history, and open_fields: the required fields ({', '.join(required)}) still "
-                        f"unanswered, which must be empty before the task can be marked "
-                        f"{intake['ready_status']!r}. Use it before changing a task the user asks about, and to "
-                        "show what a change did.",
+                        f"source, actor and time; {scope_field!r} holds the scope list, {budget_field!r} the "
+                        f"amount and reason), every earlier answer in brief_history, open_fields: the required "
+                        f"fields ({', '.join(required)}) still unanswered, which must be empty before the task "
+                        f"can be marked {intake['ready_status']!r}, and projects: the "
+                        f"{intake['scope_entity_type']} entities it is linked to. Use it before changing a task "
+                        "the user asks about, and to show what a change did.",
          "inputSchema": {"type": "object", "additionalProperties": False, "required": ["id"],
                          "properties": {"id": task_id}}},
         {"name": "task_update_status",
@@ -105,7 +124,9 @@ def tool_definitions(cfg: dict, statuses: list[str], first_stage: str, scope_fie
                         "inputs attaches what the work needs (file paths, links, values). brief answers intake "
                         f"fields and scope sets the {scope_field!r} field, both with brief_source: "
                         f"{' or '.join(intake['answer_sources'])} (the user said it, or confirmed what you "
-                        "proposed); a newer answer replaces an older one, which stays in the history. Marking "
+                        "proposed); a newer answer replaces an older one, which stays in the history. project "
+                        f"links the task to its {intake['scope_entity_type']} entity (a link is only ever added). "
+                        "Marking "
                         f"{intake['ready_status']!r} is refused while a required field is open (the error's "
                         "open_fields names them); answers given in the same call count. tools_allowed is the "
                         f"worker's tool allowlist, given only with status {tasks_cfg['tools_status']!r}; leave it "
@@ -123,6 +144,8 @@ def tool_definitions(cfg: dict, statuses: list[str], first_stage: str, scope_fie
              "scope": _scope_schema(intake, min_items=1),
              "brief_source": {"enum": intake["answer_sources"],
                               "description": "Who gave this call's brief and scope answers: required with them"},
+             "project": {**entity_id, "description": f"Link the task to this {intake['scope_entity_type']} "
+                                                     "entity id (whispr-kg search or get)"},
              "tools_allowed": {"type": "array", "items": {"type": "string", "minLength": 1},
                                "description": f"Tools the worker may use, with status "
                                               f"{tasks_cfg['tools_status']!r} only"}}}},
@@ -162,8 +185,7 @@ class TaskServer(RpcServer):
             "project_scope_get": lambda a: self.reader.entity_scope(a["entity_id"]),
             "project_scope_set": lambda a: self._writer.set_entity_scope(a["entity_id"], a["scope"]),
         }
-        super().__init__(tool_definitions(cfg, statuses, self.first_stage, self.reader.scope_field,
-                                          self.reader.required_fields), calls)
+        super().__init__(tool_definitions(cfg, statuses, self.first_stage, self.reader), calls)
 
     def _update(self, a: dict) -> dict:
         if "status" in a and "reason" not in a:
@@ -176,7 +198,8 @@ class TaskServer(RpcServer):
             return self._writer.update_task(a["id"], actor=ACTOR, status=a.get("status"), reason=a.get("reason"),
                                             clarification=a.get("clarification"), inputs=a.get("inputs", ()),
                                             tools_allowed=a.get("tools_allowed"), brief=a.get("brief"),
-                                            scope=a.get("scope"), brief_source=a.get("brief_source"))
+                                            scope=a.get("scope"), brief_source=a.get("brief_source"),
+                                            project=a.get("project"))
         except TransitionError as exc:
             raise ToolError(str(exc), status=exc.current, allowed=exc.allowed) from exc
         except BriefOpenError as exc:
@@ -187,13 +210,14 @@ def _start(cfg: dict) -> tuple[RpcServer, list[sqlite3.Connection], str]:
     conns = []
     try:
         conns.append(db.connect_readonly(cfg))
-        conns.append(db.connect_limited(cfg, TASK_REVIEW_TABLES))
+        conns.append(db.connect_limited(cfg, TASK_REVIEW_TABLES, insert_only=TASK_LINK_TABLES))
         server = TaskServer(conns[0], conns[1], cfg)
     except BaseException:
         for conn in conns:
             conn.close()
         raise
-    return server, conns, f"serving {db.database_path(cfg)}: reads, and writes to {', '.join(TASK_REVIEW_TABLES)} only"
+    return server, conns, (f"serving {db.database_path(cfg)}: reads, writes to {', '.join(TASK_REVIEW_TABLES)} "
+                           f"and inserts to {', '.join(TASK_LINK_TABLES)} only")
 
 
 def main(argv: Optional[list[str]] = None) -> int:

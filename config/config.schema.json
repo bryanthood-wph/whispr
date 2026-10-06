@@ -242,7 +242,7 @@
       "properties": {
         "intake": {
           "type": "object", "additionalProperties": false,
-          "required": ["fields", "required_fields", "ready_status", "answer_sources", "scope_field", "scope_types", "scope_none", "scope_entity_type"],
+          "required": ["fields", "required_fields", "ready_status", "answer_sources", "scope_field", "scope_types", "scope_none", "scope_entity_type", "budget_field", "budget"],
           "properties": {
             "fields": {"type": "object", "additionalProperties": {"$ref": "#/$defs/str"}},
             "required_fields": {"$ref": "#/$defs/strs"},
@@ -251,7 +251,12 @@
             "scope_field": {"$ref": "#/$defs/str"},
             "scope_types": {"type": "object", "additionalProperties": {"$ref": "#/$defs/str"}},
             "scope_none": {"$ref": "#/$defs/str"},
-            "scope_entity_type": {"$ref": "#/$defs/str"}
+            "scope_entity_type": {"$ref": "#/$defs/str"},
+            "budget_field": {"$ref": "#/$defs/str"},
+            "budget": {
+              "type": "object", "additionalProperties": false, "required": ["amount_key", "reason_key", "amount_above_usd"],
+              "properties": {"amount_key": {"$ref": "#/$defs/str"}, "reason_key": {"$ref": "#/$defs/str"}, "amount_above_usd": {"$ref": "#/$defs/money"}}
+            }
           }
         }
       }
