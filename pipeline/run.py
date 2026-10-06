@@ -55,7 +55,7 @@ from kg import db
 from kg.state import KIND_QUARANTINE, QUARANTINED, QUEUED, State, item_key
 from kg.store import Store
 from pipeline import calls, extract, models, prepare, write
-from pipeline.config import data_dir
+from pipeline.config import ConfigError, data_dir
 from pipeline.jsonschema_lite import validate
 
 if os.name == "nt":
@@ -307,7 +307,11 @@ def task_name(cfg: dict, command: str) -> str:
     """The configured scheduled task that runs `-m pipeline <command>`, for messages
     that tell you to start it; a generic phrase when none is configured."""
     from pipeline import schedule      # deferred: schedule imports __main__, which imports this module
-    return schedule.task_for(cfg, command) or f"<the task running `-m pipeline {command}`>"
+    try:      # a message's hint: a bad schedules.skip must not turn a refusal into a crash
+        name = schedule.task_for(cfg, command)
+    except ConfigError:
+        name = None
+    return name or f"<the task running `-m pipeline {command}`>"
 
 
 def alert_key(kind: str, subject: str) -> str:

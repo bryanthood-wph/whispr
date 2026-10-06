@@ -612,6 +612,11 @@ class TestRegister(_Base):
             S.desired(self.load(skip=["whispr-livenes"]))
         self.assertIn("schedules.skip", str(ctx.exception))
 
+    def test_task_name_hint_survives_a_bad_skip(self):
+        from pipeline import run as pipeline_run
+        cfg = self.load(skip=["whispr-livenes"])
+        self.assertIn("-m pipeline run", pipeline_run.task_name(cfg, "run"))
+
     def test_payload_carries_the_desired_task(self):
         S.register(self.cfg, self.fake)
         sent = {req["task"]["name"]: req["task"] for kind, req in self.fake.calls if kind == "write"}
