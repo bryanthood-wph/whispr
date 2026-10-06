@@ -3,7 +3,8 @@ anything malformed (docs/plan/D-architecture-and-ops.md D.2).
 
 The overlay may only set keys that exist in defaults. After merging, the result is
 validated against config/config.schema.json, so a missing overlay value (still null),
-an unknown key or a wrong type stops the program at startup rather than mid-run.
+an unknown key or a wrong type stops the program at startup rather than mid-run. Names
+one key must find in another (tasks.intake, check_intake) are checked then too.
 """
 
 from __future__ import annotations
@@ -82,7 +83,64 @@ def load_config(overlay_path: Optional[Path] = None, overlay: Optional[dict] = N
     errors = validate(cfg, schema)
     if errors:
         raise ConfigError("invalid config:\n  " + "\n  ".join(errors))
+    check_intake(cfg)
     return cfg
+
+
+def _folded(names: list[str], key: str) -> dict[str, str]:
+    """Each name case-folded -> as written; two names alike but for letter case are a
+    ConfigError, since every lookup ignores case."""
+    folded: dict[str, str] = {}
+    for name in names:
+        if name.casefold() in folded:
+            raise ConfigError(f"{key}: {folded[name.casefold()]!r} and {name!r} differ only in letter case")
+        folded[name.casefold()] = name
+    return folded
+
+
+def intake_fields(cfg: dict, names: list[str], key: str) -> list[str]:
+    """`names` as tasks.intake.fields spells them, matched with letter case ignored (as
+    schedules.skip matches task names), each once. A name that is no field is a
+    ConfigError naming it and `key`, so a typo can't leave a field out of the gate."""
+    fields = _folded(list(cfg["tasks"]["intake"]["fields"]), "tasks.intake.fields")
+    unknown = [n for n in names if n.casefold() not in fields]
+    if unknown:
+        raise ConfigError(f"tasks.intake.{key}: {unknown} not in tasks.intake.fields ({list(fields.values())})")
+    return list(dict.fromkeys(fields[n.casefold()] for n in names))
+
+
+def required_fields(cfg: dict) -> list[str]:
+    """The fields the ready gate requires (tasks.intake.required_fields): never empty."""
+    names = cfg["tasks"]["intake"]["required_fields"]
+    if not names:
+        raise ConfigError("tasks.intake.required_fields is empty: the ready gate would check nothing")
+    return intake_fields(cfg, names, "required_fields")
+
+
+# tasks.intake keys that each name the one brief field with a structured answer.
+STRUCTURED_FIELD_KEYS = ("scope_field", "budget_field")
+
+
+def named_field(cfg: dict, key: str) -> str:
+    """The brief field tasks.intake.<key> names (scope_field, budget_field), as
+    tasks.intake.fields spells it."""
+    return intake_fields(cfg, [cfg["tasks"]["intake"][key]], key)[0]
+
+
+def check_intake(cfg: dict) -> None:
+    """The intake's names must agree (docs/plan/task-intake-and-worker.md §3): fields and
+    scope types defined, no two alike but for letter case, required_fields naming
+    defined fields, and scope_field and budget_field two different ones. Any break is a
+    ConfigError at load."""
+    intake = cfg["tasks"]["intake"]
+    for key in ("fields", "scope_types"):
+        if not intake[key]:
+            raise ConfigError(f"tasks.intake.{key} is empty")
+    _folded(list(intake["scope_types"]), "tasks.intake.scope_types")
+    required_fields(cfg)
+    named = [named_field(cfg, key) for key in STRUCTURED_FIELD_KEYS]
+    if len(set(named)) != len(named):
+        raise ConfigError(f"tasks.intake: {', '.join(STRUCTURED_FIELD_KEYS)} must name different fields, not {named}")
 
 
 def config_file(relative: str) -> Path:

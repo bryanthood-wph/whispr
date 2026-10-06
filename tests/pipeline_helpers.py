@@ -34,6 +34,26 @@ EXTRACT_SAMPLE = {
 }
 
 
+def budget_answer(store, amount: float = 1, reason: str = "a short memo") -> dict:
+    """A budget brief answer under tasks.intake.budget's key names, `amount` above its minimum."""
+    budget = store.intake["budget"]
+    return {budget["amount_key"]: budget["amount_min_usd"] + amount, budget["reason_key"]: reason}
+
+
+def answer_brief(store, task_id: str, actor: str, **kw) -> dict:
+    """Answer every required brief field of a task (kg.store.Store), so it can pass the
+    ready gate: each text field a placeholder, the budget one unit above its minimum, the
+    scope tasks.intake.scope_none for every source type. `kw` goes to update_task too (a
+    status, a reason)."""
+    intake = store.intake
+    brief = {f: f"the {f}" for f in store.required_fields if f not in (store.scope_field, store.budget_field)}
+    if store.budget_field in store.required_fields:
+        brief[store.budget_field] = budget_answer(store)
+    scope = [{"type": t, "value": intake["scope_none"]} for t in intake["scope_types"]]
+    return store.update_task(task_id, actor=actor, brief=brief, scope=scope,
+                             brief_source=intake["answer_sources"][0], **kw)
+
+
 def overlay(root: Path) -> dict:
     """A complete, fake per-user overlay rooted in a temp dir."""
     (root / "transcripts").mkdir(exist_ok=True)

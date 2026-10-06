@@ -3,7 +3,7 @@
   "title": "whispr pipeline config (defaults.yaml merged with the user overlay)",
   "type": "object",
   "additionalProperties": false,
-  "required": ["config_version", "owner", "paths", "auth", "cli", "models", "prompts", "schemas", "ontology", "prepare", "extract", "pipeline", "kg", "alerts", "backup", "maintain", "reconcile", "liveness", "doctor", "schedules", "eval", "setup"],
+  "required": ["config_version", "owner", "paths", "auth", "cli", "models", "prompts", "schemas", "ontology", "prepare", "extract", "pipeline", "kg", "tasks", "alerts", "backup", "maintain", "reconcile", "liveness", "doctor", "schedules", "eval", "setup"],
   "$defs": {
     "str": {"type": "string", "minLength": 1},
     "folder_hint": {
@@ -233,6 +233,29 @@
               "properties": {"edge": {"$ref": "#/$defs/str"}, "highlight": {"$ref": "#/$defs/str"}, "label": {"$ref": "#/$defs/str"}, "label_halo": {"$ref": "#/$defs/str"}, "node_stroke": {"$ref": "#/$defs/str"}}
             },
             "palette": {"type": "object", "additionalProperties": {"$ref": "#/$defs/str"}}
+          }
+        }
+      }
+    },
+    "tasks": {
+      "type": "object", "additionalProperties": false, "required": ["intake"],
+      "properties": {
+        "intake": {
+          "type": "object", "additionalProperties": false,
+          "required": ["fields", "required_fields", "answer_sources", "scope_field", "scope_types", "scope_none", "scope_entity_type", "budget_field", "budget"],
+          "properties": {
+            "fields": {"type": "object", "additionalProperties": {"$ref": "#/$defs/str"}},
+            "required_fields": {"$ref": "#/$defs/strs"},
+            "answer_sources": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+            "scope_field": {"$ref": "#/$defs/str"},
+            "scope_types": {"type": "object", "additionalProperties": {"$ref": "#/$defs/str"}},
+            "scope_none": {"$ref": "#/$defs/str"},
+            "scope_entity_type": {"$ref": "#/$defs/str"},
+            "budget_field": {"$ref": "#/$defs/str"},
+            "budget": {
+              "type": "object", "additionalProperties": false, "required": ["amount_key", "reason_key", "amount_min_usd"],
+              "properties": {"amount_key": {"$ref": "#/$defs/str"}, "reason_key": {"$ref": "#/$defs/str"}, "amount_min_usd": {"$ref": "#/$defs/money"}}
+            }
           }
         }
       }
