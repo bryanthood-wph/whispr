@@ -115,7 +115,7 @@ until its trigger fires.
 | Separate system-time columns | an "as recorded on" query is ever needed |
 | Audio replay harness for recorder tests | the live-call checklist misses a regression |
 | Effort sweeps beyond D/E, more prompt variants | a later change record needs them |
-| **Future state (your note, 2026-10-06): talk tasks through with Claude interactively, and Claude pulls the key information it needs to execute them** (graph, transcript spans, files, people). It builds on `/create-tasks` and `/execute-tasks` (D.5) | the pipeline is built, cut over and running; then **discuss first**, no build before that |
+| **Future state (your note, 2026-10-06; revised the same day): a clarify-style task intake, replacing open-ended "talk it through with Claude".** For each of your tasks, Claude asks structured questions, round by round like /clarify, for every frontmatter detail needed to execute it competently (field list to be agreed with you), records the answers on the task, and allows `ready` only when none is open. It builds on `/create-tasks` and `/execute-tasks` (D.5) | the pipeline is built, cut over and running; then **discuss first**, no build before that |
 
 ## 4. Agents: encouraged, least privilege
 
