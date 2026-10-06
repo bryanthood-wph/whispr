@@ -202,6 +202,21 @@ kg:
   # Roles in the models roster (D.3) for the graph's maintenance decisions.
   models:
     resolve: kg_resolve
+  # The task funnel and the /create-tasks review (kg/tasks.py, kg/mcp_tasks.py; D.3, D.5).
+  tasks:
+    funnel_days: 7              # funnel report window: tasks captured in the last this many days (D.5: weekly)
+    list_limit: 50              # MCP task_list returns at most this many tasks per call
+    # owner_basis values (config/schema/task.json) that make a task the owner's own, and
+    # the ones shown as "confirm?" at the top of the review (D.5; pipeline/write.py also
+    # stores an echo-quoted or quoteless my-task as unclear).
+    mine_owner_basis: [assigned, volunteered, unclear]
+    confirm_owner_basis: [unclear]
+    # The status at which a task's tools_allowed is granted (D.3: an /execute-tasks
+    # worker's allowlist is declared on the task when it is marked ready).
+    tools_status: ready
+    # The statuses the /create-tasks review (whispr-tasks task_update_status) may set
+    # (D.3: confirm, clarify, mark ready or drop); in_progress and done are the worker's.
+    review_statuses: [captured, confirmed, ready, dropped]
   # C.5: a re-derivation (extractor or ontology change) estimated above this waits for
   # your approval before it spends (lesson L3).
   rederive_approval_usd: 5

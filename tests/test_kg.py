@@ -52,7 +52,12 @@ class TestConfig(unittest.TestCase):
                              "time_limit_ms": 5000},
                 "er": {"max_edit_distance": 2, "block_chars": 2, "context_items": 3, "prompt": "prompts/resolve.md",
                        "schema": "kg/resolve.json"},
-                "models": {"resolve": "kg_resolve"}, "rederive_approval_usd": 5})
+                "models": {"resolve": "kg_resolve"},
+                "tasks": {"funnel_days": 7, "list_limit": 50,
+                          "mine_owner_basis": ["assigned", "volunteered", "unclear"],
+                          "confirm_owner_basis": ["unclear"], "tools_status": "ready",
+                          "review_statuses": ["captured", "confirmed", "ready", "dropped"]},
+                "rederive_approval_usd": 5})
             self.assertIn(cfg["kg"]["models"]["resolve"], cfg["models"])
             self.assertEqual(cfg["alerts"], {"quarantine_digest_days": 7, "repeat_item_runs": 3})
             bad = overlay(Path(tmp))

@@ -193,7 +193,7 @@ def _graph(store: Store, cfg: dict, episode: str, doc: dict, prep: Prepared, out
     for row, linked in task_rows(cfg, episode, doc, prep, names, owner_id):
         store.add_task(row, entity_ids=linked)
         out.tasks += 1
-        out.confirm += int(row["owner_basis"] == UNCLEAR)
+        out.confirm += int(row["owner_basis"] in cfg["kg"]["tasks"]["confirm_owner_basis"])   # as the review counts "confirm?"
 
 
 def _episode(store: Store, t: Transcript, meta: dict, extractor_version: Optional[str]) -> str:

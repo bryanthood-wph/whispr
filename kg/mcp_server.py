@@ -19,6 +19,9 @@ with `claude mcp add whispr-kg -- <repo>\\.venv\\Scripts\\python.exe -m kg.mcp`.
 - **Progressive disclosure.** search returns short cards, get one record with its
   quotes, source the transcript spans; neighbors, paths and timeline return cards
   bounded by kg.traverse.*. The tool descriptions tell Claude how to chain them.
+- **One protocol core.** `RpcServer` (JSON-RPC, tool-schema checks, error results) and
+  `run_stdio` are shared with the task server (kg/mcp_tasks.py, the one MCP writer),
+  so the two differ only in their tools and connections.
 """
 
 from __future__ import annotations
@@ -156,7 +159,12 @@ def tool_definitions(cfg: dict, relations: list[str], entity_types: list[str]) -
 
 
 class ToolError(Exception):
-    """A tool call that can't be answered as asked; returned as a result marked isError."""
+    """A tool call that can't be answered as asked; returned as a result marked isError,
+    with any `fields` (e.g. the allowed next states) beside the message."""
+
+    def __init__(self, message: str, **fields: Any):
+        super().__init__(message)
+        self.fields = fields
 
 
 class RpcError(Exception):
@@ -165,29 +173,18 @@ class RpcError(Exception):
         self.code = code
 
 
-class Server:
-    def __init__(self, conn: sqlite3.Connection, cfg: dict):
-        self.cfg = cfg
-        self.store = Store(conn, cfg)
-        self.traverser = Traverser(self.store)
-        self.tools = {t["name"]: t for t in tool_definitions(cfg, sorted(self.store.relations),
-                                                                   sorted(self.store.entity_types))}
-        caps = cfg["kg"]["traverse"]
-        t = self.traverser
-        self.calls: dict[str, Callable[[dict], Any]] = {
-            "search": lambda a: self.store.search(a["query"]),
-            "get": lambda a: self._found(self.store.get(a["id"]), a["id"]),
-            "source": lambda a: self._found(self.store.source(a["episode_id"], a.get("item_id")), a["episode_id"]),
-            "neighbors": lambda a: t.neighbors(a["entity_id"], hops=a.get("hops", caps["default_hops"]),
-                                               relations=a.get("relations"), since=a.get("since"),
-                                               until=a.get("until"), as_of=a.get("as_of"), types=a.get("types"),
-                                               offset=a.get("offset", 0),
-                                               through_owner=a.get("through_owner", False)),
-            "paths": lambda a: t.paths(a["src_id"], a["dst_id"], max_hops=a.get("max_hops", caps["max_hops"]),
-                                       relations=a.get("relations"), as_of=a.get("as_of"),
-                                       through_owner=a.get("through_owner", False)),
-            "timeline": lambda a: t.timeline(a["entity_id"], since=a.get("since"), until=a.get("until")),
-        }
+class RpcServer:
+    """MCP over JSON-RPC 2.0 for a fixed set of tools: `tools` maps a name to its
+    definition (name, description, inputSchema), `calls` the name to a function of the
+    validated arguments. A subclass sets both, and its name and instructions."""
+    name = SERVER_NAME
+    instructions = INSTRUCTIONS
+
+    def __init__(self, tools: list[dict], calls: dict[str, Callable[[dict], Any]]):
+        if sorted(t["name"] for t in tools) != sorted(calls):
+            raise ValueError("every tool needs exactly one call")
+        self.tools = {t["name"]: t for t in tools}
+        self.calls = calls
 
     @staticmethod
     def _found(result: Optional[dict], wanted: str) -> dict:
@@ -238,8 +235,8 @@ class Server:
             asked = params.get("protocolVersion")
             return {"protocolVersion": asked if asked in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0],
                     "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-                    "instructions": INSTRUCTIONS}
+                    "serverInfo": {"name": self.name, "version": SERVER_VERSION},
+                    "instructions": self.instructions}
         if method == "ping":
             return {}
         if method == "tools/list":
@@ -257,8 +254,37 @@ class Server:
                                 is_error=True)
         try:
             return _tool_result(self.calls[name](arguments))
-        except (ToolError, ValueError) as exc:         # StoreError, or a time that is not ISO-8601
+        except ToolError as exc:
+            return _tool_result({"error": str(exc), **exc.fields}, is_error=True)
+        except ValueError as exc:                      # StoreError, or a time that is not ISO-8601
             return _tool_result({"error": str(exc)}, is_error=True)
+
+
+class Server(RpcServer):
+    """The graph reader (D.3): search, get, source, neighbors, paths, timeline, over a
+    connection the caller opened (kg.db.connect_readonly in `main`)."""
+
+    def __init__(self, conn: sqlite3.Connection, cfg: dict):
+        self.cfg = cfg
+        self.store = Store(conn, cfg)
+        self.traverser = Traverser(self.store)
+        caps = cfg["kg"]["traverse"]
+        t = self.traverser
+        calls: dict[str, Callable[[dict], Any]] = {
+            "search": lambda a: self.store.search(a["query"]),
+            "get": lambda a: self._found(self.store.get(a["id"]), a["id"]),
+            "source": lambda a: self._found(self.store.source(a["episode_id"], a.get("item_id")), a["episode_id"]),
+            "neighbors": lambda a: t.neighbors(a["entity_id"], hops=a.get("hops", caps["default_hops"]),
+                                               relations=a.get("relations"), since=a.get("since"),
+                                               until=a.get("until"), as_of=a.get("as_of"), types=a.get("types"),
+                                               offset=a.get("offset", 0),
+                                               through_owner=a.get("through_owner", False)),
+            "paths": lambda a: t.paths(a["src_id"], a["dst_id"], max_hops=a.get("max_hops", caps["max_hops"]),
+                                       relations=a.get("relations"), as_of=a.get("as_of"),
+                                       through_owner=a.get("through_owner", False)),
+            "timeline": lambda a: t.timeline(a["entity_id"], since=a.get("since"), until=a.get("until")),
+        }
+        super().__init__(tool_definitions(cfg, sorted(self.store.relations), sorted(self.store.entity_types)), calls)
 
 
 def _error(msg_id: Any, code: int, message: str) -> dict:
@@ -269,7 +295,7 @@ def _tool_result(value: Any, *, is_error: bool = False) -> dict:
     return {"content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}], "isError": is_error}
 
 
-def serve(server: Server, stdin: BinaryIO, stdout: BinaryIO) -> None:
+def serve(server: RpcServer, stdin: BinaryIO, stdout: BinaryIO) -> None:
     """Answer stdin line by line until it closes."""
     for line in stdin:
         reply = server.handle_line(line)
@@ -278,21 +304,41 @@ def serve(server: Server, stdin: BinaryIO, stdout: BinaryIO) -> None:
             stdout.flush()
 
 
-def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m kg.mcp", description=__doc__.splitlines()[0])
+# start(cfg) -> (the server, the connections to close when stdin ends, a line for the log)
+Starter = Callable[[dict], tuple[RpcServer, list[sqlite3.Connection], str]]
+
+
+def run_stdio(argv: Optional[list[str]], *, prog: str, description: str, start: Starter) -> int:
+    """Parse --config, start the server, serve stdin until it closes. Exit 1 when it
+    cannot start (no database, a schema this code does not know), logged to stderr."""
+    parser = argparse.ArgumentParser(prog=prog, description=description)
     parser.add_argument("--config", type=Path, default=None,
                         help="the per-user overlay (default %%APPDATA%%\\whispr\\config.yaml)")
     args = parser.parse_args(argv)
     logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     try:
         cfg = load_config(overlay_path=args.config)
-        conn = db.connect_readonly(cfg)
+        server, conns, banner = start(cfg)
     except Exception as exc:
         log.error("cannot start: %s", exc)
         return 1
     try:
-        log.info("serving %s read-only", db.database_path(cfg))
-        serve(Server(conn, cfg), sys.stdin.buffer, sys.stdout.buffer)
+        log.info(banner)
+        serve(server, sys.stdin.buffer, sys.stdout.buffer)
     finally:
-        conn.close()
+        for conn in conns:
+            conn.close()
     return 0
+
+
+def _start_reader(cfg: dict) -> tuple[RpcServer, list[sqlite3.Connection], str]:
+    conn = db.connect_readonly(cfg)
+    try:
+        return Server(conn, cfg), [conn], f"serving {db.database_path(cfg)} read-only"
+    except BaseException:
+        conn.close()
+        raise
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    return run_stdio(argv, prog="python -m kg.mcp", description=__doc__.splitlines()[0], start=_start_reader)

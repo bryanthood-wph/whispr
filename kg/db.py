@@ -23,6 +23,9 @@
   meanwhile is skipped.
 - Readers that must never write (the MCP server) use `connect_readonly`: a `mode=ro`
   URI plus query_only, no migration, and a schema that must match this code exactly.
+- A writer allowed to change only a few tables (the task server, kg/mcp_tasks.py) uses
+  `connect_limited`: the same checks, no migration, and an SQLite authorizer that
+  refuses any write to another table and any schema change, ATTACH or PRAGMA.
 """
 
 from __future__ import annotations
@@ -211,20 +214,16 @@ def migrate(conn: sqlite3.Connection, directory: Path = MIGRATIONS_DIR) -> list[
     return applied
 
 
-def connect_readonly(cfg: dict, *, directory: Path = MIGRATIONS_DIR) -> sqlite3.Connection:
-    """The database opened so it cannot be changed through this connection: a `mode=ro`
-    URI (SQLite refuses every write) plus `query_only`. For readers that must never
-    write, the MCP server first. It never migrates: a missing database, or one whose
-    schema is not exactly this code's migrations, is refused (run the pipeline, whose
-    `connect` migrates, first). The caller closes it."""
+def _open_existing(cfg: dict, directory: Path, *, mode: str) -> sqlite3.Connection:
+    """The database file opened with URI `mode` (ro, rw), never created or migrated, its
+    schema exactly this code's migrations, waiting up to kg.busy_timeout_ms for a lock."""
     path = database_path(cfg).resolve()
     if not path.is_file():
         raise MigrationError(f"no database at {path}: run the pipeline once to create it")
-    conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, isolation_level=None)
+    conn = sqlite3.connect(f"{path.as_uri()}?mode={mode}", uri=True, isolation_level=None)
     try:
         conn.row_factory = sqlite3.Row
         conn.execute(f"PRAGMA busy_timeout = {int(cfg['kg']['busy_timeout_ms'])}")
-        conn.execute("PRAGMA query_only = ON")
         try:
             have = applied_versions(conn)
         except sqlite3.OperationalError as exc:
@@ -233,6 +232,52 @@ def connect_readonly(cfg: dict, *, directory: Path = MIGRATIONS_DIR) -> sqlite3.
         if have != want:
             raise MigrationError(f"{path} is at schema version(s) {sorted(have)}, this code expects {sorted(want)}: "
                                  "run the pipeline (it migrates), or update whispr")
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
+def connect_readonly(cfg: dict, *, directory: Path = MIGRATIONS_DIR) -> sqlite3.Connection:
+    """The database opened so it cannot be changed through this connection: a `mode=ro`
+    URI (SQLite refuses every write) plus `query_only`. For readers that must never
+    write, the MCP server first. It never migrates: a missing database, or one whose
+    schema is not exactly this code's migrations, is refused (run the pipeline, whose
+    `connect` migrates, first). The caller closes it."""
+    conn = _open_existing(cfg, directory, mode="ro")
+    try:
+        conn.execute("PRAGMA query_only = ON")
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
+# What a limited writer may do besides writing its own tables: read, call functions,
+# and run transactions and savepoints (kg.db.transaction). Everything else is refused.
+_LIMITED_ALLOWED = {sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION,
+                    sqlite3.SQLITE_TRANSACTION, sqlite3.SQLITE_SAVEPOINT, sqlite3.SQLITE_RECURSIVE}
+_LIMITED_WRITES = {sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE}
+
+
+def connect_limited(cfg: dict, tables: Iterable[str], *, directory: Path = MIGRATIONS_DIR) -> sqlite3.Connection:
+    """The database opened writable for `tables` only (least privilege, D.3): an
+    authorizer refuses an INSERT, UPDATE or DELETE on any other table, and any schema
+    change, ATTACH, PRAGMA or extension load, with "not authorized". Foreign keys are
+    enforced. Like connect_readonly it never creates or migrates the database, and its
+    schema must match this code exactly. The caller closes it."""
+    writable = frozenset(tables)
+    conn = _open_existing(cfg, directory, mode="rw")
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+        def authorize(action: int, arg1: Optional[str], _arg2: Optional[str], _db: Optional[str],
+                      _trigger: Optional[str]) -> int:
+            if action in _LIMITED_ALLOWED or (action in _LIMITED_WRITES and arg1 in writable):
+                return sqlite3.SQLITE_OK
+            return sqlite3.SQLITE_DENY
+
+        conn.set_authorizer(authorize)
     except BaseException:
         conn.close()
         raise

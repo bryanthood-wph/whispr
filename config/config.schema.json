@@ -155,7 +155,7 @@
       }
     },
     "kg": {
-      "type": "object", "additionalProperties": false, "required": ["database", "search_cards", "busy_timeout_ms", "traverse", "er", "models", "rederive_approval_usd", "view"],
+      "type": "object", "additionalProperties": false, "required": ["database", "search_cards", "busy_timeout_ms", "traverse", "er", "models", "tasks", "rederive_approval_usd", "view"],
       "properties": {
         "database": {"$ref": "#/$defs/str"},
         "search_cards": {"type": "integer", "minimum": 1},
@@ -184,6 +184,18 @@
         "models": {
           "type": "object", "additionalProperties": false, "required": ["resolve"],
           "properties": {"resolve": {"$ref": "#/$defs/str"}}
+        },
+        "tasks": {
+          "type": "object", "additionalProperties": false,
+          "required": ["funnel_days", "list_limit", "mine_owner_basis", "confirm_owner_basis", "tools_status", "review_statuses"],
+          "properties": {
+            "funnel_days": {"type": "integer", "minimum": 1},
+            "list_limit": {"type": "integer", "minimum": 1},
+            "mine_owner_basis": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+            "confirm_owner_basis": {"type": "array", "items": {"$ref": "#/$defs/str"}},
+            "tools_status": {"$ref": "#/$defs/str"},
+            "review_statuses": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1}
+          }
         },
         "rederive_approval_usd": {"$ref": "#/$defs/money"},
         "view": {

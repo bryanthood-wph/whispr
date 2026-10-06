@@ -24,7 +24,9 @@ text search behind `search`, can move to Postgres in one place. The rules it enf
   two tasks of one document share, that plus the normalized action (`task_id`). The allowed
   status changes and the funnel order are rows in the database (migration 0001), and
   their statuses must equal the schema's enum. Re-inserting a known task is a no-op,
-  so re-writing an episode never resets a task's lifecycle (lesson L19).
+  so re-writing an episode never resets a task's lifecycle (lesson L19). A review
+  change (`update_task`) moves a task only along an allowed transition and records
+  who, why and when, with any clarification, inputs and granted tools, as rows.
 - **Idempotent writes.** Ids are derived from content, so writing the same episode
   twice adds nothing, after a merge too: an edge is matched by episode, relation,
   quote and live endpoints, since a merge repoints an edge but keeps its id.
@@ -61,6 +63,9 @@ _ALIAS_KIND = "alias"
 _FACT_KIND = "fact"
 # Tables `_supersede` may touch: a fixed map, never caller text, so it is safe in SQL.
 _SUPERSEDABLE = {"fact": "fact", "edge": "edge"}
+# task_note kinds (kg/migrations/0006_task_review.sql).
+NOTE_CLARIFICATION = "clarification"
+NOTE_INPUT = "input"
 
 ACTIVE_FACT = "f.superseded_by IS NULL AND ep.deleted_at IS NULL"
 ACTIVE_EDGE = "g.superseded_by IS NULL AND ep.deleted_at IS NULL"
@@ -83,6 +88,17 @@ EDGE_SELECT = ("SELECT g.id, g.relation, g.src_entity_id, s.canonical_name AS sr
 
 class StoreError(ValueError):
     pass
+
+
+class TransitionError(StoreError):
+    """A status change the seeded transitions do not allow; `allowed` names the next
+    states the task can move to."""
+
+    def __init__(self, task_id_: str, current: str, wanted: str, allowed: Iterable[str]):
+        self.current, self.wanted, self.allowed = current, wanted, sorted(allowed)
+        nxt = ", ".join(self.allowed) or "none (it is final)"
+        super().__init__(f"task {task_id_!r}: {current} -> {wanted} is not an allowed transition; "
+                         f"allowed next from {current}: {nxt}")
 
 
 def name_key(text: str) -> str:
@@ -108,6 +124,15 @@ def task_id(episode_id: str, quote: str, action: Optional[str] = None) -> str:
     return hashlib.sha1(key.encode("utf-8")).hexdigest()
 
 
+def _in(column: str, values: Iterable[str]) -> tuple[str, list]:
+    """`column IN (?, ...)` and its parameters; an empty list matches nothing (Postgres
+    refuses `IN ()`)."""
+    values = list(values)
+    if not values:
+        return "1 = 0", []
+    return f"{column} IN ({', '.join('?' * len(values))})", values
+
+
 def _parse_relations(ontology: dict) -> dict[str, tuple[set[str], set[str]]]:
     """relation -> (allowed source types, allowed target types), from "a | b -> c"."""
     parsed = {}
@@ -129,6 +154,8 @@ class Store:
         self.relations = _parse_relations(ontology)
         self.task_schema = load_schema(cfg, "task")
         self._check_task_statuses()
+        self.task_cfg = cfg["kg"]["tasks"]
+        self._check_task_config()
 
     def _check_task_statuses(self) -> None:
         in_db = {r[0] for r in self.conn.execute("SELECT status FROM task_status")}
@@ -136,6 +163,27 @@ class Store:
         if in_db != in_schema:
             raise StoreError(f"task statuses differ: database {sorted(in_db)}, "
                              f"config/schema/task.json {sorted(in_schema)}; add a migration")
+
+    def _check_task_config(self) -> None:
+        """kg.tasks names owner_basis values and statuses: each must be in the task schema,
+        and every "confirm?" basis must be one of the owner's own (or task_list would
+        hide tasks confirm_open counts)."""
+        props = self.task_schema["properties"]
+        bases, statuses = set(props["owner_basis"]["enum"]), set(props["status"]["enum"])
+        for key in ("mine_owner_basis", "confirm_owner_basis"):
+            unknown = set(self.task_cfg[key]) - bases
+            if unknown:
+                raise StoreError(f"kg.tasks.{key}: {sorted(unknown)} not in config/schema/task.json owner_basis "
+                                 f"{sorted(bases)}")
+        if self.task_cfg["tools_status"] not in statuses:
+            raise StoreError(f"kg.tasks.tools_status {self.task_cfg['tools_status']!r} is not a task status "
+                             f"{sorted(statuses)}")
+        unknown = set(self.task_cfg["review_statuses"]) - statuses
+        if unknown:
+            raise StoreError(f"kg.tasks.review_statuses: {sorted(unknown)} not task statuses {sorted(statuses)}")
+        outside = set(self.task_cfg["confirm_owner_basis"]) - set(self.task_cfg["mine_owner_basis"])
+        if outside:
+            raise StoreError(f"kg.tasks.confirm_owner_basis: {sorted(outside)} not in kg.tasks.mine_owner_basis")
 
     # ---- episodes -------------------------------------------------------------------
 
@@ -436,27 +484,95 @@ class Store:
         return task["id"]
 
     def _task_event(self, task_id_: str, from_status: Optional[str], to_status: str,
-                    note: Optional[str], stamp: str) -> None:
-        self.conn.execute("INSERT INTO task_event (id, task_id, from_status, to_status, note, at)"
-                          " VALUES (?, ?, ?, ?, ?, ?)", (new_id(), task_id_, from_status, to_status, note, stamp))
+                    note: Optional[str], stamp: str, *, actor: Optional[str] = None,
+                    details: Optional[dict] = None) -> str:
+        event_id = new_id()
+        self.conn.execute("INSERT INTO task_event (id, task_id, from_status, to_status, note, at, actor, details)"
+                          " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                          (event_id, task_id_, from_status, to_status, note, stamp, actor,
+                           json.dumps(details) if details else None))
+        return event_id
 
     def allowed_transitions(self, status: str) -> set[str]:
         return {r[0] for r in self.conn.execute(
             "SELECT to_status FROM task_transition WHERE from_status = ?", (status,))}
 
     def set_task_status(self, task_id_: str, status: str, *, note: Optional[str] = None,
-                        now: Optional[datetime] = None) -> None:
+                        actor: Optional[str] = None, now: Optional[datetime] = None) -> None:
         """Move a task along an allowed transition, recording the event."""
-        row = fetch_one(self.conn, "SELECT status FROM task WHERE id = ?", (task_id_,))
+        self.update_task(task_id_, status=status, reason=note, actor=actor, now=now)
+
+    def update_task(self, task_id_: str, *, actor: Optional[str], status: Optional[str] = None,
+                    reason: Optional[str] = None, clarification: Optional[str] = None,
+                    inputs: Iterable[str] = (), tools_allowed: Optional[list] = None,
+                    now: Optional[datetime] = None) -> dict:
+        """One review change, all of it or none of it (the /create-tasks review, D.5):
+        - `status`: move along an allowed transition (task_transition, migration 0001),
+          recorded as a task_event with `actor` (who), `reason` (why) and the time;
+          anything else raises TransitionError naming the allowed next states.
+        - `tools_allowed`: the /execute-tasks worker's allowlist (D.3), granted only with
+          a move to kg.tasks.tools_status; it must fit config/schema/task.json, and is
+          kept on the task and in the event's details. Each marking declares its own
+          list: marking that status without it grants none, so a task re-marked after
+          its scope changed inherits no earlier grant.
+        - `clarification` and `inputs` (paths, links, values the work needs): task_note
+          rows by `actor`, with or without a status change.
+        The read, the checks and the writes share one write transaction (BEGIN IMMEDIATE
+        first), so a change another process made meanwhile is never checked stale.
+        Returns the task with its history (`task_record`). Never writes a file (L19)."""
+        with transaction(self.conn):
+            self._update_task(task_id_, actor=actor, status=status, reason=reason, clarification=clarification,
+                              inputs=inputs, tools_allowed=tools_allowed, now=now)
+        return self.task_record(task_id_)
+
+    def _update_task(self, task_id_: str, *, actor: Optional[str], status: Optional[str], reason: Optional[str],
+                     clarification: Optional[str], inputs: Iterable[str], tools_allowed: Optional[list],
+                     now: Optional[datetime]) -> None:
+        row = fetch_one(self.conn, "SELECT * FROM task WHERE id = ?", (task_id_,))
         if row is None:
             raise StoreError(f"no task {task_id_!r}")
+        if isinstance(inputs, str):
+            raise StoreError("inputs is a list of strings, not one string")
+        inputs = list(inputs)
+        texts = [("reason", reason), ("clarification", clarification), ("actor", actor)]
+        texts += [(f"inputs[{i}]", text) for i, text in enumerate(inputs)]
+        for name, text in texts:
+            if text is not None and (not isinstance(text, str) or not text.strip()):
+                raise StoreError(f"{name} must be a non-empty string")
+        if status is None and clarification is None and not inputs and tools_allowed is None:
+            raise StoreError("nothing to change: give a status, a clarification, inputs or tools_allowed")
+        if (clarification is not None or inputs) and actor is None:
+            raise StoreError("a clarification or an input needs the actor who attached it")
         current = row["status"]
-        if status not in self.allowed_transitions(current):
-            raise StoreError(f"task {task_id_!r}: {current} -> {status} is not an allowed transition")
+        if status is not None and status not in self.allowed_transitions(current):
+            raise TransitionError(task_id_, current, status, self.allowed_transitions(current))
+        contract = self._contract(row)
+        tools_status = self.task_cfg["tools_status"]
+        tools = [] if status == tools_status else contract["tools_allowed"]       # each marking declares its own
+        if tools_allowed is not None:
+            if status != tools_status:
+                raise StoreError(f"tools_allowed is granted only when a task is marked {tools_status}: "
+                                 f"pass status {tools_status!r} with it")
+            errors = validate(tools_allowed, self.task_schema["properties"]["tools_allowed"])
+            if errors:
+                raise StoreError("tools_allowed does not match config/schema/task.json:\n  " + "\n  ".join(errors))
+            tools = list(dict.fromkeys(t.strip() for t in tools_allowed))
+            if "" in tools:
+                raise StoreError("tools_allowed has an empty tool name")
+        errors = validate({**contract, "status": status or current, "tools_allowed": tools}, self.task_schema)
+        if errors:
+            raise StoreError("the changed task would not match config/schema/task.json:\n  " + "\n  ".join(errors))
         stamp = utc_now(now)
         with transaction(self.conn):
-            self.conn.execute("UPDATE task SET status = ?, updated_at = ? WHERE id = ?", (status, stamp, task_id_))
-            self._task_event(task_id_, current, status, note, stamp)
+            self.conn.execute("UPDATE task SET status = ?, tools_allowed = ?, updated_at = ? WHERE id = ?",
+                              (status or current, json.dumps(tools), stamp, task_id_))
+            if status is not None:
+                self._task_event(task_id_, current, status, reason, stamp, actor=actor,
+                                 details={"tools_allowed": tools} if status == tools_status else None)
+            notes = ([(NOTE_CLARIFICATION, clarification)] if clarification is not None else [])
+            for kind, text in notes + [(NOTE_INPUT, text) for text in inputs]:
+                self.conn.execute("INSERT INTO task_note (id, task_id, kind, text, actor, at) VALUES (?, ?, ?, ?, ?, ?)",
+                                  (new_id(), task_id_, kind, text.strip(), actor, stamp))
 
     def _contract(self, row: dict) -> dict:
         return {"id": row["id"], "owner": row["owner"], "owner_basis": row["owner_basis"],
@@ -481,23 +597,114 @@ class Store:
         return [r[0] for r in self.conn.execute(
             "SELECT entity_id FROM task_entity WHERE task_id = ? ORDER BY entity_id", (task_id_,))]
 
-    def funnel(self, since: Optional[str] = None) -> dict[str, int]:
-        """Funnel stage -> tasks that ever reached it (D.5: captured -> confirmed ->
-        ready -> done), over tasks created at or after `since` (ISO time) if given."""
-        reached = ("SELECT ev.task_id, MAX(stage.funnel_rank) AS top FROM task_event ev"
-                   " JOIN task_status st ON st.status = ev.to_status"
-                   " JOIN task_status stage ON stage.status = st.reaches GROUP BY ev.task_id")
-        where, params = "", []
+    def needs_confirm(self, task: dict) -> bool:
+        """Whether a task is shown as "confirm?" (D.5): still at the funnel's first stage
+        with an owner_basis in kg.tasks.confirm_owner_basis."""
+        return task["status"] == self.funnel_stages()[0] and task["owner_basis"] in self.task_cfg["confirm_owner_basis"]
+
+    def task_record(self, task_id_: str) -> Optional[dict]:
+        """A task for review: its contract, whether it needs "confirm?", the meeting it
+        came from, its status changes (who, why, when, details) and its clarifications
+        and inputs, oldest first. None if no such task."""
+        row = fetch_one(self.conn, "SELECT t.*, ep.meeting_start, ep.transcript_path FROM task t"
+                                   " JOIN episode ep ON ep.id = t.episode_id WHERE t.id = ?", (task_id_,))
+        if row is None:
+            return None
+        events = fetch_all(self.conn, "SELECT from_status, to_status, actor, note AS reason, details, at"
+                                      " FROM task_event WHERE task_id = ? ORDER BY at, rowid", (task_id_,))
+        for ev in events:
+            ev["details"] = json.loads(ev["details"]) if ev["details"] else None
+        notes = fetch_all(self.conn, "SELECT kind, text, actor, at FROM task_note WHERE task_id = ?"
+                                     " ORDER BY at, rowid", (task_id_,))
+        return {**self._review_card(row), "events": events,
+                "clarifications": [n for n in notes if n["kind"] == NOTE_CLARIFICATION],
+                "inputs": [n for n in notes if n["kind"] == NOTE_INPUT]}
+
+    def _review_card(self, row: dict) -> dict:
+        task = self._contract(row)
+        return {"task": task, "confirm": self.needs_confirm(task), "meeting_start": row["meeting_start"],
+                "transcript_path": row["transcript_path"], "created_at": row["created_at"]}
+
+    def review_tasks(self, *, status: str, mine: bool = True, confirm_only: bool = False, limit: int,
+                     offset: int = 0) -> dict:
+        """Tasks in `status` for the review, "confirm?" ones first, then newest meeting
+        first: the owner's own (kg.tasks.mine_owner_basis) unless `mine` is False. At
+        most `limit` cards from `offset`, with the total and whether more remain."""
+        if status not in self.task_schema["properties"]["status"]["enum"]:
+            raise StoreError(f"no task status {status!r}")
+        where, params = ["t.status = ?"], [status]
+        if mine:
+            clause, values = _in("t.owner_basis", self.task_cfg["mine_owner_basis"])
+            where.append(clause)
+            params += values
+        confirm, confirm_params = _in("t.owner_basis", self.task_cfg["confirm_owner_basis"])
+        if confirm_only:
+            where.append(confirm)
+            params += confirm_params
+        sql = (" FROM task t JOIN episode ep ON ep.id = t.episode_id WHERE " + " AND ".join(where))
+        total = self.conn.execute("SELECT COUNT(*)" + sql, params).fetchone()[0]
+        rows = fetch_all(self.conn,
+            f"SELECT t.*, ep.meeting_start, ep.transcript_path{sql}"
+            f" ORDER BY CASE WHEN {confirm} THEN 0 ELSE 1 END, COALESCE(ep.meeting_start, t.created_at) DESC,"
+            " t.source_start, t.id LIMIT ? OFFSET ?", (*params, *confirm_params, limit, offset))
+        return {"status": status, "total": total, "offset": offset, "truncated": offset + len(rows) < total,
+                "tasks": [self._review_card(r) for r in rows]}
+
+    # ---- the funnel (D.5, lesson L20) -------------------------------------------------
+
+    def funnel_stages(self) -> list[str]:
+        """The funnel's stages in order (task_status.funnel_rank): captured first."""
+        return [r[0] for r in self.conn.execute(
+            "SELECT status FROM task_status WHERE funnel_rank IS NOT NULL ORDER BY funnel_rank")]
+
+    @staticmethod
+    def _task_scope(since: Optional[str], until: Optional[str],
+                    owner_basis: Optional[Iterable[str]]) -> tuple[str, list]:
+        where, params = ["1 = 1"], []
         if since is not None:
-            where, params = " AND t.created_at >= ?", [utc_time(since)]
+            where.append("t.created_at >= ?")
+            params.append(utc_time(since))
+        if until is not None:
+            where.append("t.created_at < ?")
+            params.append(utc_time(until))
+        if owner_basis is not None:
+            clause, values = _in("t.owner_basis", owner_basis)
+            where.append(clause)
+            params += values
+        return " AND ".join(where), params
+
+    def funnel(self, since: Optional[str] = None, *, until: Optional[str] = None,
+               owner_basis: Optional[Iterable[str]] = None) -> dict[str, int]:
+        """Funnel stage -> tasks that ever reached it (D.5: captured -> confirmed ->
+        ready -> done), over tasks created at or after `since` and before `until` (ISO
+        times) and with one of `owner_basis`, each if given. Every stored task was captured, whatever status it
+        was inserted with (one inserted `dropped` counts as captured and no further)."""
         stages = fetch_all(self.conn, "SELECT status, funnel_rank FROM task_status WHERE funnel_rank IS NOT NULL"
                                       " ORDER BY funnel_rank")
-        counts = {}
-        for stage in stages:
-            counts[stage["status"]] = self.conn.execute(
-                f"SELECT COUNT(*) FROM ({reached}) r JOIN task t ON t.id = r.task_id"
-                f" WHERE r.top >= ?{where}", (stage["funnel_rank"], *params)).fetchone()[0]
-        return counts
+        where, params = self._task_scope(since, until, owner_basis)
+        tops = [r[0] for r in self.conn.execute(
+            "SELECT COALESCE(MAX(stage.funnel_rank), ?) FROM task t"
+            " LEFT JOIN task_event ev ON ev.task_id = t.id"
+            " LEFT JOIN task_status st ON st.status = ev.to_status"
+            " LEFT JOIN task_status stage ON stage.status = st.reaches"
+            f" WHERE {where} GROUP BY t.id", (stages[0]["funnel_rank"], *params))]
+        return {s["status"]: sum(1 for top in tops if top >= s["funnel_rank"]) for s in stages}
+
+    def task_status_counts(self, since: Optional[str] = None, *, until: Optional[str] = None,
+                           owner_basis: Optional[Iterable[str]] = None) -> dict[str, int]:
+        """Status -> tasks in it now (every status in config/schema/task.json, zeros
+        included), over the same scope as `funnel`."""
+        where, params = self._task_scope(since, until, owner_basis)
+        counts = dict(self.conn.execute(f"SELECT t.status, COUNT(*) FROM task t WHERE {where} GROUP BY t.status",
+                                        params).fetchall())
+        return {s: counts.get(s, 0) for s in self.task_schema["properties"]["status"]["enum"]}
+
+    def confirm_open(self) -> int:
+        """Tasks still waiting at the funnel's first stage with a "confirm?" owner_basis,
+        however old: the review's backlog."""
+        clause, values = _in("t.owner_basis", self.task_cfg["confirm_owner_basis"])
+        return self.conn.execute(f"SELECT COUNT(*) FROM task t WHERE t.status = ? AND {clause}",
+                                 (self.funnel_stages()[0], *values)).fetchone()[0]
 
     # ---- reads for MCP: search -> get -> source (progressive disclosure) -------------
 
