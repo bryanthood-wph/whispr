@@ -158,16 +158,18 @@ eval:
     frame_cutoff: '2026-10-04'  # the frame is every transcript dated on or before this (B.3: 281)
     pilot_n: 3
     # B.3 cells. "meeting" = Outlook-matched metadata, "call" = anything else.
+    # dev: the tuning set (eval/frame.py Sample.dev), 25 transcripts in proportion to core;
+    # prompt revisions are tuned on it, never on the confirmatory draw.
     # Duration bounds in minutes: min_exclusive < duration <= max_inclusive (null = open).
     cells:
-      - {name: call_le15,     kind: call,    min_exclusive: null, max_inclusive: 15,   core: 9,  task_only: 15}
-      - {name: call_15_30,    kind: call,    min_exclusive: 15,   max_inclusive: 30,   core: 7,  task_only: 10}
-      - {name: call_gt30,     kind: call,    min_exclusive: 30,   max_inclusive: null, core: 4,  task_only: 6}
-      - {name: meeting_le15,  kind: meeting, min_exclusive: null, max_inclusive: 15,   core: 4,  task_only: 6}
-      - {name: meeting_15_30, kind: meeting, min_exclusive: 15,   max_inclusive: 30,   core: 11, task_only: 17}
-      - {name: meeting_30_60, kind: meeting, min_exclusive: 30,   max_inclusive: 60,   core: 9,  task_only: 13}
-      - {name: meeting_gt60,  kind: meeting, min_exclusive: 60,   max_inclusive: null, core: 3,  task_only: 3}
-      - {name: stub,          kind: stub,    min_exclusive: null, max_inclusive: null, core: 3,  task_only: 0}
+      - {name: call_le15,     kind: call,    min_exclusive: null, max_inclusive: 15,   core: 9,  task_only: 15, dev: 5}
+      - {name: call_15_30,    kind: call,    min_exclusive: 15,   max_inclusive: 30,   core: 7,  task_only: 10, dev: 4}
+      - {name: call_gt30,     kind: call,    min_exclusive: 30,   max_inclusive: null, core: 4,  task_only: 6, dev: 2}
+      - {name: meeting_le15,  kind: meeting, min_exclusive: null, max_inclusive: 15,   core: 4,  task_only: 6, dev: 2}
+      - {name: meeting_15_30, kind: meeting, min_exclusive: 15,   max_inclusive: 30,   core: 11, task_only: 17, dev: 6}
+      - {name: meeting_30_60, kind: meeting, min_exclusive: 30,   max_inclusive: 60,   core: 9,  task_only: 13, dev: 5}
+      - {name: meeting_gt60,  kind: meeting, min_exclusive: 60,   max_inclusive: null, core: 3,  task_only: 3, dev: 1}
+      - {name: stub,          kind: stub,    min_exclusive: null, max_inclusive: null, core: 3,  task_only: 0, dev: 0}
     # Second stratum (B.3): output devices matching this are "speakers" (echo-prone).
     speaker_device_pattern: '(?i)speaker'
     # Low mic coverage (B.3, L5) from the recorder log's mic/loopback frame counts.
@@ -199,6 +201,13 @@ eval:
       # #13 per-call cap of the --setting-sources probe's two tiny calls. Small, because a
       # probe variant the CLI rejects reports no cost and is booked at its full cap.
       probe_max_budget_usd: 0.10
+    dev:
+      # The prompt-tuning loop (eval/dev.py; your OK, 2026-10-05): a hard cap across every
+      # revision. The reference is paid once (~$29 for 25 transcripts, cached); each
+      # revision then costs ~$8-12 (extract + my-task judging). At the cap the loop stops
+      # and reports, whatever recall it reached.
+      cap_usd: 65
+      max_budget_per_call_usd: 0.75   # as the pilot: the guard reserves it per call in flight
   scoring:
     # B.6: "Wilson intervals are used only for unweighted small cells." A stratum whose
     # units all sit in one cell (so equal design weights) and number at most this many

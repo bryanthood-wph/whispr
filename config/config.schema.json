@@ -19,14 +19,15 @@
     },
     "cell": {
       "type": "object", "additionalProperties": false,
-      "required": ["name", "kind", "min_exclusive", "max_inclusive", "core", "task_only"],
+      "required": ["name", "kind", "min_exclusive", "max_inclusive", "core", "task_only", "dev"],
       "properties": {
         "name": {"$ref": "#/$defs/str"},
         "kind": {"enum": ["call", "meeting", "stub"]},
         "min_exclusive": {"type": ["number", "null"]},
         "max_inclusive": {"type": ["number", "null"]},
         "core": {"type": "integer", "minimum": 0},
-        "task_only": {"type": "integer", "minimum": 0}
+        "task_only": {"type": "integer", "minimum": 0},
+        "dev": {"type": "integer", "minimum": 0}
       }
     }
   },
@@ -162,7 +163,11 @@
                                                   "probe_max_budget_usd": {"$ref": "#/$defs/money"},
                                                   "judge_subjects": {"type": "integer", "minimum": 1},
                                                   "plants_per_kind": {"type": "integer", "minimum": 1},
-                                                  "positives": {"type": "integer", "minimum": 1}}}}
+                                                  "positives": {"type": "integer", "minimum": 1}}},
+                         "dev": {"type": "object", "additionalProperties": false,
+                                 "required": ["cap_usd", "max_budget_per_call_usd"],
+                                 "properties": {"cap_usd": {"$ref": "#/$defs/money"},
+                                                "max_budget_per_call_usd": {"$ref": "#/$defs/money"}}}}
         },
         "scoring": {
           "type": "object", "additionalProperties": false, "required": ["wilson_max_units"],

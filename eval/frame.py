@@ -18,6 +18,11 @@ cells and is excluded from the confirmatory draw. A low-mic transcript that woul
 drawn is replaced by the next one in its cell and kept as a separately reported unit;
 one whose mic coverage can't be checked (no recorder-log match) is replaced too and
 only listed, since it can't be screened either way.
+
+Tuning set (`Sample.dev`): after the draw, each cell's next eval.sample.cells[].dev
+screened transcripts (not low-mic, not unscreened) in the same order. Prompt revisions
+are tuned on it, so it never overlaps the pilot or the confirmatory draw that judges
+the tuned prompt.
 """
 
 from __future__ import annotations
@@ -67,6 +72,7 @@ class Sample:
     low_mic: dict[str, list[str]]          # cell -> low-mic transcripts that were drawn, then replaced
     unscreened: dict[str, list[str]] = field(default_factory=dict)   # no log match: drawn, then replaced
     shortfall: dict[str, int] = field(default_factory=dict)
+    dev: dict[str, list[str]] = field(default_factory=dict)          # cell -> tuning-set transcripts
 
 
 def _duration(meta: dict) -> Optional[float]:
@@ -155,10 +161,12 @@ def draw(frame: list[FrameItem], cfg: dict) -> Sample:
     for c in s["cells"]:
         want = c["core"] + c["task_only"]
         chosen, replaced, skipped = [], [], []
-        for item in orders[c["name"]]:
-            if len(chosen) == want:
+        order = orders[c["name"]]
+        for at, item in enumerate(order + [None]):      # `at`: the first transcript the draw left
+            if len(chosen) == want or item is None:
                 break
             (replaced if item.id in low_mic else skipped if item.id in unscreened else chosen).append(item.id)
+        sample.dev[c["name"]] = [i.id for i in order[at:] if i.id not in low_mic and i.id not in unscreened][:c["dev"]]
         sample.core[c["name"]] = chosen[:c["core"]]
         sample.task_only[c["name"]] = chosen[c["core"]:]
         sample.low_mic[c["name"]] = replaced
@@ -168,7 +176,8 @@ def draw(frame: list[FrameItem], cfg: dict) -> Sample:
     return sample
 
 
-def design(sample: Sample, frame: list[FrameItem], *, include_task_only: bool, low_mic: bool = False) -> Design:
+def design(sample: Sample, frame: list[FrameItem], *, include_task_only: bool, low_mic: bool = False,
+           dev: bool = False) -> Design:
     """A scoring design. The primary one: core units, plus task-only units for task
     metrics. With low_mic=True, the drawn-then-replaced low-mic units alone, reported
     separately (B.3). Low-mic transcripts are excluded from the primary analysis (B.3),
@@ -177,7 +186,9 @@ def design(sample: Sample, frame: list[FrameItem], *, include_task_only: bool, l
     for the primary one, and the two partition the frame. They are never mixed:
     Design.weight divides a cell's frame size by every unit of that cell in the design."""
     by_id = {i.id: i for i in frame}
-    if low_mic:
+    if dev:                                  # the tuning set: screened units, like the primary design
+        ids = [x for cell in sample.dev.values() for x in cell]
+    elif low_mic:
         ids = [x for cell in sample.low_mic.values() for x in cell]
     else:
         ids = [x for cell in sample.core.values() for x in cell]

@@ -178,6 +178,15 @@ docs/              this plan, per-area READMEs, history/ (archived docs)
 
 ## 7. The march
 
+> **Reordered 2026-10-05 (your decision).** Phase 8's build starts now, on what is
+> already known (lessons, prepare, the task contract, config, distribution), with the
+> knowledge graph as the minimal SQLite core (C.3). The extract prompt is tuned in a
+> capped loop on a 25-transcript tuning set (`python -m eval run --stage dev`, $65 cap).
+> Phases 2–4 shrink to a **task-first** comparison (my-task measures; faithfulness on a
+> claim sample) that runs last, as the acceptance test of the built pipeline, followed by
+> your Phase 7 approvals and the Phase 8 cutover gates. The table below is the original
+> order. See `eval/PREREGISTRATION.md` (2026-10-05 reorder row).
+
 **Legend**
 - **Configs:**
   - A: today's Haiku summaries

@@ -114,22 +114,26 @@ def _capped(items: Sequence, k: int, rng: random.Random) -> list:
 
 
 def _subject_items(decision: str, doc: dict, reference_items: Sequence[R.RefItem], cfg: dict, *,
-                   key: str) -> list[tuple[str, Optional[R.RefItem]]]:
-    """(subject, the reference item it shows or None) for one decision on one summary."""
+                   key: str, mine_only: bool = False) -> list[tuple[str, Optional[R.RefItem]]]:
+    """(subject, the reference item it shows or None) for one decision on one summary.
+    `mine_only` (the tuning loop, eval/dev.py): present judges only the reference
+    my-tasks, and task decisions every task in the summary's My Actions, uncapped."""
     k = cfg["eval"]["stages"]["pilot"]["judge_subjects"]
     rng = random.Random(f"{cfg['eval']['seed']}:{key}:{decision}")
     mine = R.my_tasks(reference_items)
     if decision == "present":
         mine_ids = {i.id for i in mine}
-        others = [i for i in reference_items if i.id not in mine_ids]
+        others = [] if mine_only else [i for i in reference_items if i.id not in mine_ids]
         return [(R.item_json(i, with_id=False), i) for i in [*mine, *_capped(others, k, rng)]]
     if decision == "my_actions":
         return [("\n".join(R.item_json(i, with_id=True) for i in mine) or render.NONE, None)]
-    if decision in CLAIM_DECISIONS:
+    if decision in CLAIM_DECISIONS and not mine_only:
         return [(c, None) for c in _capped(J.summary_claims(doc), k, rng)]
     if decision in TASK_DECISIONS:
+        if mine_only:
+            return [(line, None) for _, line in render.tasks(doc, mine=True)]
         return [(t, None) for t in _capped([line for _, line in render.tasks(doc)], k, rng)]
-    raise ValueError(f"unknown decision {decision!r}")
+    raise ValueError(f"unknown decision {decision!r}" + (" with mine_only" if mine_only else ""))
 
 
 def subjects(decision: str, doc: dict, reference_items: Sequence[R.RefItem], cfg: dict, *,
@@ -175,6 +179,8 @@ class _Pilot:
         self.ask = self.logged(cfg, ask)        # the injected ask, every launched call logged
         self.result = Result()
         self.variants = stages.system_variants(cfg)
+        self.decisions: tuple[str, ...] = tuple(J.DECISIONS)    # judged per summary
+        self.mine_only = False                                  # see _subject_items
         self.step: Optional[str] = None
         self.variant: Optional[str] = None
         self.docs: dict[tuple[str, str], dict] = {}     # (unit, variant) -> extract document
@@ -314,8 +320,9 @@ class _Pilot:
                                 {"step": JUDGE, "unit": unit, "variant": variant, "decision": decision,
                                  "subject": subject, **({"item_id": item.id, "mine": item.mine} if item else {})},
                                 variant=variant)
-                    for decision in J.DECISIONS
-                    for subject, item in _subject_items(decision, doc, ref.accepted, self.cfg, key=unit)])
+                    for decision in self.decisions
+                    for subject, item in _subject_items(decision, doc, ref.accepted, self.cfg, key=unit,
+                                                        mine_only=self.mine_only)])
         self.variant = None
 
     def calibrate(self, unit: str, prep: Prepared) -> None:
@@ -604,7 +611,10 @@ def probe(cfg: dict, make_ask_fn: Callable[[dict], Ask]) -> dict:
 
 # --- the scored run -----------------------------------------------------------------
 
-def execute(cfg: dict, eval_run: L.Run, run_dir: Path, jobs: list[stages.Job], cache: Path, cap: float) -> None:
+def execute(cfg: dict, eval_run: L.Run, run_dir: Path, jobs: list[stages.Job], cache: Path, cap: float, *,
+            runner: Optional[Callable[[dict, Ask, Path], "_Pilot"]] = None, probing: bool = True,
+            extend: Optional[Callable[[dict, Result], dict]] = None,
+            markdown: Optional[Callable[[dict], str]] = None) -> None:
     """Every pilot step, then the --setting-sources probe, then the report, for
     `python -m eval run --stage pilot` inside `eval_run`. The steps' calls are cached
     and capped at `cap` each; the probe runs last, uncached (see `probe`), at
@@ -614,7 +624,11 @@ def execute(cfg: dict, eval_run: L.Run, run_dir: Path, jobs: list[stages.Job], c
     The report is written whatever happens: after an exception it is built from the
     records and call log on disk and says so, and the exception still propagates, so
     the run is marked failed. A budget stop, in the steps or the probe, raises after
-    the report so the run needs resolving: the harness stops and asks (B.9)."""
+    the report so the run needs resolving: the harness stops and asks (B.9).
+
+    Another stage reuses it (eval/dev.py): `runner` builds its _Pilot, `probing` False
+    skips the probe, `extend(report, result)` adds the stage's own measurements, and
+    `markdown` renders the report."""
     check, ledger, before = L.guard(cfg, eval_run.stage), L.ledger_path(cfg), len(L.rows(cfg))
     out = run_dir / RECORDS_FILE
     units = list({j.unit_id: j.prepared for j in jobs}.items())  # plan's preparation, one per unit
@@ -623,25 +637,29 @@ def execute(cfg: dict, eval_run: L.Run, run_dir: Path, jobs: list[stages.Job], c
     def ask_for(c: dict, cache_dir: Optional[Path], max_budget_usd: float) -> Ask:
         return make_ask(c, ledger=ledger, cache_dir=cache_dir, before_call=check, max_budget_usd=max_budget_usd)
     try:
-        pilot = _Pilot(cfg, ask_for(cfg, cache, cap), out)
+        pilot = (runner or _Pilot)(cfg, ask_for(cfg, cache, cap), out)
         result = pilot.run(units)
-        probe_cap = cfg["eval"]["stages"]["pilot"]["probe_max_budget_usd"]
-        probed = pilot.probe(lambda c: ask_for(c, None, probe_cap))
+        if probing:
+            probe_cap = cfg["eval"]["stages"]["pilot"]["probe_max_budget_usd"]
+            probed = pilot.probe(lambda c: ask_for(c, None, probe_cap))
     except BaseException as exc:
         error = f"{type(exc).__name__}: {exc}"
         raise
     finally:
         try:
-            rows = L.rows(cfg)
+            rows, final = L.rows(cfg), result or load(out)
             rep = {"run_id": eval_run.run_id, "probe": probed,
-                   **report(result or load(out), rows, cfg, new_rows=rows[before:], error=error)}
+                   **report(final, rows, cfg, new_rows=rows[before:], error=error)}
+            if extend:
+                rep.update(extend(rep, final))
             atomic_write_text(run_dir / REPORT_JSON, json.dumps(rep, ensure_ascii=False, indent=1))
-            atomic_write_text(run_dir / REPORT_MD, report_markdown(rep))
+            atomic_write_text(run_dir / REPORT_MD, (markdown or report_markdown)(rep))
         except Exception as exc:
             print(f"WARNING: could not write the pilot report: {type(exc).__name__}: {exc}")
             if error is None:
                 raise
-    stops = ([rep["budget_stop"]] if result.stopped else []) + [p["error"] for p in probed.values() if p.get("budget_stop")]
+    stops = ([rep["budget_stop"]] if result.stopped else []) + [p["error"] for p in (probed or {}).values()
+                                                                 if p.get("budget_stop")]
     if stops:
         print(f"BUDGET STOP: {'; '.join(stops)}; report in {run_dir}")
         raise L.BudgetStop("; ".join(stops))

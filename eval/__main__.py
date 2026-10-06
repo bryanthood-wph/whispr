@@ -4,7 +4,8 @@
                                or spend has reached the stop limit
   sample [--write]             freeze the frame, derive low-mic, draw the sample
   run --stage S [--dry-run]    run a stage; --dry-run plans it with zero model calls
-                               (pilot: probe, every step, then report.json/.md in results/<run>/)
+                               (pilot: probe, every step, then report.json/.md in results/<run>/;
+                               dev: one prompt revision on the tuning set, my-task measures)
   resolve RUN_ID --note TEXT   acknowledge a failed run
 
 Scored runs start only from a one-shot scheduled task (B.9), never a Claude session.
@@ -20,7 +21,7 @@ from pathlib import Path
 
 from eval import frame as F
 from eval import ledger as L
-from eval import pilot, preflight, stages
+from eval import dev, pilot, preflight, stages
 from pipeline import calls
 from pipeline.config import load_config
 from whispr.fileio import atomic_write_text
@@ -41,7 +42,8 @@ def _print_sample(items, sample, state) -> None:
     print(f"pilot: {sample.pilot}")
     for cell, core in sample.core.items():
         print(f"  {cell:15} core {len(core):3}  task-only {len(sample.task_only[cell]):3}  "
-              f"low-mic replaced {len(sample.low_mic[cell])}  unscreened replaced {len(sample.unscreened[cell])}")
+              f"low-mic replaced {len(sample.low_mic[cell])}  unscreened replaced {len(sample.unscreened[cell])}  "
+              f"tuning {len(sample.dev.get(cell, []))}")
     if sample.shortfall:
         print(f"SHORTFALL (cell -> missing units): {sample.shortfall}")
 
@@ -88,7 +90,7 @@ def cmd_run(cfg: dict, args) -> int:
     total, by_stage = L.tally(cfg)
     print(f"stage {args.stage}: {len(jobs)} jobs, {len(calls_needed)} to call "
           f"({len(cached)} cached, stubs never call)")
-    if args.stage == "pilot":
+    if args.stage in ("pilot", dev.STAGE):
         print(f"  {pilot.DRY_RUN_NOTE}")
     worst, stage_cap = cap * len(calls_needed), cfg["eval"]["stages"][args.stage]["cap_usd"]
     print(f"worst-case spend ${worst:.2f} (stage cap ${stage_cap:.2f}, ${by_stage.get(args.stage, 0.0):.2f} used;"
@@ -112,7 +114,11 @@ def cmd_run(cfg: dict, args) -> int:
     with L.Run(cfg, args.stage, preflight.provenance(cfg)) as run:
         run_dir = L.eval_dir(cfg) / "results" / run.run_id
         run_dir.mkdir(parents=True)
-        pilot.execute(cfg, run, run_dir, jobs, cache, cap)   # stages.plan refuses every other stage
+        if args.stage == dev.STAGE:
+            dev.execute(cfg, run, run_dir, jobs, cache, cap,
+                        design=F.design(sample, items, include_task_only=False, dev=True))
+        else:
+            pilot.execute(cfg, run, run_dir, jobs, cache, cap)   # stages.plan refuses every other stage
     return 0
 
 
