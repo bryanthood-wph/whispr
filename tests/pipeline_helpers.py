@@ -35,14 +35,14 @@ EXTRACT_SAMPLE = {
 
 
 def budget_answer(store, amount: float = 1, reason: str = "a short memo") -> dict:
-    """A budget brief answer under tasks.intake.budget's key names, `amount` above its floor."""
+    """A budget brief answer under tasks.intake.budget's key names, `amount` above its minimum."""
     budget = store.intake["budget"]
-    return {budget["amount_key"]: budget["amount_above_usd"] + amount, budget["reason_key"]: reason}
+    return {budget["amount_key"]: budget["amount_min_usd"] + amount, budget["reason_key"]: reason}
 
 
 def answer_brief(store, task_id: str, actor: str, **kw) -> dict:
     """Answer every required brief field of a task (kg.store.Store), so it can pass the
-    ready gate: each text field a placeholder, the budget one unit above its floor, the
+    ready gate: each text field a placeholder, the budget one unit above its minimum, the
     scope tasks.intake.scope_none for every source type. `kw` goes to update_task too (a
     status, a reason)."""
     intake = store.intake

@@ -30,8 +30,9 @@ text search behind `search`, can move to Postgres in one place. The rules it enf
 - **The brief and the ready gate** (docs/plan/task-intake-and-worker.md §3, §4). A brief
   answer is a task_note row of kind `brief` (migration 0007): the field, the answer, who
   gave it (stated or confirmed) and when; the newest row per field is the answer and the
-  rest its history. A move to tasks.intake.ready_status is refused (`BriefOpenError`)
-  while a required field has no answer, whoever asks. A project's default scope is its
+  rest its history. A move to kg.tasks.tools_status (ready) is refused (`BriefOpenError`)
+  while a required field has no answer, whoever asks; a task is only ever inserted at the
+  funnel's first stage, so no task reaches ready any other way. A project's default scope is its
   `entity_scope` rows, read and replaced across the entity's merges; a review can link
   a task to its project (a task_entity row, only ever added).
 - **Idempotent writes.** Ids are derived from content, so writing the same episode
@@ -211,9 +212,6 @@ class Store:
         outside = set(self.task_cfg["confirm_owner_basis"]) - set(self.task_cfg["mine_owner_basis"])
         if outside:
             raise StoreError(f"kg.tasks.confirm_owner_basis: {sorted(outside)} not in kg.tasks.mine_owner_basis")
-        if self.intake["ready_status"] not in statuses:
-            raise StoreError(f"tasks.intake.ready_status {self.intake['ready_status']!r} is not a task status "
-                             f"{sorted(statuses)}")
         if self.intake["scope_entity_type"] not in self.entity_types:
             raise StoreError(f"tasks.intake.scope_entity_type {self.intake['scope_entity_type']!r} is not an entity "
                              f"type in {self.cfg['ontology']} {sorted(self.entity_types)}")
@@ -487,10 +485,16 @@ class Store:
 
     def add_task(self, task: dict, *, entity_ids: Iterable[str] = (), now: Optional[datetime] = None) -> str:
         """Insert a task from the D.5 contract, linked to entities. A known id is left
-        as it is (its lifecycle lives here); new entity links are still added."""
+        as it is (its lifecycle lives here); new entity links are still added. It must
+        come in at the funnel's first stage (captured): every later status is reached
+        through update_task, so its checks, the ready gate first, can't be skipped."""
         errors = validate(task, self.task_schema)
         if errors:
             raise StoreError("task does not match config/schema/task.json:\n  " + "\n  ".join(errors))
+        first = self.funnel_stages()[0]
+        if task["status"] != first:
+            raise StoreError(f"a task is inserted as {first!r}, not {task['status']!r}: later statuses go "
+                             "through update_task")
         episode_id = task["source"]["episode"]
         if task["id"] not in (task_id(episode_id, task["quote"]), task_id(episode_id, task["quote"], task["action"])):
             raise StoreError(f"task id {task['id']!r} is neither sha1(episode + quote) nor, for a shared quote, "
@@ -558,7 +562,7 @@ class Store:
           `brief_source` (tasks.intake.answer_sources), which they require.
         - `project`: link the task to this tasks.intake.scope_entity_type entity (its
           merge survivor), a task_entity row added if missing; never removes a link.
-        - The ready gate: a move to tasks.intake.ready_status raises BriefOpenError while
+        - The ready gate: a move to kg.tasks.tools_status raises BriefOpenError while
           a required field (tasks.intake.required_fields) has no answer, this call's
           answers counted.
         The read, the checks and the writes share one write transaction (BEGIN IMMEDIATE
@@ -608,7 +612,7 @@ class Store:
 
     def _budget(self, value: object) -> dict:
         """A budget answer checked: exactly tasks.intake.budget's amount key (a number of
-        USD above amount_above_usd) and reason key (non-empty text)."""
+        USD, at least amount_min_usd) and reason key (non-empty text)."""
         cfg = self.intake["budget"]
         amount_key, reason_key = cfg["amount_key"], cfg["reason_key"]
         if not isinstance(value, dict) or set(value) != {amount_key, reason_key}:
@@ -616,9 +620,9 @@ class Store:
                              f"{reason_key!r}")
         amount, reason = value[amount_key], value[reason_key]
         if (isinstance(amount, bool) or not isinstance(amount, (int, float)) or not math.isfinite(amount)
-                or amount <= cfg["amount_above_usd"]):
-            raise StoreError(f"brief.{self.budget_field}.{amount_key} must be a number of USD above "
-                             f"{cfg['amount_above_usd']}, not {amount!r}")
+                or amount < cfg["amount_min_usd"]):
+            raise StoreError(f"brief.{self.budget_field}.{amount_key} must be a number of USD, at least "
+                             f"{cfg['amount_min_usd']}, not {amount!r}")
         if not isinstance(reason, str) or not reason.strip():
             raise StoreError(f"brief.{self.budget_field}.{reason_key} must be a non-empty string: why that figure")
         return {amount_key: amount, reason_key: reason.strip()}
@@ -690,7 +694,7 @@ class Store:
         current = row["status"]
         if status is not None and status not in self.allowed_transitions(current):
             raise TransitionError(task_id_, current, status, self.allowed_transitions(current))
-        if status == self.intake["ready_status"]:
+        if status == self.task_cfg["tools_status"]:
             still_open = self.open_fields(task_id_, answering=[f for f, _ in answers])
             if still_open:
                 raise BriefOpenError(task_id_, status, still_open)
@@ -817,11 +821,17 @@ class Store:
 
     def entity_scope(self, entity_id: str) -> dict:
         """A project's default scope: its rows and those of every entity merged into it,
-        by source type then value, and the source types with no row yet (`open_types`)."""
+        by source type then value, and the source types with no row yet (`open_types`).
+        Where the union holds tasks.intake.scope_none beside a real value of the same type
+        (two merged projects disagreeing), the real values win, so the answer is always a
+        scope `_scope_items` accepts."""
         ent = self._scope_entity(entity_id)
         scope = fetch_all(self.conn, _MERGE_GROUP + " SELECT DISTINCT source_type AS type, value FROM entity_scope"
                                                     " WHERE entity_id IN (SELECT id FROM grp)"
                                                     " ORDER BY source_type, value", (ent["id"],))
+        none = self.intake["scope_none"]
+        real = {s["type"] for s in scope if s["value"] != none}
+        scope = [s for s in scope if s["value"] != none or s["type"] not in real]
         have = {s["type"] for s in scope}
         return {"entity_id": ent["id"], "name": ent["canonical_name"], "scope": scope,
                 "open_types": [t for t in self.intake["scope_types"] if t not in have]}
@@ -904,7 +914,7 @@ class Store:
         """Funnel stage -> tasks that ever reached it (D.5: captured -> confirmed ->
         ready -> done), over tasks created at or after `since` and before `until` (ISO
         times) and with one of `owner_basis`, each if given. Every stored task was captured, whatever status it
-        was inserted with (one inserted `dropped` counts as captured and no further)."""
+        was inserted with."""
         stages = fetch_all(self.conn, "SELECT status, funnel_rank FROM task_status WHERE funnel_rank IS NOT NULL"
                                       " ORDER BY funnel_rank")
         where, params = self._task_scope(since, until, owner_basis)

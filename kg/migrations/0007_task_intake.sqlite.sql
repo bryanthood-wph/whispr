@@ -1,9 +1,11 @@
 -- The task intake (docs/plan/task-intake-and-worker.md §3, §4): a task's brief and a
--- project's default scope. Rows, never files (lesson L19). Shared SQL.
+-- project's default scope. Rows, never files (lesson L19). SQLite: its CHECK can't be
+-- altered in place, so task_note is rebuilt (rowid keeps the old order); the Postgres
+-- twin, 0007_task_intake.postgres.sql, alters the constraint instead. Keep the two alike.
 
 -- A brief answer is a task_note row of kind 'brief': `field` names the brief field
 -- (tasks.intake.fields), `text` holds the answer (the scope field's as a JSON list of
--- {type, value}), `source` says who gave it (tasks.intake.answer_sources: stated or
+-- {type, value}, the budget field's as a JSON object), `source` says who gave it (tasks.intake.answer_sources: stated or
 -- confirmed). The newest row per field is the answer; older ones are its history. The
 -- kind CHECK of 0006 can't be altered in place, so the table is rebuilt with every
 -- existing row copied unchanged, in its old order (field and source stay NULL for them).

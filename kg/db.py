@@ -24,9 +24,9 @@
 - Readers that must never write (the MCP server) use `connect_readonly`: a `mode=ro`
   URI plus query_only, no migration, and a schema that must match this code exactly.
 - A writer allowed to change only a few tables (the task server, kg/mcp_tasks.py) uses
-  `connect_limited`: the same checks, no migration, and an SQLite authorizer that
-  refuses any write to another table (or anything but an INSERT to an insert-only one)
-  and any schema change, ATTACH or PRAGMA.
+  `connect_limited`: the same checks, no migration, and an SQLite authorizer that allows
+  only the row operations granted per table and refuses any other write, schema change,
+  ATTACH or PRAGMA.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
+from typing import Iterable, Iterator, Mapping, Optional
 
 from pipeline.config import data_dir
 
@@ -258,27 +258,29 @@ def connect_readonly(cfg: dict, *, directory: Path = MIGRATIONS_DIR) -> sqlite3.
 # and run transactions and savepoints (kg.db.transaction). Everything else is refused.
 _LIMITED_ALLOWED = {sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION,
                     sqlite3.SQLITE_TRANSACTION, sqlite3.SQLITE_SAVEPOINT, sqlite3.SQLITE_RECURSIVE}
-_LIMITED_WRITES = {sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE}
+# The row operations a limited writer can be granted on a table.
+WRITE_OPS = {"insert": sqlite3.SQLITE_INSERT, "update": sqlite3.SQLITE_UPDATE, "delete": sqlite3.SQLITE_DELETE}
 
 
-def connect_limited(cfg: dict, tables: Iterable[str], *, insert_only: Iterable[str] = (),
+def connect_limited(cfg: dict, grants: Mapping[str, Iterable[str]], *,
                     directory: Path = MIGRATIONS_DIR) -> sqlite3.Connection:
-    """The database opened writable for `tables` only (least privilege, D.3), and for
-    INSERTs only into `insert_only`: an authorizer refuses any other INSERT, UPDATE or
-    DELETE, and any schema change, ATTACH, PRAGMA or extension load, with "not
-    authorized". Foreign keys are enforced. Like connect_readonly it never creates or
-    migrates the database, and its schema must match this code exactly. The caller
-    closes it."""
-    writable, appendable = frozenset(tables), frozenset(insert_only)
+    """The database opened writable only as `grants` says (least privilege, D.3): table
+    -> the row operations (WRITE_OPS names) allowed on it. An authorizer refuses every
+    other INSERT, UPDATE or DELETE, and any schema change, ATTACH, PRAGMA or extension
+    load, with "not authorized". Foreign keys are enforced. Like connect_readonly it
+    never creates or migrates the database, and its schema must match this code exactly.
+    The caller closes it."""
+    unknown = sorted({op for ops in grants.values() for op in ops} - set(WRITE_OPS))
+    if unknown:
+        raise ValueError(f"unknown write operation(s) {unknown}; known: {sorted(WRITE_OPS)}")
+    allowed = frozenset((WRITE_OPS[op], table) for table, ops in grants.items() for op in ops)
     conn = _open_existing(cfg, directory, mode="rw")
     try:
         conn.execute("PRAGMA foreign_keys = ON")
 
         def authorize(action: int, arg1: Optional[str], _arg2: Optional[str], _db: Optional[str],
                       _trigger: Optional[str]) -> int:
-            if action in _LIMITED_ALLOWED or (action in _LIMITED_WRITES and arg1 in writable):
-                return sqlite3.SQLITE_OK
-            if action == sqlite3.SQLITE_INSERT and arg1 in appendable:
+            if action in _LIMITED_ALLOWED or (action, arg1) in allowed:
                 return sqlite3.SQLITE_OK
             return sqlite3.SQLITE_DENY
 

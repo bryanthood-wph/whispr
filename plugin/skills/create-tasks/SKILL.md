@@ -4,7 +4,7 @@ description: Review the tasks whispr captured from your meetings, one at a time,
 # D.3 role "/create-tasks review": MCP read + task_update_status (and project_scope_set
 # for a project's default scope) only. Both naming forms: registered by hand
 # (claude mcp add) and from the packaged plugin "whispr". AskUserQuestion asks the
-# intake's rounds; Read is only for a good\<work-type>\rubric.md (section 4).
+# intake's rounds. No file tools.
 allowed-tools:
   - mcp__whispr-tasks__task_list
   - mcp__whispr-tasks__task_get
@@ -23,7 +23,6 @@ allowed-tools:
   - mcp__plugin_whispr_whispr-kg__get
   - mcp__plugin_whispr_whispr-kg__source
   - AskUserQuestion
-  - Read
 ---
 
 # /create-tasks: review captured tasks
@@ -31,9 +30,8 @@ allowed-tools:
 You run a review with the user over the task server (`whispr-tasks`). A task's state
 lives only in the database (lesson L19): **every change goes through
 `task_update_status`** (and a project's default scope through `project_scope_set`).
-Never write, edit or create a note, file or vault page, and use no tool outside
-`allowed-tools`. `Read` is for one kind of file only: a work type's
-`%LOCALAPPDATA%\whispr\good\<work-type>\rubric.md` (section 4).
+Never read, write, edit or create a note, file or vault page, and use no tool outside
+`allowed-tools`.
 
 ## 1. Build the queue
 
@@ -125,15 +123,15 @@ the way `/clarify` runs:
 - **Deliverable and format**, and from it the **work type** (one short name, e.g.
   `status-memo`), recorded as `work_type`.
 - **Audience.**
-- **What good looks like.** If `%LOCALAPPDATA%\whispr\good\<work-type>\rubric.md`
-  exists, `Read` it and propose what it says, for the user to confirm or change. Say that
-  the folder is read-only here: this skill never writes it. With no rubric, say this work
-  type has none yet, and ask from scratch.
+- **What good looks like.** Ask it every time: the library of past answers per work
+  type doesn't exist yet. Propose what the deliverable, audience and call suggest, for the
+  user to confirm or change.
 - **Due date and constraints.** Propose the task's `due` when one was stated.
 - **Budget.** Propose a figure with its reason, for the user to approve or change. There
   is no run history yet, so there is no seed figure for any work type: say so, and base
   the figure on the task's scope and size, saying how. Record it as the budget object the
-  `task_update_status` schema describes: the amount in USD (above the minimum the schema states) and the reason.
+  `task_update_status` schema describes: the amount in USD (at least the minimum the
+  schema states) and the reason.
 
 **Round 3: residual clarify, then the gate.**
 1. Scan the brief the way `/clarify` does: the purpose behind the deliverable, forks

@@ -284,11 +284,10 @@ tasks:
       due: When is it due, and under what constraints?
       scope: Which sources may the work search (Teams channels and chats, email, folders, repos)?
       budget: What may a run spend (USD), and why that figure?
-    # A move to ready_status is refused while any of these has no answer: the ready gate,
-    # enforced by the store under every caller, the task server included.
+    # A move to kg.tasks.tools_status (ready) is refused while any of these has no answer:
+    # the ready gate, enforced by the store under every caller, the task server included.
     # work_type keys the good\<work-type>\ library and the per-work-type budget seeds (§3, §7 P3).
     required_fields: [deliverable, work_type, audience, good, due, scope, budget]
-    ready_status: ready
     # Who gave an answer: the user said it (stated), or confirmed one Claude proposed.
     answer_sources: [stated, confirmed]
     # The field that holds the task's scope: a list of {type, value}, type one of scope_types.
@@ -307,14 +306,15 @@ tasks:
     # project_scope_get / project_scope_set) and that task_update_status `project` links a
     # task to. One of config/ontology.yaml's entity types.
     scope_entity_type: project
-    # The field that holds the task's budget: an object of an amount in USD, more than
-    # budget.amount_above_usd, and the reason for that figure (non-empty text), under
-    # these key names. Stored as JSON, like the scope.
+    # The field that holds the task's budget: an object of an amount in USD, at least
+    # budget.amount_min_usd (inclusive, the same bound in the tool schema and the store),
+    # and the reason for that figure (non-empty text), under these key names. Stored as
+    # JSON, like the scope.
     budget_field: budget
     budget:
       amount_key: amount_usd
       reason_key: reason
-      amount_above_usd: 0
+      amount_min_usd: 0.01      # one cent: a budget is a positive amount
 
 alerts:
   # D.1: an item quarantined this many days ago leaves the open alerts for a digest,

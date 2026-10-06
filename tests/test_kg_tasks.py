@@ -21,7 +21,7 @@ import yaml
 
 from kg import db, tasks
 from kg.mcp_server import Server
-from kg.mcp_tasks import ACTOR, TASK_LINK_TABLES, TASK_REVIEW_TABLES, TaskServer
+from kg.mcp_tasks import ACTOR, TASK_WRITE_GRANTS, TaskServer
 from kg.store import BriefOpenError, Store, StoreError, TransitionError, task_id
 from pipeline.config import ConfigError, check_intake, load_config, required_fields
 from pipeline_helpers import answer_brief, budget_answer, overlay
@@ -216,10 +216,16 @@ class TestReviewList(TaskCase):
 
 
 class TestFunnel(TaskCase):
-    def test_a_task_inserted_dropped_is_counted_as_captured(self):
-        self.add(status="dropped")
+    def test_a_task_is_inserted_only_at_the_first_stage(self):
+        """Every later status, ready first, goes through update_task and its gate."""
+        first = self.store.funnel_stages()[0]
+        for status in sorted(set(self.store.task_schema["properties"]["status"]["enum"]) - {first}):
+            with self.subTest(status=status), self.assertRaises(StoreError) as ctx:
+                self.add(status=status)
+            self.assertIn(status, str(ctx.exception))
+        self.assertEqual(self.store.tasks(), [])
+        self.add()
         self.assertEqual(self.store.funnel(), {"captured": 1, "confirmed": 0, "ready": 0, "done": 0})
-        self.assertEqual(self.store.task_status_counts()["dropped"], 1)
 
     def test_report_window_and_conversion(self):
         now = T0 + timedelta(days=3)
@@ -309,7 +315,7 @@ class TestTaskServer(TaskCase):
         self.mine = self.add()
         self.reader_conn = db.connect_readonly(self.cfg)
         self.addCleanup(self.reader_conn.close)
-        self.writer_conn = db.connect_limited(self.cfg, TASK_REVIEW_TABLES, insert_only=TASK_LINK_TABLES)
+        self.writer_conn = db.connect_limited(self.cfg, TASK_WRITE_GRANTS)
         self.addCleanup(self.writer_conn.close)
         self.server = TaskServer(self.reader_conn, self.writer_conn, self.cfg)
 
@@ -422,7 +428,7 @@ class IntakeCase(TaskCase):
         self.intake = self.cfg["tasks"]["intake"]
         self.tid = self.add()
         self.store.update_task(self.tid, actor=WHO, status="confirmed", reason="mine")
-        self.ready = self.intake["ready_status"]
+        self.ready = self.cfg["kg"]["tasks"]["tools_status"]
         self.stated, self.confirmed = self.intake["answer_sources"][:2]
         self.none = self.intake["scope_none"]
         self.types = list(self.intake["scope_types"])
@@ -514,9 +520,16 @@ class TestBudgetAndWorkType(IntakeCase):
         self.assertEqual(json.loads(text), want)
         self.assertNotIn(self.budget, record["open_fields"])
 
+    def test_the_minimum_is_inclusive(self):
+        amount, reason, floor = (self.intake["budget"][k] for k in ("amount_key", "reason_key", "amount_min_usd"))
+        record = self.store.update_task(self.tid, actor=WHO, brief={self.budget: {amount: floor, reason: "x"}},
+                                        brief_source=self.stated)
+        self.assertEqual(record["brief"][self.budget]["value"][amount], floor)
+
     def test_bad_budgets_are_refused_naming_the_key(self):
-        amount, reason, floor = (self.intake["budget"][k] for k in ("amount_key", "reason_key", "amount_above_usd"))
-        bad = [({amount: floor, reason: "x"}, amount), ({amount: floor - 1, reason: "x"}, amount),
+        amount, reason, floor = (self.intake["budget"][k] for k in ("amount_key", "reason_key", "amount_min_usd"))
+        bad = [({amount: 0, reason: "x"}, amount), ({amount: floor / 2, reason: "x"}, amount),
+               ({amount: -floor, reason: "x"}, amount),
                ({amount: "5", reason: "x"}, amount), ({amount: True, reason: "x"}, amount),
                ({amount: float("inf"), reason: "x"}, amount), ({amount: floor + 1, reason: " "}, reason),
                ({amount: floor + 1}, reason), ({amount: floor + 1, reason: "x", "extra": 1}, amount),
@@ -626,6 +639,16 @@ class TestScope(IntakeCase):
         self.assertEqual([tuple(r) for r in self.conn.execute("SELECT entity_id, value FROM entity_scope")],
                          [(keep, "C:/new")])
 
+    def test_a_merge_union_never_holds_none_beside_a_value(self):
+        keep, drop = self.project("Apollo"), self.project("Apollo Program")
+        first, second = self.types[:2]
+        self.store.set_entity_scope(keep, [{"type": first, "value": self.none}, {"type": second, "value": self.none}])
+        self.store.set_entity_scope(drop, [{"type": first, "value": "C:/old"}])
+        self.conn.execute("UPDATE entity SET merged_into = ? WHERE id = ?", (keep, drop))
+        scope = self.store.entity_scope(keep)["scope"]
+        self.assertEqual(scope, [{"type": first, "value": "C:/old"}, {"type": second, "value": self.none}])
+        self.store.set_entity_scope(keep, scope)             # what the server returns, it accepts
+
 
 class TestIntakeConfig(unittest.TestCase):
     def setUp(self):
@@ -663,17 +686,16 @@ class TestIntakeConfig(unittest.TestCase):
                 check_intake(cfg)
             self.assertIn(key, str(ctx.exception))
 
-    def test_store_checks_the_status_and_entity_type(self):
+    def test_store_checks_the_entity_type(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = load_config(overlay=overlay(Path(tmp)))
             conn = db.connect(cfg)
             try:
-                for key, value in (("ready_status", "launched"), ("scope_entity_type", "planet")):
-                    bad = copy.deepcopy(cfg)
-                    bad["tasks"]["intake"][key] = value
-                    with self.subTest(key=key), self.assertRaises(StoreError) as ctx:
-                        Store(conn, bad)
-                    self.assertIn(value, str(ctx.exception))
+                bad = copy.deepcopy(cfg)
+                bad["tasks"]["intake"]["scope_entity_type"] = "planet"
+                with self.assertRaises(StoreError) as ctx:
+                    Store(conn, bad)
+                self.assertIn("planet", str(ctx.exception))
             finally:
                 conn.close()
 
@@ -737,7 +759,7 @@ class TestIntakeServer(IntakeCase):
         self.pid = self.project()
         self.reader_conn = db.connect_readonly(self.cfg)
         self.addCleanup(self.reader_conn.close)
-        self.writer_conn = db.connect_limited(self.cfg, TASK_REVIEW_TABLES, insert_only=TASK_LINK_TABLES)
+        self.writer_conn = db.connect_limited(self.cfg, TASK_WRITE_GRANTS)
         self.addCleanup(self.writer_conn.close)
         self.server = TaskServer(self.reader_conn, self.writer_conn, self.cfg)
 
@@ -770,8 +792,11 @@ class TestIntakeServer(IntakeCase):
         bad, payload = self.call("task_update_status", {"id": self.tid, "project": other})
         self.assertTrue(bad)
         self.assertIn(self.intake["scope_entity_type"], payload["error"])
-        # The writer may add a link but never change or remove one, its own task's included.
-        for sql in ("DELETE FROM task_entity", "UPDATE task_entity SET entity_id = entity_id"):
+        # The writer may add a link but never change or remove one, its own task's included;
+        # nor rewrite history rows, nor update a scope row (a scope is replaced by delete + insert).
+        for sql in ("DELETE FROM task_entity", "UPDATE task_entity SET entity_id = entity_id",
+                    "UPDATE entity_scope SET value = value", "UPDATE task_note SET text = text",
+                    "DELETE FROM task_note", "UPDATE task_event SET note = note", "DELETE FROM task"):
             with self.subTest(sql=sql), self.assertRaises(sqlite3.DatabaseError) as ctx:
                 self.writer_conn.execute(sql)
             self.assertIn("not authorized", str(ctx.exception))
@@ -783,11 +808,16 @@ class TestIntakeServer(IntakeCase):
         self.assertFalse(bad, record)
         self.assertEqual(record["brief"][self.budget]["value"], budget_answer(self.store))
         amount = self.intake["budget"]["amount_key"]
-        for value in ("5", {amount: 0, self.intake["budget"]["reason_key"]: "x"}):
+        floor, reason = self.intake["budget"]["amount_min_usd"], self.intake["budget"]["reason_key"]
+        for value in ("5", {amount: 0, reason: "x"}, {amount: floor / 2, reason: "x"}):
             bad, payload = self.call("task_update_status", {"id": self.tid, "brief_source": self.stated,
                                                             "brief": {self.budget: value}})
             self.assertTrue(bad, value)
             self.assertIn(self.budget, json.dumps(payload))
+        # The schema and the store share one inclusive minimum: the floor itself passes both.
+        bad, record = self.call("task_update_status", {"id": self.tid, "brief_source": self.stated,
+                                                       "brief": {self.budget: {amount: floor, reason: "x"}}})
+        self.assertFalse(bad, record)
 
     def test_unknown_field_and_scope_type_are_errors_naming_them(self):
         for args, named in (({"brief": {"audiance": "x"}, "brief_source": self.stated}, "audiance"),
@@ -836,7 +866,7 @@ class TestTaskServerSubprocess(TaskCase):
 
         def other_tables() -> list[str]:
             return [line for line in self.conn.iterdump()
-                    if not (m := INSERT.match(line)) or m.group(1) not in TASK_REVIEW_TABLES]
+                    if not (m := INSERT.match(line)) or m.group(1) not in TASK_WRITE_GRANTS]
 
         before = other_tables()
         proc = subprocess.run([sys.executable, "-m", "kg.mcp_tasks", "--config", str(path)], cwd=REPO,
