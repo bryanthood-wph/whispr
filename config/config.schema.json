@@ -86,7 +86,7 @@
     },
     "models": {
       "type": "object", "additionalProperties": {"$ref": "#/$defs/role"},
-      "required": ["extractor", "reference_a", "reference_b", "matcher", "judge", "judge_escalate_1", "judge_escalate_2"]
+      "required": ["extractor", "reference_a", "reference_b", "matcher", "judge", "judge_escalate_1", "judge_escalate_2", "kg_resolve"]
     },
     "prompts": {
       "type": "object", "additionalProperties": false, "required": ["extract", "system_minimal", "reference", "matcher", "presence", "judge"],
@@ -126,14 +126,35 @@
       }
     },
     "kg": {
-      "type": "object", "additionalProperties": false, "required": ["database", "search_cards", "busy_timeout_ms", "er", "rederive_approval_usd"],
+      "type": "object", "additionalProperties": false, "required": ["database", "search_cards", "busy_timeout_ms", "traverse", "er", "models", "rederive_approval_usd"],
       "properties": {
         "database": {"$ref": "#/$defs/str"},
         "search_cards": {"type": "integer", "minimum": 1},
         "busy_timeout_ms": {"type": "integer", "minimum": 0},
+        "traverse": {
+          "type": "object", "additionalProperties": false, "required": ["max_hops", "default_hops", "max_results", "max_paths", "quote_chars", "time_limit_ms"],
+          "properties": {
+            "max_hops": {"type": "integer", "minimum": 1},
+            "default_hops": {"type": "integer", "minimum": 1},
+            "max_results": {"type": "integer", "minimum": 1},
+            "max_paths": {"type": "integer", "minimum": 1},
+            "quote_chars": {"type": "integer", "minimum": 1},
+            "time_limit_ms": {"type": "integer", "minimum": 1}
+          }
+        },
         "er": {
-          "type": "object", "additionalProperties": false, "required": ["max_edit_distance"],
-          "properties": {"max_edit_distance": {"type": "integer", "minimum": 0}}
+          "type": "object", "additionalProperties": false, "required": ["max_edit_distance", "block_chars", "context_items", "prompt", "schema"],
+          "properties": {
+            "max_edit_distance": {"type": "integer", "minimum": 0},
+            "block_chars": {"type": "integer", "minimum": 1},
+            "context_items": {"type": "integer", "minimum": 0},
+            "prompt": {"$ref": "#/$defs/str"},
+            "schema": {"$ref": "#/$defs/str"}
+          }
+        },
+        "models": {
+          "type": "object", "additionalProperties": false, "required": ["resolve"],
+          "properties": {"resolve": {"$ref": "#/$defs/str"}}
         },
         "rederive_approval_usd": {"$ref": "#/$defs/money"}
       }

@@ -19,6 +19,8 @@
 - Two processes opening a fresh database can both migrate it: each version is applied
   under the write lock, version row first, and a version the other process applied
   meanwhile is skipped.
+- Readers that must never write (the MCP server) use `connect_readonly`: a `mode=ro`
+  URI plus query_only, no migration, and a schema that must match this code exactly.
 """
 
 from __future__ import annotations
@@ -81,6 +83,22 @@ def migrations(directory: Path = MIGRATIONS_DIR, dialect: str = DIALECT) -> list
 def utc_now(now: Optional[datetime] = None) -> str:
     """ISO-8601 UTC text, microseconds included, so stored times sort as strings."""
     return (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+
+def utc_time(text: Optional[str]) -> Optional[str]:
+    """Any ISO-8601 time as utc_now writes it, so stored and asked-for times compare
+    correctly as text whatever offset they came with ("-04:00", "Z"). A bare date, or
+    a time with no offset, is taken as UTC. None stays None; anything else that is not
+    ISO-8601 raises ValueError."""
+    if text is None:
+        return None
+    try:
+        when = datetime.fromisoformat(text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"not an ISO-8601 time: {text!r}") from exc
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return utc_now(when)
 
 
 def stable_id(*parts: str) -> str:
@@ -182,6 +200,34 @@ def migrate(conn: sqlite3.Connection, directory: Path = MIGRATIONS_DIR) -> list[
             raise MigrationError(f"migration {m.name} failed: {exc}") from exc
         applied.append(m.version)
     return applied
+
+
+def connect_readonly(cfg: dict, *, directory: Path = MIGRATIONS_DIR) -> sqlite3.Connection:
+    """The database opened so it cannot be changed through this connection: a `mode=ro`
+    URI (SQLite refuses every write) plus `query_only`. For readers that must never
+    write, the MCP server first. It never migrates: a missing database, or one whose
+    schema is not exactly this code's migrations, is refused (run the pipeline, whose
+    `connect` migrates, first). The caller closes it."""
+    path = database_path(cfg).resolve()
+    if not path.is_file():
+        raise MigrationError(f"no database at {path}: run the pipeline once to create it")
+    conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, isolation_level=None)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout = {int(cfg['kg']['busy_timeout_ms'])}")
+        conn.execute("PRAGMA query_only = ON")
+        try:
+            have = applied_versions(conn)
+        except sqlite3.OperationalError as exc:
+            raise MigrationError(f"{path} has no schema_version table: not a whispr database ({exc})") from exc
+        want = {m.version for m in migrations(directory)}
+        if have != want:
+            raise MigrationError(f"{path} is at schema version(s) {sorted(have)}, this code expects {sorted(want)}: "
+                                 "run the pipeline (it migrates), or update whispr")
+    except BaseException:
+        conn.close()
+        raise
+    return conn
 
 
 def connect(cfg: dict, *, directory: Path = MIGRATIONS_DIR) -> sqlite3.Connection:

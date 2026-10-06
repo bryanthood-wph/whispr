@@ -72,6 +72,11 @@ models:
   # measurements hold whatever a later CLI defaults to.
   judge_escalate_1: {model: claude-sonnet-5-5, effort: high, thinking_tokens: null}
   judge_escalate_2: {model: claude-opus-5-5, effort: medium, thinking_tokens: null}
+  # D.3 maintenance decision: "same entity?" for an entity-resolution candidate that
+  # isn't certain (kg/resolve.py; named by kg.models.resolve). Accuracy first until the
+  # C.6 entity-resolution suite picks the cheapest model that passes; effort pinned to
+  # the model's documented default, as the escalations above.
+  kg_resolve:       {model: claude-sonnet-5-5, effort: high, thinking_tokens: null}
 
 prompts:
   extract: prompts/extract.md
@@ -138,8 +143,26 @@ kg:
   search_cards: 20
   # A writer waits this long (ms) for another process's write lock before "database is locked".
   busy_timeout_ms: 5000
+  # Multi-hop reads (kg/traverse.py: MCP neighbors, paths, timeline). Every answer is
+  # bounded by these, never by the size of the graph.
+  traverse:
+    max_hops: 3                 # neighbors and paths walk at most this many edges; a larger request is cut to it
+    default_hops: 1             # MCP neighbors when the caller names no hop count
+    max_results: 25             # neighbors and timeline return at most this many cards
+    max_paths: 3                # paths returns at most this many shortest paths
+    quote_chars: 240            # a card's quote is cut to this many characters (get and source give it whole)
+    time_limit_ms: 5000         # a neighbors or paths walk running longer is stopped with an error (MCP isError)
   er:
     max_edit_distance: 2        # C.5 entity resolution: names this many edits apart are merge candidates
+    block_chars: 2              # only entities sharing an email, or a name word starting with these many letters, are compared
+    context_items: 3            # facts and edges of each entity shown with a "same entity?" question
+    # The "same entity?" prompt and its output schema, relative to config/. Kept out of
+    # prompts: and schemas:, which list the eval's pre-registered files (eval/PREREGISTRATION.md).
+    prompt: prompts/resolve.md
+    schema: kg/resolve.json
+  # Roles in the models roster (D.3) for the graph's maintenance decisions.
+  models:
+    resolve: kg_resolve
   # C.5: a re-derivation (extractor or ontology change) estimated above this waits for
   # your approval before it spends (lesson L3).
   rederive_approval_usd: 5

@@ -12,8 +12,11 @@ text search behind `search`, can move to Postgres in one place. The rules it enf
 - **People.** A person is keyed by email (Outlook attendees). Every name an entity
   goes by is an alias row; a mention is matched against aliases. A first-name-only
   mention that matches no single person stays an unresolved alias and never becomes
-  an entity (lesson L12); so does any name that matches two people. A full name with
+  an entity (lesson L12); so does any name that matches two people. A first name is
+  matched only against the first word of full names, never a one-word alias. A full name with
   no email and no match becomes a person keyed by that name, for C.5 to merge later.
+  After a merge (kg/resolve.py) every lookup and write follows `merged_into` to the
+  survivor (`live_id`), so a later mention never lands on the merged-away entity.
 - **Types.** Entity, fact and relation types come from config/ontology.yaml, and an
   edge's endpoints must have the types its relation allows.
 - **Tasks.** A task is inserted from the D.5 contract, validated against
@@ -22,7 +25,8 @@ text search behind `search`, can move to Postgres in one place. The rules it enf
   their statuses must equal the schema's enum. Re-inserting a known task is a no-op,
   so re-writing an episode never resets a task's lifecycle (lesson L19).
 - **Idempotent writes.** Ids are derived from content, so writing the same episode
-  twice adds nothing.
+  twice adds nothing, after a merge too: an edge is matched by episode, relation,
+  quote and live endpoints, since a merge repoints an edge but keeps its id.
 """
 
 from __future__ import annotations
@@ -34,7 +38,7 @@ import sqlite3
 from datetime import datetime
 from typing import Iterable, Optional
 
-from kg.db import fetch_all, fetch_one, new_id, stable_id, transaction, utc_now
+from kg.db import fetch_all, fetch_one, new_id, stable_id, transaction, utc_now, utc_time
 from pipeline.config import config_file, load_schema, read_yaml
 from pipeline.jsonschema_lite import validate
 
@@ -49,14 +53,31 @@ NAME_KEY_PREFIX = "name:"
 
 _RELATION_NOTE = re.compile(r"\(.*\)")
 _WORD = re.compile(r"\w+")
-# Searchable rows by kind (kg/migrations/0002_search.sqlite.sql).
-_ENTITY_KINDS = ("entity", "alias")
+# Searchable rows by kind (kg/migrations/0002_search.sqlite.sql; an alias row's ref_id is
+# the alias id since 0003_alias_fts_by_id.sqlite.sql).
+_ENTITY_KIND = "entity"
+_ALIAS_KIND = "alias"
 _FACT_KIND = "fact"
 # Tables `_supersede` may touch: a fixed map, never caller text, so it is safe in SQL.
 _SUPERSEDABLE = {"fact": "fact", "edge": "edge"}
 
-_ACTIVE_FACT = "f.superseded_by IS NULL AND ep.deleted_at IS NULL"
-_ACTIVE_EDGE = "g.superseded_by IS NULL AND ep.deleted_at IS NULL"
+ACTIVE_FACT = "f.superseded_by IS NULL AND ep.deleted_at IS NULL"
+ACTIVE_EDGE = "g.superseded_by IS NULL AND ep.deleted_at IS NULL"
+
+# The one shape a fact and an edge are read in (get here, the traversals in
+# kg/traverse.py), joined to the episode as `ep` (and an edge's endpoints as `s`, `d`)
+# so the filters above apply. `at` is when the row became valid, else its meeting,
+# else when it was recorded: the time a timeline orders by. Callers add WHERE / ORDER BY.
+FACT_SELECT = ("SELECT f.id, f.type, f.text, f.quote, f.quote_start, f.provenance, f.confidence, f.episode_id,"
+               " f.subject_entity_id, f.valid_from, f.valid_to, f.superseded_by, f.supersede_reason,"
+               " COALESCE(f.valid_from, ep.meeting_start, f.recorded_at) AS at"
+               " FROM fact f JOIN episode ep ON ep.id = f.episode_id")
+EDGE_SELECT = ("SELECT g.id, g.relation, g.src_entity_id, s.canonical_name AS src_name, g.dst_entity_id,"
+               " d.canonical_name AS dst_name, g.quote, g.quote_start, g.provenance, g.confidence, g.episode_id,"
+               " g.valid_from, g.valid_to, g.superseded_by, g.supersede_reason,"
+               " COALESCE(g.valid_from, ep.meeting_start, g.recorded_at) AS at"
+               " FROM edge g JOIN episode ep ON ep.id = g.episode_id"
+               " JOIN entity s ON s.id = g.src_entity_id JOIN entity d ON d.id = g.dst_entity_id")
 
 
 class StoreError(ValueError):
@@ -66,6 +87,11 @@ class StoreError(ValueError):
 def name_key(text: str) -> str:
     """The form names and emails are matched in: case-folded, whitespace collapsed."""
     return " ".join(text.casefold().split())
+
+
+def keyed_id(type_: str, key: str) -> str:
+    """The id of the entity of this type and canonical key (a person's email key)."""
+    return stable_id("entity", type_, key)
 
 
 def provenance(quote: str, transcript_text: str) -> str:
@@ -124,7 +150,7 @@ class Store:
                 " call_type = excluded.call_type, extractor_version = excluded.extractor_version,"
                 " mic_coverage = excluded.mic_coverage, output_device = excluded.output_device,"
                 " deleted_at = NULL",
-                (episode_id, transcript_path, sha256, meeting_start, call_type, extractor_version,
+                (episode_id, transcript_path, sha256, utc_time(meeting_start), call_type, extractor_version,
                  mic_coverage, output_device, utc_now(now)))
         return episode_id
 
@@ -152,21 +178,39 @@ class Store:
     def entity(self, entity_id: str) -> Optional[dict]:
         return fetch_one(self.conn, "SELECT * FROM entity WHERE id = ?", (entity_id,))
 
+    def live_id(self, entity_id: str) -> str:
+        """The entity an id stands for now: itself, or the survivor its merges lead to
+        (merged_into, followed to the end). An unknown id is returned as it is."""
+        seen = {entity_id}
+        while True:
+            row = self.conn.execute("SELECT merged_into FROM entity WHERE id = ?", (entity_id,)).fetchone()
+            if row is None or row[0] is None:
+                return entity_id
+            if row[0] in seen:
+                raise StoreError(f"merge cycle at entity {entity_id!r}")
+            entity_id = row[0]
+            seen.add(entity_id)
+
     def aliases(self, entity_id: str) -> list[str]:
+        """The names an entity goes by, each once (an attached mention and the entity's
+        own alias row can carry the same text)."""
         return [r["alias"] for r in self.conn.execute(
-            "SELECT alias FROM alias WHERE entity_id = ? ORDER BY alias_key, alias", (entity_id,))]
+            "SELECT DISTINCT alias, alias_key FROM alias WHERE entity_id = ? ORDER BY alias_key, alias",
+            (entity_id,))]
 
     def unresolved_aliases(self) -> list[dict]:
         """Mentions waiting for C.5 entity resolution."""
         return fetch_all(self.conn, "SELECT * FROM alias WHERE entity_id IS NULL ORDER BY created_at")
 
     def _create_entity(self, type_: str, name: str, key: str, now: Optional[datetime]) -> str:
-        entity_id = stable_id("entity", type_, key)
+        """The entity for (type, key), created if new. A key whose entity was merged
+        away returns the survivor, so later writes land on the live entity."""
+        entity_id = keyed_id(type_, key)
         self.conn.execute(
             "INSERT INTO entity (id, type, canonical_name, canonical_key, merged_into, created_at)"
             " VALUES (?, ?, ?, ?, NULL, ?) ON CONFLICT (id) DO NOTHING",
             (entity_id, type_, name.strip(), key, utc_now(now)))
-        return entity_id
+        return self.live_id(entity_id)
 
     def add_alias(self, entity_id: Optional[str], alias: str, *, source: str,
                   episode_id: Optional[str] = None, now: Optional[datetime] = None) -> str:
@@ -199,11 +243,22 @@ class Store:
         return entity_id
 
     def person_matches(self, name: str) -> list[str]:
-        """Live people with an alias equal to `name` (after name_key)."""
-        return [r[0] for r in self.conn.execute(
-            "SELECT DISTINCT e.id FROM entity e JOIN alias a ON a.entity_id = e.id"
-            " WHERE e.type = ? AND e.merged_into IS NULL AND a.alias_key = ? ORDER BY e.id",
-            (PERSON, name_key(name)))]
+        """Live people `name` may stand for (after name_key). A full name matches an
+        equal alias. A single word matches only the first word of a full-name alias:
+        one-word aliases are ignored, so a first name once attached to the only person
+        it fitted does not keep resolving to them after a namesake appears (lesson
+        L12). An alias still on a merged-away person counts for its survivor."""
+        key = name_key(name)
+        if len(key.split()) > 1:
+            where, params = "a.alias_key = ?", (key,)
+        else:
+            # Keys are whitespace-collapsed, so "word " < key < "word!" is exactly the
+            # keys starting with "word " (no character sorts between space and "!").
+            where, params = "a.alias_key > ? AND a.alias_key < ?", (key + " ", key + "!")
+        ids = {self.live_id(r[0]) for r in self.conn.execute(
+            f"SELECT DISTINCT e.id FROM entity e JOIN alias a ON a.entity_id = e.id WHERE e.type = ? AND {where}",
+            (PERSON, *params))}
+        return sorted(ids)
 
     def mention_person(self, name: str, *, source: str, episode_id: Optional[str] = None,
                        now: Optional[datetime] = None) -> Optional[str]:
@@ -260,8 +315,8 @@ class Store:
                 " confidence, valid_from, valid_to, superseded_by, supersede_reason, recorded_at)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?) ON CONFLICT (id) DO NOTHING",
                 (fact_id, type_, text, quote, quote_start, episode_id, subject_entity_id,
-                 provenance(quote, transcript_text), confidence, valid_from or ep["meeting_start"],
-                 valid_to, utc_now(now)))
+                 provenance(quote, transcript_text), confidence, utc_time(valid_from or ep["meeting_start"]),
+                 utc_time(valid_to), utc_now(now)))
         return fact_id
 
     def add_edge(self, *, src_entity_id: str, dst_entity_id: str, relation: str, quote: str,
@@ -279,6 +334,14 @@ class Store:
                 raise StoreError(f"no entity {entity_id!r}")
             if ANY_TYPE not in types and ent["type"] not in types:
                 raise StoreError(f"{relation} {end} must be {' | '.join(sorted(types))}, not {ent['type']}")
+        # The same edge already stored, perhaps under the id of an endpoint since merged
+        # away (a merge repoints the edge but keeps its id): re-writing an episode after
+        # a merge must not add a second copy on the survivor.
+        ends = (self.live_id(src_entity_id), self.live_id(dst_entity_id))
+        for row in self.conn.execute("SELECT id, src_entity_id, dst_entity_id FROM edge WHERE episode_id = ?"
+                                     " AND relation = ? AND quote = ?", (episode_id, relation, quote)):
+            if (self.live_id(row[1]), self.live_id(row[2])) == ends:
+                return row[0]
         edge_id = stable_id("edge", episode_id, src_entity_id, relation, dst_entity_id, quote)
         with transaction(self.conn):
             self.conn.execute(
@@ -286,8 +349,8 @@ class Store:
                 " provenance, confidence, valid_from, valid_to, superseded_by, supersede_reason, recorded_at)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?) ON CONFLICT (id) DO NOTHING",
                 (edge_id, src_entity_id, dst_entity_id, relation, quote, quote_start, episode_id,
-                 provenance(quote, transcript_text), confidence, valid_from or ep["meeting_start"],
-                 valid_to, utc_now(now)))
+                 provenance(quote, transcript_text), confidence, utc_time(valid_from or ep["meeting_start"]),
+                 utc_time(valid_to), utc_now(now)))
         return edge_id
 
     def supersede_fact(self, old_id: str, new_id: str, *, reason: str, now: Optional[datetime] = None) -> None:
@@ -316,7 +379,7 @@ class Store:
             self.conn.execute(
                 f"UPDATE {table} SET superseded_by = ?, supersede_reason = ?,"
                 f" valid_to = COALESCE(valid_to, ?) WHERE id = ?",
-                (new_id, reason, new["valid_from"] or utc_now(now), old_id))
+                (new_id, reason, utc_time(new["valid_from"]) or utc_now(now), old_id))
 
     # ---- tasks ----------------------------------------------------------------------
 
@@ -404,7 +467,7 @@ class Store:
                    " JOIN task_status stage ON stage.status = st.reaches GROUP BY ev.task_id")
         where, params = "", []
         if since is not None:
-            where, params = " AND t.created_at >= ?", [since]
+            where, params = " AND t.created_at >= ?", [utc_time(since)]
         stages = fetch_all(self.conn, "SELECT status, funnel_rank FROM task_status WHERE funnel_rank IS NOT NULL"
                                       " ORDER BY funnel_rank")
         counts = {}
@@ -428,7 +491,13 @@ class Store:
         limit = self.cfg["kg"]["search_cards"]
         cards, seen = [], set()
         for kind, ref_id in hits:
-            card = self._entity_card(ref_id) if kind in _ENTITY_KINDS else self._fact_card(ref_id)
+            if kind == _ALIAS_KIND:       # indexed by alias id (migration 0003): its entity, if resolved
+                row = self.conn.execute("SELECT entity_id FROM alias WHERE id = ?", (ref_id,)).fetchone()
+                card = self._entity_card(row[0]) if row is not None and row[0] is not None else None
+            elif kind == _ENTITY_KIND:
+                card = self._entity_card(ref_id)
+            else:
+                card = self._fact_card(ref_id)
             if card is None or card["id"] in seen:
                 continue
             seen.add(card["id"])
@@ -441,16 +510,16 @@ class Store:
         row = fetch_one(self.conn,
             "SELECT e.id, e.type, e.canonical_name,"
             f" (SELECT COUNT(*) FROM fact f JOIN episode ep ON ep.id = f.episode_id"
-            f"  WHERE f.subject_entity_id = e.id AND {_ACTIVE_FACT}) AS facts"
+            f"  WHERE f.subject_entity_id = e.id AND {ACTIVE_FACT}) AS facts"
             " FROM entity e WHERE e.id = ? AND e.merged_into IS NULL", (entity_id,))
         if row is None:
             return None
-        return {"kind": "entity", "id": row["id"], "type": row["type"], "name": row["canonical_name"],
+        return {"kind": _ENTITY_KIND, "id": row["id"], "type": row["type"], "name": row["canonical_name"],
                 "facts": row["facts"]}
 
     def _fact_card(self, fact_id: str) -> Optional[dict]:
         row = fetch_one(self.conn, "SELECT f.*, ep.meeting_start FROM fact f"
-                                   f" JOIN episode ep ON ep.id = f.episode_id WHERE f.id = ? AND {_ACTIVE_FACT}",
+                                   f" JOIN episode ep ON ep.id = f.episode_id WHERE f.id = ? AND {ACTIVE_FACT}",
                         (fact_id,))
         if row is None:
             return None
@@ -464,18 +533,12 @@ class Store:
         superseded, with superseded_by set, so a history can be followed."""
         ent = self.entity(item_id)
         if ent is not None:
-            facts = fetch_all(self.conn,
-                "SELECT f.id, f.type, f.text, f.quote, f.quote_start, f.provenance, f.confidence, f.episode_id,"
-                f" f.valid_from, f.valid_to FROM fact f JOIN episode ep ON ep.id = f.episode_id"
-                f" WHERE f.subject_entity_id = ? AND {_ACTIVE_FACT} ORDER BY f.valid_from, f.id", (item_id,))
-            edges = fetch_all(self.conn,
-                "SELECT g.id, g.relation, g.src_entity_id, s.canonical_name AS src_name, g.dst_entity_id,"
-                " d.canonical_name AS dst_name, g.quote, g.quote_start, g.provenance, g.episode_id,"
-                " g.valid_from, g.valid_to FROM edge g JOIN episode ep ON ep.id = g.episode_id"
-                " JOIN entity s ON s.id = g.src_entity_id JOIN entity d ON d.id = g.dst_entity_id"
-                f" WHERE (g.src_entity_id = ? OR g.dst_entity_id = ?) AND {_ACTIVE_EDGE}"
-                " ORDER BY g.valid_from, g.id", (item_id, item_id))
-            return {"kind": "entity", "id": ent["id"], "type": ent["type"], "name": ent["canonical_name"],
+            facts = fetch_all(self.conn, FACT_SELECT + f" WHERE f.subject_entity_id = ? AND {ACTIVE_FACT}"
+                                                       " ORDER BY f.valid_from, f.id", (item_id,))
+            edges = fetch_all(self.conn, EDGE_SELECT + f" WHERE (g.src_entity_id = ? OR g.dst_entity_id = ?)"
+                                                       f" AND {ACTIVE_EDGE} ORDER BY g.valid_from, g.id",
+                              (item_id, item_id))
+            return {"kind": _ENTITY_KIND, "id": ent["id"], "type": ent["type"], "name": ent["canonical_name"],
                     "merged_into": ent["merged_into"], "aliases": self.aliases(item_id),
                     "facts": facts, "edges": edges}
         for kind in _SUPERSEDABLE:

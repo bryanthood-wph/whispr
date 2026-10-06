@@ -43,8 +43,14 @@ class TestConfig(unittest.TestCase):
     def test_kg_and_alerts_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = load_config(overlay=overlay(Path(tmp)))
-            self.assertEqual(cfg["kg"], {"database": "whispr.db", "search_cards": 20, "busy_timeout_ms": 5000,
-                                         "er": {"max_edit_distance": 2}, "rederive_approval_usd": 5})
+            self.assertEqual(cfg["kg"], {
+                "database": "whispr.db", "search_cards": 20, "busy_timeout_ms": 5000,
+                "traverse": {"max_hops": 3, "default_hops": 1, "max_results": 25, "max_paths": 3, "quote_chars": 240,
+                             "time_limit_ms": 5000},
+                "er": {"max_edit_distance": 2, "block_chars": 2, "context_items": 3, "prompt": "prompts/resolve.md",
+                       "schema": "kg/resolve.json"},
+                "models": {"resolve": "kg_resolve"}, "rederive_approval_usd": 5})
+            self.assertIn(cfg["kg"]["models"]["resolve"], cfg["models"])
             self.assertEqual(cfg["alerts"], {"quarantine_digest_days": 7, "repeat_item_runs": 3})
             bad = overlay(Path(tmp))
             bad["kg"] = {"er": {"max_edit_distance": -1}}
@@ -261,7 +267,7 @@ class TestProvenance(StoreCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM fact").fetchone()[0], 1)
 
     def test_valid_from_defaults_to_meeting_start(self):
-        self.assertEqual(self.store.get(self.fact())["valid_from"], "2026-10-01T09:00:00+00:00")
+        self.assertEqual(self.store.get(self.fact())["valid_from"], "2026-10-01T09:00:00.000000+00:00")
 
     def test_types_come_from_the_ontology(self):
         with self.assertRaises(StoreError):
@@ -299,7 +305,7 @@ class TestSupersede(StoreCase):
         self.store.supersede_fact(old, new, reason="date moved")
         row = self.store.get(old)
         self.assertEqual((row["superseded_by"], row["supersede_reason"]), (new, "date moved"))
-        self.assertEqual(row["valid_to"], "2026-10-03T09:00:00+00:00")
+        self.assertEqual(row["valid_to"], "2026-10-03T09:00:00.000000+00:00")
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM fact").fetchone()[0], 2)
         self.assertEqual([c["id"] for c in self.store.search("ship") if c["kind"] == "fact"], [new])
 
@@ -350,9 +356,11 @@ class TestPeople(StoreCase):
         a = self.store.upsert_person("chris.a@example.com", "Chris Adams", source="outlook")
         b = self.store.upsert_person("chris.b@example.com", "Chris Brown", source="outlook")
         self.store.add_alias(a, "Chris", source="outlook")
-        self.assertEqual(self.store.mention_person("Chris", source="extract"), a)
+        # A one-word alias settles nothing (L12): two full names start with Chris.
+        self.assertIsNone(self.store.mention_person("Chris", source="extract"))
         self.store.add_alias(b, "Chris", source="outlook")
         self.assertIsNone(self.store.mention_person("Chris", source="extract", episode_id=EPISODE))
+        self.assertEqual(self.store.mention_person("Chris Adams", source="extract"), a)
 
     def test_full_name_without_email_becomes_a_person(self):
         jamie = self.store.mention_person("Jamie Doe", source="extract", episode_id=EPISODE)
