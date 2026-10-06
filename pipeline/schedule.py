@@ -4,6 +4,8 @@ D.6, D.7; lessons L6, L14, L16).
 `schedules.tasks` in config is the only description of whispr's scheduled jobs. This
 module turns it into task definitions and compares, updates or creates the live tasks:
 
+  jobs(cfg)           schedules.tasks less schedules.skip: the tasks this machine runs;
+                      task_for(cfg, command) names the one running a subcommand
   desired(cfg)        the task definitions config asks for
   check(cfg, run)     read-only. A Finding for each task that is missing, differs from
                       config (action, triggers, settings, principal), has no NextRunTime
@@ -166,7 +168,26 @@ def desired(cfg: dict, executable: str = sys.executable) -> list[dict]:
             raise ConfigError(f"schedules.tasks: {seen[name.casefold()]!r} and {name!r} are the same "
                               "task: Task Scheduler names ignore case")
         seen[name.casefold()] = name
-    return [_task(cfg, name, job, interpreter) for name, job in cfg["schedules"]["tasks"].items()]
+    return [_task(cfg, name, job, interpreter) for name, job in jobs(cfg).items()]
+
+
+def jobs(cfg: dict) -> dict[str, dict]:
+    """schedules.tasks less the names in schedules.skip (a skip name that is no task is a
+    config error, so a typo can't leave a task registered that was meant to be skipped)."""
+    sc = cfg["schedules"]
+    names = {n.casefold() for n in sc["tasks"]}
+    unknown = [s for s in sc["skip"] if s.casefold() not in names]
+    if unknown:
+        raise ConfigError(f"schedules.skip: {unknown} not in schedules.tasks ({list(sc['tasks'])})")
+    skip = {s.casefold() for s in sc["skip"]}
+    return {name: job for name, job in sc["tasks"].items() if name.casefold() not in skip}
+
+
+def task_for(cfg: dict, command: str) -> Optional[str]:
+    """The first task this machine runs (jobs()) that runs `-m pipeline <command>`, or None."""
+    sc = cfg["schedules"]
+    return next((name for name, job in jobs(cfg).items()
+                 if _pipeline_command([*sc["interpreter_args"], *job["args"]]) == command), None)
 
 
 def resolve_interpreter(cfg: dict, executable: str = sys.executable) -> Path:
@@ -274,7 +295,7 @@ def _unrunnable(cfg: dict) -> dict[str, Finding]:
     sc = cfg["schedules"]
     known = pipeline_commands()
     out = {}
-    for name, job in sc["tasks"].items():
+    for name, job in jobs(cfg).items():
         command = _pipeline_command([*sc["interpreter_args"], *job["args"]])
         if command is not None and command not in known:
             out[name] = Finding(name, NO_COMMAND,

@@ -598,6 +598,20 @@ class TestRegister(_Base):
         self.assertEqual(outcome.findings, [])
         self.assertEqual([kind for kind, _ in self.fake.calls][-1], "read")   # the read-back
 
+    def test_skipped_task_is_neither_registered_nor_a_finding(self):
+        cfg = self.load(skip=["WHISPR-LIVENESS"])           # names ignore case, as Task Scheduler's do
+        outcome = S.register(cfg, self.fake)
+        self.assertEqual(self.fake.writes(), [("register", "whispr-pipeline"), ("register", "whispr-daily")])
+        self.assertEqual(outcome.findings, [])
+        self.assertEqual(S.check(cfg, self.fake), [])
+        self.assertIsNone(S.task_for(cfg, "liveness"))
+        self.assertEqual(S.task_for(cfg, "daily"), "whispr-daily")
+
+    def test_skip_naming_no_task_is_refused(self):
+        with self.assertRaises(ConfigError) as ctx:
+            S.desired(self.load(skip=["whispr-livenes"]))
+        self.assertIn("schedules.skip", str(ctx.exception))
+
     def test_payload_carries_the_desired_task(self):
         S.register(self.cfg, self.fake)
         sent = {req["task"]["name"]: req["task"] for kind, req in self.fake.calls if kind == "write"}

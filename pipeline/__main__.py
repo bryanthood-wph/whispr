@@ -127,7 +127,7 @@ def cmd_schedule(cfg: dict, args, run: S.Runner) -> int:
     if args.check:
         findings = S.check(cfg, run)
         _print_findings(findings)
-        print(f"schedule: {len(cfg['schedules']['tasks'])} task(s), {len(findings)} finding(s)")
+        print(f"schedule: {len(S.jobs(cfg))} task(s), {len(findings)} finding(s)")
         return 1 if findings else 0
     if args.apply:
         outcome = S.apply(cfg, run, confirm=_confirm(args.yes))
@@ -152,7 +152,7 @@ def cmd_schedule(cfg: dict, args, run: S.Runner) -> int:
         return 1
     for name in outcome.changed:
         print(f"registered {name}")
-    print(f"schedule: all {len(cfg['schedules']['tasks'])} task(s) match config and have a NextRunTime")
+    print(f"schedule: all {len(S.jobs(cfg))} task(s) match config and have a NextRunTime")
     return 0
 
 

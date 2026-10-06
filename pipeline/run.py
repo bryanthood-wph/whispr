@@ -307,11 +307,7 @@ def task_name(cfg: dict, command: str) -> str:
     """The configured scheduled task that runs `-m pipeline <command>`, for messages
     that tell you to start it; a generic phrase when none is configured."""
     from pipeline import schedule      # deferred: schedule imports __main__, which imports this module
-    sc = cfg["schedules"]
-    for name, job in sc["tasks"].items():
-        if schedule._pipeline_command([*sc["interpreter_args"], *job["args"]]) == command:
-            return name
-    return f"<the task running `-m pipeline {command}`>"
+    return schedule.task_for(cfg, command) or f"<the task running `-m pipeline {command}`>"
 
 
 def alert_key(kind: str, subject: str) -> str:

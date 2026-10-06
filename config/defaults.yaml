@@ -363,6 +363,10 @@ schedules:
   # Hand-registered tasks on the author's machine (scripts/register-task.ps1). A task here
   # with one of these names, in any letter case, is refused, so --apply can never rewrite a live job.
   reserved_names: [whispr-recorder, whispr-nightly-ingest, whispr-weekly-lint-compile, whispr-nightly-freshness-check]
+  # Overlay: names from `tasks` this machine does not register. --check, --apply,
+  # --register and doctor leave them out, e.g. [whispr-liveness] where the hand-registered
+  # whispr-recorder watchdog still keeps the recorder alive (only one of the two should run).
+  skip: []
   # Every read and write goes through this host, with the request as JSON on stdin.
   # Windows PowerShell 5.1: ships with Windows and carries the ScheduledTasks module.
   powershell: powershell.exe

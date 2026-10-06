@@ -55,6 +55,14 @@ class TestDoctor(DoctorCase):
         self.assertIn("captured", rep["tasks"]["stages"])
         self.assertEqual(rep["auth"], {"last_call": None})
 
+    def test_skipped_liveness_task_is_not_a_stale_check(self):
+        later = NOW + timedelta(minutes=self.cfg["doctor"]["liveness_stale_min"] + 1)
+        self.assertTrue(any(a.startswith("liveness:") for a in self.report(at=later)["attention"]))
+        self.cfg["schedules"]["skip"] = ["whispr-liveness"]
+        rep = self.report(at=later)
+        self.assertFalse([a for a in rep["attention"] if a.startswith("liveness:")])
+        self.assertIn("schedules.skip", rep["liveness"]["skipped"])
+
     def test_each_problem_needs_attention(self):
         models.append_jsonl(runner.files(self.cfg, "ledger"), {"ts": NOW.isoformat(), "auth_source": "ANTHROPIC_API_KEY",
                                                               "cost_usd": 0.1})

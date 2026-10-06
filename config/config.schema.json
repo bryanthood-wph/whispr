@@ -310,10 +310,11 @@
     },
     "schedules": {
       "type": "object", "additionalProperties": false,
-      "required": ["task_path", "reserved_names", "powershell", "powershell_timeout_s", "interpreter", "interpreter_name", "interpreter_args", "version_stamp_patterns", "principal", "tasks"],
+      "required": ["task_path", "reserved_names", "skip", "powershell", "powershell_timeout_s", "interpreter", "interpreter_name", "interpreter_args", "version_stamp_patterns", "principal", "tasks"],
       "properties": {
         "task_path": {"$ref": "#/$defs/str"},
         "reserved_names": {"$ref": "#/$defs/strs"},
+        "skip": {"$ref": "#/$defs/strs"},
         "powershell": {"$ref": "#/$defs/str"},
         "powershell_timeout_s": {"type": "number", "minimum": 1},
         "interpreter": {"type": ["string", "null"], "minLength": 1},

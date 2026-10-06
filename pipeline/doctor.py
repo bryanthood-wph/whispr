@@ -11,7 +11,8 @@ that cannot be read says why, and that needs attention):
   approved (auth.approved_sources).
 - **recorder**: whether it holds its mutex now (liveness.mutex), its log's age, and its
   incidents over doctor.incident_days (doctor.attention_incidents need attention).
-- **liveness**: the last liveness check logged (stale past doctor.liveness_stale_min).
+- **liveness**: the last liveness check logged (stale past doctor.liveness_stale_min), unless
+  schedules.skip leaves out every task that runs one.
 - **reconciliation**: the last daily reconciliation and its problems.
 - **tasks**: the task funnel over kg.tasks.funnel_days (kg.tasks.funnel_report); **notes**: live episodes whose note is
   missing or has no My Actions section; **quarantined**: items held after max attempts.
@@ -128,6 +129,8 @@ def _recorder(cfg: dict, recorder: Optional[liveness.Recorder], now: datetime, a
 
 
 def _liveness(cfg: dict, now: datetime, attention: list[str]) -> dict:
+    if S.task_for(cfg, liveness.JOB) is None:
+        return {"last": None, "skipped": "no task this machine runs is a liveness check (schedules.skip)"}
     checks = [r for r in models.read_jsonl(pipeline_run.files(cfg, "log"))
               if r.get("job") == liveness.JOB and r.get("event") == "check"]
     if not checks:
