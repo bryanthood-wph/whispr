@@ -1,7 +1,7 @@
 # Task intake and worker
 
-**Status:** PLAN, 2026-10-06, revised after the premortem the same day. **Build later:**
-nothing here starts until you say go. It replaces the README §3 deferred row
+**Status:** BUILDING, 2026-10-06. Revised after the premortem, and again after P0: Teams
+can't be read by any tool on this machine, so Teams context is pasted at intake. It replaces the README §3 deferred row
 "clarify-style task intake" and RESUME's FUTURE STATE note. The outbox is set aside for now.
 
 **In one screen:**
@@ -18,9 +18,10 @@ nothing here starts until you say go. It replaces the README §3 deferred row
 - **Budgets.** Each task gets its own budget, proposed at intake from what that type of work
   has cost before, and approved by you. A run that reaches its budget stops, reports what is
   done, and proposes an amount to continue. It goes on only with your yes.
-- **Microsoft tools.** Admin's Outlook and Teams tools are reviewed, then **reimplemented
-  in whispr** (no copied code) so they work from any folder. They can read and save unsent
-  drafts. **Nothing sends.**
+- **Microsoft tools.** Admin's Outlook tools are reviewed, then **reimplemented in whispr**
+  (no copied code) so they work from any folder. They can read and save unsent drafts.
+  **Nothing sends.** **Teams channels and chats are pasted at intake**: Deloitte policy
+  blocks the browser route Admin uses for Teams (P0).
 - **What good looks like** is a library, one folder per work type. It grows from your
   answers and from deliverables you approve, so over time it stops being a question.
 - **Design rule:** the simplest design that is effective and scales. A fragile route is
@@ -51,7 +52,7 @@ nothing here starts until you say go. It replaces the README §3 deferred row
 | Admin's tools are reviewed for improvements, then reimplemented in whispr | stated |
 | The tools can read and save unsent drafts, with no sends | confirmed |
 | Repos are local clones | stated |
-| Teams chats get a spike through browser Teams; if it fails, you paste the lines at intake | stated / confirmed |
+| Teams chats got a spike through browser Teams. It was blocked by policy, so Teams channels **and** chats are pasted at intake (P0, 2026-10-06) | stated / confirmed |
 | Set aside: the outbox, scheduled or unattended runs, and anything that sends | stated / confirmed |
 
 **Facts the plan rests on** (checked 2026-10-06):
@@ -61,6 +62,11 @@ nothing here starts until you say go. It replaces the README §3 deferred row
 - Admin's Teams server can't read chats. The page's Graph token lacks `Chat.Read`, so it
   offers teams, channels and channel messages only. It needs a debug Chrome profile on
   port 9222.
+- **Deloitte policy blocks that route on this machine.** Both Chrome and Edge have
+  `RemoteDebuggingAllowed = 0` under `HKLM\SOFTWARE\Policies` (checked 2026-10-06; a
+  Chrome started with the flag opens but never listens). That is a security setting, and
+  whispr doesn't work around it. Any Deloitte machine with the same policy is blocked the
+  same way, which also rules out Admin's Teams tools there.
 - **Outlook can't reach Teams chats.** A read-only folder scan of your mailbox found
   "Conversation History" with 0 items, and the `TeamsMessagesData` folder isn't exposed
   through Outlook. This route is closed; don't try it again.
@@ -108,8 +114,8 @@ for a source type is one click, and it's saved to the project defaults (F17).
 
 | Source | What's recorded | How the worker reaches it |
 |---|---|---|
-| Teams channels | team and channel | whispr-m365 Teams read |
-| Teams chats | the chats you name as having context | the chats spike (§5); if it fails, the lines you paste |
+| Teams channels | team and channel, plus the lines you paste | the pasted lines (a task input) |
+| Teams chats | the chats you name as having context, plus the lines you paste | the pasted lines (a task input) |
 | Email | senders, threads or folders, and a date window | whispr-m365 Outlook read |
 | Folders | absolute paths | read permission limited to those paths |
 | Repos | local clone paths | read permission limited to those paths; a branch when the work is code |
@@ -226,6 +232,8 @@ reimplements this, and copies nothing.
 14. **Task marker on drafts (F13).** whispr stores the task id in a UserProperty and
     checks Drafts for it before creating another.
 
+*The Teams web notes below are kept for the record only: policy blocks the route (§1), so P2 doesn't build it.*
+
 **Teams web (CDP): keep**
 - **Finding the page.** The Teams tab is looked up through the local debug endpoint on
   every call, so the server can start before Chrome is open.
@@ -275,8 +283,8 @@ reimplements this, and copies nothing.
 - **The tool-name allowlist hook stays,** but its list is generated from the server's own
   manifest. Admin keeps two hand-copied lists that can drift apart.
 
-**Dependency:** the Teams route needs `websockets`, which is not stdlib (Admin pins 17.1).
-Installing it needs your approval in P2.
+**Dependency:** the Teams route would have needed `websockets` (not stdlib). With Teams
+pasted at intake, P2 needs no new package.
 
 **Teams chats:** not reachable this way. Admin's comment (`teams_mcp/tools_messaging.py:4-6`)
 says the session lacks `Chat.Read`, and its host table is fixed to Graph. A chat read would
@@ -285,7 +293,6 @@ mean adding the Teams chat service as a new target. That's what the chats spike 
 | Area | Tools (read plus unsent drafts) | Left out |
 |---|---|---|
 | Outlook (Classic, COM) | search message metadata → bounded body snippets, get message, list and save attachments (only into `tasks\<id>\`), calendar search and get, unsent draft, reply draft, forward draft | send, move, delete, flag, saving meetings |
-| Teams web (CDP, 127.0.0.1 only, the token stays in the page) | joined teams, channels, read channel messages | sends of any kind |
 
 **How each call is limited:**
 - **Bound to one task (F6).** The worker starts the server with `WHISPR_TASK_ID` in its MCP
@@ -306,20 +313,12 @@ mean adding the Teams chat service as a new target. That's what the chats spike 
   - a hook blocks any tool name outside the list.
 - **COM:** the helper reuses the `com_initialized` pattern.
 
-**Chats spike** (read-only, run against your own chats):
-1. Try the Teams web client's own chat service, using the page's session.
-2. Try reading the rendered chat with browser automation.
-
-Pass bar: it reads a named chat's recent messages reliably, three runs out of three, with
-no new permission. Otherwise chats fall back to **pasting at intake**, saved as a task input.
-
-**Fragility, stated as a cost:**
-- The Teams web route depends on undocumented web APIs.
-- It also depends on a debug Chrome profile, which any program on the PC can drive while
-  it's open.
-- The worker **never launches that profile itself.** It connects only to one you started
-  for this run, and the output reminds you to close it (F14).
-- When the page isn't up, the worker reports Teams as skipped.
+**Chats spike: result (2026-10-06).** The debug Chrome profile started with
+`--remote-debugging-port` but never listened. Machine policy disables remote debugging in
+Chrome and Edge (§1). Neither spike route can run, and Teams channels are blocked the same
+way. Outcome, by your choice: **Teams channels and chats are pasted at intake** and saved as
+task inputs. The output header lists them as "pasted". F14 (the debug profile exposure) no
+longer applies, because no profile is used.
 
 ## 6. Worker: `python -m pipeline task run <id>`
 
@@ -347,8 +346,8 @@ no new permission. Otherwise chats fall back to **pasting at intake**, saved as 
 
 **Steps:**
 1. Loads the brief and scope, and sets the task to `in_progress`.
-2. **Preflight:** checks each in-scope source. It opens Outlook if it's closed, and skips
-   Teams if no page is up.
+2. **Preflight:** checks each in-scope source. It opens Outlook if it's closed. Teams items
+   are already in the brief as pasted lines.
 3. Plans the work and writes the plan as a step list to `tasks\<id>\progress.md`. It
    updates the list as steps finish.
 4. Research goes to the researcher. The manager drafts, and the reviewer checks the draft
@@ -383,9 +382,9 @@ no new permission. Otherwise chats fall back to **pasting at intake**, saved as 
 
 | Phase | Work | Done when |
 |---|---|---|
-| P0 | Review Admin v0.8.0's tools (notes in this plan) and run the chats spike | the review is accepted; the spike passes, or chats fall back to pasting |
+| P0 | Review Admin v0.8.0's tools (notes in this plan) and run the chats spike | **done 2026-10-06**: review accepted; the spike was blocked by policy, so Teams is pasted at intake |
 | P1 | Brief answers as `task_note` rows, `entity_scope`, the MCP arguments, the ready gate with its config check, the intake rounds in `/whispr:create-tasks` | a captured task goes through intake to `ready`; `ready` with an open field is refused, and an empty or misspelt `required_fields` is a ConfigError (both tested) |
-| P2 | `whispr-m365`: Outlook read and drafts, Teams read, task binding, the read/draft split, the recipient check (needs approval for the new dependency) | read tests pass against your mailbox and a channel; a query outside scope, a call with no task id, and a draft to an unnamed recipient are refused; no send tool exists (all tested) |
+| P2 | `whispr-m365`: Outlook read and drafts, task binding, the read/draft split, the recipient check | read tests pass against your mailbox; a query outside scope, a call with no task id, and a draft to an unnamed recipient are refused; no send tool exists (all tested) |
 | P3 | `task run`: roster, permission rules, preflight, output header, `progress.md`, budget stop-and-propose, ledger, backup of `tasks\` and `good\` | three real tasks of different types run end to end, each in its own folder. A read outside scope is refused. A closed source is listed as skipped. A run stopped at a deliberately low cap proposes an amount and resumes on yes. **The measured costs become the budget seeds per work type in config** |
 | P4 | The `good\` library growing from approvals | an approved deliverable lands in `examples\`; the next task of that type doesn't ask for what good looks like |
 
