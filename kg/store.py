@@ -20,7 +20,8 @@ text search behind `search`, can move to Postgres in one place. The rules it enf
 - **Types.** Entity, fact and relation types come from config/ontology.yaml, and an
   edge's endpoints must have the types its relation allows.
 - **Tasks.** A task is inserted from the D.5 contract, validated against
-  config/schema/task.json, and its id must be sha1(episode + quote). The allowed
+  config/schema/task.json, and its id must be sha1(episode + quote), or, for a quote
+  two tasks of one document share, that plus the normalized action (`task_id`). The allowed
   status changes and the funnel order are rows in the database (migration 0001), and
   their statuses must equal the schema's enum. Re-inserting a known task is a no-op,
   so re-writing an episode never resets a task's lifecycle (lesson L19).
@@ -99,9 +100,12 @@ def provenance(quote: str, transcript_text: str) -> str:
     return EXTRACTED if quote.strip() and quote in transcript_text else AMBIGUOUS
 
 
-def task_id(episode_id: str, quote: str) -> str:
-    """The D.5 task id: sha1(episode + quote)."""
-    return hashlib.sha1((episode_id + quote).encode("utf-8")).hexdigest()
+def task_id(episode_id: str, quote: str, action: Optional[str] = None) -> str:
+    """The D.5 task id: sha1(episode + quote). When two or more of one document's tasks
+    share a quote (the caller decides), each passes its action, so none folds into
+    another: sha1(episode + quote + "\x1f" + the action lower-cased, whitespace collapsed)."""
+    key = episode_id + quote if action is None else episode_id + quote + "\x1f" + " ".join(action.lower().split())
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()
 
 
 def _parse_relations(ontology: dict) -> dict[str, tuple[set[str], set[str]]]:
@@ -390,8 +394,9 @@ class Store:
         if errors:
             raise StoreError("task does not match config/schema/task.json:\n  " + "\n  ".join(errors))
         episode_id = task["source"]["episode"]
-        if task["id"] != task_id(episode_id, task["quote"]):
-            raise StoreError(f"task id {task['id']!r} is not sha1(episode + quote)")
+        if task["id"] not in (task_id(episode_id, task["quote"]), task_id(episode_id, task["quote"], task["action"])):
+            raise StoreError(f"task id {task['id']!r} is neither sha1(episode + quote) nor, for a shared quote, "
+                             "sha1(episode + quote + action) (task_id)")
         self._live_episode(episode_id)
         entity_ids = list(entity_ids)
         for entity_id in entity_ids:

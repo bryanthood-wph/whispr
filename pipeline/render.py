@@ -7,11 +7,15 @@ appear in schema order, so the same document always renders to the same bytes.
 The headline is the first paragraph rather than a heading, so it reads as a claim,
 not a title. Entities, edges and topics are graph data and tags, not reading matter,
 and are not rendered.
+
+`render` is the judge's view and keeps the document's own order. `note` is the
+summary note the write stage files for a reader (README §3 progressive disclosure):
+the same parts, My Actions first, with tasks to confirm marked.
 """
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 MY_ACTIONS = "My Actions"
 OTHER_TASKS = "Other Tasks"
@@ -20,6 +24,7 @@ NONE = "None"
 ME = "me"                       # owner of every My Actions task: the recording owner
 NO_OWNER = "not named"
 NO_DUE = "not stated"
+CONFIRM = "confirm?"            # D.5: a task whose ownership the transcript can't settle
 
 
 def labels() -> dict[str, str]:
@@ -33,11 +38,13 @@ def _label(value: str) -> str:
     return value.replace("_", " ").capitalize()
 
 
-def task(item: dict, *, mine: bool) -> str:
+def task(item: dict, *, mine: bool, confirm: bool = False) -> str:
     """One task as a bullet with its owner, due date and context on sub-bullets.
-    Standalone, so a judge prompt can quote a single task with its ownership."""
+    Standalone, so a judge prompt can quote a single task with its ownership.
+    `confirm` marks the action "(confirm?)"; the judge's view never sets it."""
     owner = f"{ME} ({item['owner_basis'].replace('_', ' ')})" if mine else (item["owner"] or NO_OWNER)
-    lines = [f"- {item['action']}", f"  - Owner: {owner}", f"  - Due: {item['due']['text'] or NO_DUE}"]
+    action = f"{item['action']} ({CONFIRM})" if confirm else item["action"]
+    lines = [f"- {action}", f"  - Owner: {owner}", f"  - Due: {item['due']['text'] or NO_DUE}"]
     if item["context"]:
         lines.append(f"  - Context: {item['context']}")
     return "\n".join(lines)
@@ -85,14 +92,35 @@ def tasks(doc: dict, *, mine: Optional[bool] = None) -> list[tuple[str, str]]:
     return [(t["action"], task(t, mine=m)) for key, m in TASK_LISTS if mine in (None, m) for t in doc[key]]
 
 
-def render(doc: dict) -> str:
-    """Headline, points and facts use the same per-field functions as claim_parts."""
-    blocks = [headline(doc)]
-    blocks += [_block(s["heading"], [point(p) for p in s["points"]]) for s in doc["sections"]]
-    # My Actions is always shown, with "None" when empty (B.8); the others only when non-empty.
-    blocks.append(_block(MY_ACTIONS, [line for _, line in tasks(doc, mine=True)] or [NONE]))
-    if doc["other_tasks"]:
-        blocks.append(_block(OTHER_TASKS, [line for _, line in tasks(doc, mine=False)]))
+def my_actions_block(lines: list[str]) -> str:
+    """The My Actions section: always shown, with "None" when empty (B.8)."""
+    return _block(MY_ACTIONS, lines or [NONE])
+
+
+def _sections(doc: dict) -> list[str]:
+    return [_block(s["heading"], [point(p) for p in s["points"]]) for s in doc["sections"]]
+
+
+def _tail(doc: dict, other_lines: list[str]) -> list[str]:
+    """Other tasks and facts, each only when non-empty."""
+    blocks = [_block(OTHER_TASKS, other_lines)] if other_lines else []
     if doc["facts"]:
         blocks.append(_block(FACTS, [fact(f) for f in doc["facts"]]))
+    return blocks
+
+
+def render(doc: dict) -> str:
+    """Headline, points and facts use the same per-field functions as claim_parts."""
+    blocks = [headline(doc), *_sections(doc), my_actions_block([line for _, line in tasks(doc, mine=True)]),
+              *_tail(doc, [line for _, line in tasks(doc, mine=False)])]
+    return "\n\n".join(blocks) + "\n"
+
+
+def note(doc: dict, *, confirm: Callable[[dict], bool] = lambda _item: False) -> str:
+    """The summary note's body: My Actions first, each task marked when `confirm(item)`,
+    then the headline, sections, other tasks and facts, from the same functions as
+    `render`, so the note and the judge's view never disagree on a line's text."""
+    mine = [task(t, mine=True, confirm=confirm(t)) for t in doc["my_actions"]]
+    others = [task(t, mine=False, confirm=confirm(t)) for t in doc["other_tasks"]]
+    blocks = [my_actions_block(mine), headline(doc), *_sections(doc), *_tail(doc, others)]
     return "\n\n".join(blocks) + "\n"

@@ -132,6 +132,8 @@ Deterministic and versioned, and it gets its own checks (Appendix B.8):
   "tools_allowed": ["..."] }
 ```
 
+**Id collisions:** when two or more of one transcript's tasks share a quote, each id is instead sha1(episode + quote + "\x1f" + its action, lower-cased and whitespace-collapsed), so none is folded into another.
+
 - **Ownership in production** (JEV-style, and exactly what the eval
   scores).
   - `owner_basis` is a typed choice (assigned / volunteered / other's /

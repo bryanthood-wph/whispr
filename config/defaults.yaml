@@ -135,6 +135,45 @@ extract:
 pipeline:
   max_attempts: 3
   max_budget_per_call_usd: 1.00
+  # python -m pipeline run (pipeline/run.py): prepare -> extract -> write for every new
+  # or changed transcript, started by the `pipeline` scheduled task at logon and every
+  # 15 minutes (decision 2026-10-05). Model calls run on any power.
+  files:                        # under paths.data_dir
+    notes: notes                # the write stage's summary notes, one <episode id>.md per transcript
+    log: logs/pipeline.jsonl    # one JSON line per item and per run
+    ledger: pipeline-ledger.jsonl   # every extract call's cost (pipeline/models.py); the daily cap reads it
+    cache: cache/extract        # schema-valid extract outputs by request key, so a retry never pays twice
+    # The single-instance lock: an OS lock on this file, which the OS drops when the
+    # holding process exits however it dies, so a crash never leaves it held.
+    lock: pipeline.lock
+  run:
+    # No new item starts once the elapsed time plus the longest item so far would pass
+    # this; the run exits PARTIAL and the rest stay queued. The task's time limit must
+    # exceed this plus cli.timeout_s (one item that started just inside it).
+    time_budget_s: 600
+    max_items: 20               # items started per run at most (10 min / ~30 s per extract); the rest wait
+    # Spend caps, checked before every model call as if it cost its full
+    # max_budget_per_call_usd. Over either one, the run stops PARTIAL (lesson L3).
+    cap_usd: 3.00               # per run
+    daily_cap_usd: 10.00        # over the last 24 hours, from the ledger
+    # Minutes before a failed item is retried, by attempt (1st failure, 2nd, ...; the
+    # last value repeats). The failure that reaches max_attempts quarantines instead.
+    retry_backoff_min: [15, 60]
+    # Discovery takes only transcripts dated (by file name) on or after this ISO date;
+    # older ones are processed only by an explicit `python -m pipeline backfill`. Null:
+    # the runner refuses, with one alert, until it is set (/whispr-setup sets it to the
+    # install date), so a first run never enqueues the whole history unasked.
+    process_since: null
+    # What `backfill` quotes per extract call before it spends anything (A.3: a summary
+    # call's median was $0.072). An estimate only; the spend caps above still apply.
+    est_cost_per_call_usd: 0.09
+  write:
+    # A transcript whose frontmatter mic_coverage (mic speech / loopback speech, D.6) is
+    # below this gets "may be incomplete: low mic coverage" on its note (lesson L5).
+    low_mic_coverage: 0.5
+    # Task confidence (D.5), set by code from the evidence until re-sampling exists
+    # (README §3 deferred): the task's quote is verbatim in the prepared transcript, or not.
+    task_confidence: {verbatim: 0.9, unverified: 0.5}
 
 kg:
   # The graph + state database (C.4, D.1), a SQLite file under paths.data_dir.
@@ -212,7 +251,7 @@ schedules:
   #                        Every task needs daily_at or every_min, so NextRunTime proves it is armed.
   #   time_limit_min       the scheduler kills a run still going after this (L6). A job's own
   #                        time budget reads it and exits PARTIAL first (D.6).
-  #   ac_power_only        don't start on battery (D.6: model spend runs on AC power)
+  #   ac_power_only        don't start on battery
   #   stop_on_battery      kill a started run when the power cord comes out
   #   start_when_available catch-up: run as soon as possible after a missed start (asleep, off)
   #   wake_to_run          wake the machine for the start time
@@ -223,24 +262,28 @@ schedules:
   #                        0 / null = no restart.
   #   multiple_instances   IgnoreNew: a start while a run is still going is dropped
   tasks:
-    # The nightly pipeline (D.1). wake_to_run off: a run woken from sleep was killed 12 s
+    # The per-call pipeline (D.1): at logon plus every 15 minutes, so a summary lands soon
+    # after a call ends; a run with nothing new makes no model call (decision 2026-10-05).
+    # Any power, and never stopped on battery: model calls run on battery too (decision
+    # 2026-10-05), and a run killed mid-call loses that call's spend. 30 minutes is
+    # pipeline.run.time_budget_s (600 s) plus cli.timeout_s (900 s, one item started just
+    # inside the budget) plus 300 s, so the scheduler kills only a hung run. The repetition
+    # is the retry, so no restart. wake_to_run off: a run woken from sleep was killed 12 s
     # later when the machine slept again (L6, 10-02); catch-up runs it at the next real wake.
-    # stop_on_battery off: a run killed mid-batch loses the spend of its calls in flight.
     whispr-pipeline:
       args: [-m, pipeline, run]
-      daily_at: '22:00'
-      at_logon: false
-      every_min: null
-      time_limit_min: 120
-      ac_power_only: true
+      daily_at: null
+      at_logon: true
+      every_min: 15
+      time_limit_min: 30
+      ac_power_only: false
       stop_on_battery: false
       start_when_available: true
       wake_to_run: false
-      restart_count: 1
-      restart_interval_min: 10
+      restart_count: 0
+      restart_interval_min: null
       multiple_instances: IgnoreNew
-    # The nightly backup (D.6, L22): no model spend, so it runs on battery too. Before the
-    # pipeline, so each night's copy is the state the run started from.
+    # The nightly backup (D.6, L22): no model spend, so it runs on battery too.
     whispr-backup:
       args: [-m, pipeline, backup]
       daily_at: '21:30'

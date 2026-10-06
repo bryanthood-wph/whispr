@@ -16,6 +16,11 @@ from pipeline import calls, config, prompts
 from pipeline.prepare import Prepared, owner_name
 
 
+# The config `models` role production extract runs on (the eval names the same role
+# eval.stages.EXTRACTOR, so the eval scores what ships).
+ROLE = "extractor"
+
+
 class ExtractError(RuntimeError):
     pass
 
@@ -57,6 +62,14 @@ def build_request(prep: Prepared, cfg: dict, *, role: str, system_prompt: Option
     return Request(role, prompt, system_prompt, schema, calls.config_file_sha(template_file),
                    calls.schema_sha(schema),
                    calls.request_key(cfg, role, prompt, schema, system_prompt))
+
+
+def version(cfg: dict, role: str = ROLE) -> str:
+    """What makes an episode's extract, as the episode records it (extractor_version):
+    the role's model and effort, and the template and schema hashes."""
+    spec = cfg["models"][role]
+    return "/".join([spec["model"], spec["effort"] or "default",
+                     calls.config_file_sha(cfg["prompts"]["extract"]), calls.schema_sha(load_schema(cfg))])
 
 
 def extract(prep: Prepared, cfg: dict, *, role: str, max_budget_usd: float, ledger: Path,

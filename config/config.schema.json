@@ -119,10 +119,39 @@
       "properties": {"missing_value": {"$ref": "#/$defs/str"}, "list_separator": {"$ref": "#/$defs/str"}}
     },
     "pipeline": {
-      "type": "object", "additionalProperties": false, "required": ["max_attempts", "max_budget_per_call_usd"],
+      "type": "object", "additionalProperties": false, "required": ["max_attempts", "max_budget_per_call_usd", "files", "run", "write"],
       "properties": {
         "max_attempts": {"type": "integer", "minimum": 1},
-        "max_budget_per_call_usd": {"$ref": "#/$defs/money"}
+        "max_budget_per_call_usd": {"$ref": "#/$defs/money"},
+        "files": {
+          "type": "object", "additionalProperties": false, "required": ["notes", "log", "ledger", "cache", "lock"],
+          "properties": {"notes": {"$ref": "#/$defs/str"}, "log": {"$ref": "#/$defs/str"}, "ledger": {"$ref": "#/$defs/str"},
+                         "cache": {"$ref": "#/$defs/str"}, "lock": {"$ref": "#/$defs/str"}}
+        },
+        "run": {
+          "type": "object", "additionalProperties": false,
+          "required": ["time_budget_s", "max_items", "cap_usd", "daily_cap_usd", "retry_backoff_min", "process_since",
+                       "est_cost_per_call_usd"],
+          "properties": {
+            "time_budget_s": {"type": "number", "minimum": 0},
+            "max_items": {"type": "integer", "minimum": 1},
+            "cap_usd": {"$ref": "#/$defs/money"},
+            "daily_cap_usd": {"$ref": "#/$defs/money"},
+            "retry_backoff_min": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 1},
+            "process_since": {"type": ["string", "null"], "minLength": 10},
+            "est_cost_per_call_usd": {"$ref": "#/$defs/money"}
+          }
+        },
+        "write": {
+          "type": "object", "additionalProperties": false, "required": ["low_mic_coverage", "task_confidence"],
+          "properties": {
+            "low_mic_coverage": {"$ref": "#/$defs/frac"},
+            "task_confidence": {
+              "type": "object", "additionalProperties": false, "required": ["verbatim", "unverified"],
+              "properties": {"verbatim": {"$ref": "#/$defs/frac"}, "unverified": {"$ref": "#/$defs/frac"}}
+            }
+          }
+        }
       }
     },
     "kg": {

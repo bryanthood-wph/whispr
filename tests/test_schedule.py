@@ -240,17 +240,16 @@ class TestDesired(_Base):
         self.assertEqual(repeating[0]["repeat"], {"every_min": every, "duration_min": None})
 
     def test_daily_trigger_from_config(self):
-        triggers = self.want()["whispr-pipeline"]["triggers"]
-        at = self.cfg["schedules"]["tasks"]["whispr-pipeline"]["daily_at"]
+        triggers = self.want()["whispr-backup"]["triggers"]
+        at = self.cfg["schedules"]["tasks"]["whispr-backup"]["daily_at"]
         self.assertEqual(triggers, [{"kind": "daily", "at": at, "days_interval": 1, "repeat": None, "enabled": True,
                                      "utc_offset": None, "end": None, "delay_min": None, "random_delay_min": None}])
 
     def test_power_and_catch_up_flags(self):
         want = self.want()
-        pipeline, backup = want["whispr-pipeline"]["settings"], want["whispr-backup"]["settings"]
-        self.assertTrue(pipeline["ac_power_only"])
-        self.assertTrue(pipeline["start_when_available"])
-        self.assertFalse(backup["ac_power_only"])
+        pipeline = want["whispr-pipeline"]["settings"]
+        self.assertFalse(pipeline["ac_power_only"])         # model calls run on any power (2026-10-05)
+        self.assertFalse(pipeline["stop_on_battery"])
         for task in want.values():
             self.assertTrue(task["settings"]["start_when_available"], task["name"])
 
@@ -452,15 +451,15 @@ class TestCheck(_Base):
             with self.subTest(kind):
                 self.fake = FakeScheduler()
                 self.install_all()
-                live = copy.deepcopy(self.want()["whispr-pipeline"])
+                live = copy.deepcopy(self.want()["whispr-backup"])     # its first trigger is the daily one
                 mutate(live)
                 findings = self.drift(live)
-                self.assertEqual([(f.task, f.kind) for f in findings], [("whispr-pipeline", kind)])
+                self.assertEqual([(f.task, f.kind) for f in findings], [("whispr-backup", kind)])
 
     def test_setting_finding_names_the_key(self):
         self.install_all()
         live = copy.deepcopy(self.want()["whispr-pipeline"])
-        live["settings"]["ac_power_only"] = False
+        live["settings"]["ac_power_only"] = not live["settings"]["ac_power_only"]
         finding, = self.drift(live)
         self.assertIn("ac_power_only", finding.detail)
 
@@ -475,8 +474,8 @@ class TestCheck(_Base):
         def trigger(kind, **values):
             return lambda task: next(t for t in task["triggers"] if t["kind"] == kind).update(values)
         cases = {
-            "expired": ("whispr-pipeline", trigger("daily", end="2026-01-01T00:00:00"), S.TRIGGERS),
-            "random delay": ("whispr-pipeline", trigger("daily", random_delay_min=30), S.TRIGGERS),
+            "expired": ("whispr-backup", trigger("daily", end="2026-01-01T00:00:00"), S.TRIGGERS),
+            "random delay": ("whispr-backup", trigger("daily", random_delay_min=30), S.TRIGGERS),
             "logon delay": ("whispr-liveness", trigger("logon", delay_min=5), S.TRIGGERS),
             "logon of another user": ("whispr-liveness", trigger("logon", user="CORP\\sam"), S.TRIGGERS),
             "logon of any user": ("whispr-liveness", trigger("logon", user=None), S.TRIGGERS),
@@ -498,7 +497,7 @@ class TestCheck(_Base):
 
     def test_utc_offset_start_time_is_drift(self):
         # An offset start time is "synchronize across time zones": it moves an hour with DST.
-        for name, kind, offset in (("whispr-pipeline", "daily", "-04:00"), ("whispr-liveness", "once", "Z")):
+        for name, kind, offset in (("whispr-backup", "daily", "-04:00"), ("whispr-liveness", "once", "Z")):
             with self.subTest(kind):
                 self.fake = FakeScheduler()
                 self.install_all()
@@ -629,7 +628,9 @@ class TestRegister(_Base):
         self.fake.alter_on_write = drop_repetition
         with self.assertRaises(S.RegistrationFailed) as ctx:
             S.register(self.cfg, self.fake)
-        self.assertEqual([(f.task, f.kind) for f in ctx.exception.outcome.findings], [("whispr-liveness", S.TRIGGERS)])
+        repeating = [name for name, job in self.cfg["schedules"]["tasks"].items() if job["every_min"] is not None]
+        self.assertEqual([(f.task, f.kind) for f in ctx.exception.outcome.findings],
+                         [(name, S.TRIGGERS) for name in repeating])
         self.assertEqual(ctx.exception.outcome.changed, list(self.want()))
 
     def test_declined_registers_nothing_and_does_not_raise(self):

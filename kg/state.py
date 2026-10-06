@@ -9,7 +9,9 @@
   item row per stage. `begin_item` counts an attempt *before* the work, so an item
   that kills the process still uses up its attempts; once attempts reach
   `pipeline.max_attempts` the item is quarantined (after a failure, or at its next
-  start if the last attempt never reported back) with one alert naming the fix.
+  start if the last attempt never reported back) with one alert naming the fix. A
+  failure may set the item's next attempt time (retry backoff, chosen by the caller);
+  `eligible` leaves the item out until then, `backlog` still counts it.
 - **Repeat items** (lesson L1). An item started in `alerts.repeat_item_runs`
   consecutive runs of the same job, whatever their outcome, raises an alert: the
   queue is not advancing past it.
@@ -141,6 +143,10 @@ class State:
     def item(self, item_id: str) -> Optional[dict]:
         return fetch_one(self.conn, "SELECT * FROM item WHERE id = ?", (item_id,))
 
+    def find(self, stage: str, ref: str) -> Optional[dict]:
+        """The item for (stage, ref), or None if it was never enqueued."""
+        return fetch_one(self.conn, "SELECT * FROM item WHERE stage = ? AND ref = ?", (stage, ref))
+
     def _item(self, item_id: str) -> dict:
         item = self.item(item_id)
         if item is None:
@@ -153,10 +159,12 @@ class State:
             raise StateError(f"item {item_id!r} is {item['status']}, not {QUEUED}")
         return item
 
-    def eligible(self, stage: str) -> list[dict]:
-        """Queued items of a stage, oldest first (quarantined and done ones excluded)."""
-        return fetch_all(self.conn, "SELECT * FROM item WHERE stage = ? AND status = ? ORDER BY created_at, id",
-                                    (stage, QUEUED))
+    def eligible(self, stage: str, now: Optional[datetime] = None) -> list[dict]:
+        """Queued items of a stage that are due (no next attempt time, or one at or
+        before `now`), oldest first; quarantined, done and backed-off ones excluded."""
+        return fetch_all(self.conn, "SELECT * FROM item WHERE stage = ? AND status = ?"
+                                    " AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY created_at, id",
+                         (stage, QUEUED, utc_now(now)))
 
     def backlog(self, stage: str) -> int:
         return self.conn.execute("SELECT COUNT(*) FROM item WHERE stage = ? AND status = ?",
@@ -195,13 +203,15 @@ class State:
             self.conn.execute("UPDATE item SET status = ?, last_error = NULL, updated_at = ? WHERE id = ?",
                               (DONE, utc_now(now), item_id))
 
-    def item_failed(self, item_id: str, error: str, now: Optional[datetime] = None) -> str:
+    def item_failed(self, item_id: str, error: str, now: Optional[datetime] = None,
+                    retry_at: Optional[datetime] = None) -> str:
         """Record a failed attempt; returns the item's status (quarantined once its
-        attempts reach pipeline.max_attempts, else still queued for a retry)."""
+        attempts reach pipeline.max_attempts, else still queued for a retry, not
+        eligible before `retry_at` when one is given)."""
         item = self._queued(item_id)
         with transaction(self.conn):
-            self.conn.execute("UPDATE item SET last_error = ?, updated_at = ? WHERE id = ?",
-                              (error, utc_now(now), item_id))
+            self.conn.execute("UPDATE item SET last_error = ?, next_attempt_at = ?, updated_at = ? WHERE id = ?",
+                              (error, utc_now(retry_at) if retry_at else None, utc_now(now), item_id))
             if item["attempts"] >= self.max_attempts:
                 self._quarantine({**item, "last_error": error}, now)
                 return QUARANTINED
@@ -215,8 +225,17 @@ class State:
         self.raise_alert(
             KIND_QUARANTINE, item_key(KIND_QUARANTINE, item),
             f"{item['stage']} item {item['ref']} quarantined after {item['attempts']} attempts: {cause}",
-            "Fix the cause above, then requeue the item (kg.state.State.requeue); "
+            f"Fix the cause above, then run `python -m pipeline requeue {item['ref']}` (or `--all-quarantined`); "
             "the rest of the queue keeps running meanwhile.", now=now)
+
+    def undo_attempt(self, item: dict, error: str, now: Optional[datetime] = None) -> None:
+        """Undo begin_item: `item` is the row as it was before it. For a failure of the
+        machine (auth, the model unreachable), not the item: it uses no attempt and moves
+        no repeat count. The error is kept as the item's last_error."""
+        with transaction(self.conn):
+            self.conn.execute("UPDATE item SET attempts = ?, consecutive_runs = ?, last_run_id = ?, last_error = ?,"
+                              " updated_at = ? WHERE id = ?", (item["attempts"], item["consecutive_runs"],
+                                                             item["last_run_id"], error, utc_now(now), item["id"]))
 
     def requeue(self, item_id: str, now: Optional[datetime] = None) -> None:
         """Put an item back in the queue with fresh attempts (after fixing its cause)."""
@@ -224,7 +243,7 @@ class State:
         with transaction(self.conn):
             self.conn.execute(
                 "UPDATE item SET status = ?, attempts = 0, last_error = NULL, quarantined_at = NULL,"
-                " digested_at = NULL, updated_at = ? WHERE id = ?", (QUEUED, utc_now(now), item_id))
+                " digested_at = NULL, next_attempt_at = NULL, updated_at = ? WHERE id = ?", (QUEUED, utc_now(now), item_id))
 
     def quarantined(self) -> list[dict]:
         return fetch_all(self.conn, "SELECT * FROM item WHERE status = ? ORDER BY quarantined_at, id",
@@ -287,8 +306,8 @@ class State:
                 self.raise_alert(
                     KIND_DIGEST, DIGEST_KEY,
                     f"{len(digest)} item(s) quarantined for over {self.digest_days} days: {listed}",
-                    "Fix each cause and requeue the item (kg.state.State.requeue), or leave it: "
-                    "this digest repeats once per period while any remain.", now=moment)
+                    "Fix each cause and run `python -m pipeline requeue <ref>` (or `--all-quarantined`), or "
+                    "leave it: this digest repeats once per period while any remain.", now=moment)
         return digest
 
     # ---- maintenance (C.5) ----------------------------------------------------------

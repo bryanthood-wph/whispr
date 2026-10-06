@@ -10,7 +10,9 @@
   runs only on that dialect. A version with files only for other dialects is recorded
   as applied with nothing run, so version numbers stay shared across dialects.
 - A database recording a version this code has no file for is newer than the code:
-  `connect` refuses it rather than run against a schema it doesn't know.
+  `connect` refuses it rather than run against a schema it doesn't know. So does one
+  whose recorded name for a version differs from the file's (two branches numbered
+  different migrations alike). Versions may have gaps: another branch owns them.
 - The connection is in autocommit mode; writers group statements with `transaction`,
   which nests through savepoints (the same SQL on Postgres). The outermost level takes
   the write lock up front (`BEGIN IMMEDIATE`; a Postgres port uses plain `BEGIN`), so
@@ -25,6 +27,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import re
 import sqlite3
@@ -173,11 +176,17 @@ def migrate(conn: sqlite3.Connection, directory: Path = MIGRATIONS_DIR) -> list[
     conn.execute("CREATE TABLE IF NOT EXISTS schema_version ("
                  "version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)")
     known = migrations(directory)
-    done = applied_versions(conn)
+    recorded = dict(conn.execute("SELECT version, name FROM schema_version").fetchall())
+    done = set(recorded)
     unknown = done - {m.version for m in known}
     if unknown:
         raise MigrationError(f"database has schema version(s) {sorted(unknown)} this code does not know; "
                              "it was written by a newer whispr")
+    renamed = [f"{m.version}: database {recorded[m.version]!r}, code {m.name!r}" for m in known
+               if m.version in done and recorded[m.version] != m.name]
+    if renamed:                 # two branches numbered different migrations alike: never guess which ran
+        raise MigrationError("database schema version(s) were applied from a different migration file: "
+                             + "; ".join(renamed))
     applied = []
     for m in known:
         if m.version in done:
@@ -240,6 +249,27 @@ def connect(cfg: dict, *, directory: Path = MIGRATIONS_DIR) -> sqlite3.Connectio
         # The timeout first: switching to WAL itself needs a lock another process may hold.
         conn.execute(f"PRAGMA busy_timeout = {int(cfg['kg']['busy_timeout_ms'])}")
         conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA foreign_keys = ON")
+        migrate(conn, directory)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
+def snapshot(cfg: dict, *, directory: Path = MIGRATIONS_DIR) -> sqlite3.Connection:
+    """An in-memory copy of the database, migrated, for a caller that must not write
+    (a dry run): the file is opened read-only and never created, migrated or changed;
+    with no file the copy is empty (everything is new). Writes go to the copy only.
+    SQLite may still create the -wal/-shm side files any WAL reader needs."""
+    path = Path(cfg["paths"]["data_dir"]) / cfg["kg"]["database"]     # not database_path: that creates the dir
+    conn = sqlite3.connect(":memory:", isolation_level=None)
+    try:
+        if path.is_file():
+            with contextlib.closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as src:
+                src.execute(f"PRAGMA busy_timeout = {int(cfg['kg']['busy_timeout_ms'])}")
+                src.backup(conn)
+        conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         migrate(conn, directory)
     except BaseException:

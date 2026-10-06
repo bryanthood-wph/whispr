@@ -3,6 +3,7 @@ No model calls; every database lives in a temp data dir."""
 
 from __future__ import annotations
 
+import contextlib
 import re
 import sqlite3
 import tempfile
@@ -117,6 +118,44 @@ class TestMigrations(KgCase):
             self.assertEqual(db.migrate(conn, directory), [1, 2])
         finally:
             conn.close()
+
+    def test_a_gap_in_versions_migrates_in_order(self):
+        # This branch has 0001, 0002 and 0005 (another branch owns 0003 and 0004).
+        files = {"0001_a.sql": "CREATE TABLE a (id TEXT PRIMARY KEY);",
+                 "0002_b.sqlite.sql": "CREATE TABLE b (id TEXT PRIMARY KEY);"}
+        directory = self._migration_dir(files)
+        conn = sqlite3.connect(self.root / "other.db", isolation_level=None)
+        try:
+            self.assertEqual(db.migrate(conn, directory), [1, 2])
+            (directory / "0005_e.sql").write_text("ALTER TABLE a ADD COLUMN e TEXT;", encoding="utf-8")
+            self.assertEqual(db.migrate(conn, directory), [5])           # an older database catches up
+            self.assertEqual(db.migrate(conn, directory), [])
+            self.assertEqual(db.applied_versions(conn), {1, 2, 5})
+        finally:
+            conn.close()
+
+    def test_a_version_applied_from_another_file_fails_loudly(self):
+        directory = self._migration_dir({"0001_a.sql": "CREATE TABLE a (id TEXT PRIMARY KEY);"})
+        conn = sqlite3.connect(self.root / "other.db", isolation_level=None)
+        try:
+            conn.execute("CREATE TABLE schema_version (version INTEGER PRIMARY KEY, name TEXT NOT NULL,"
+                         " applied_at TEXT NOT NULL)")
+            conn.execute("INSERT INTO schema_version VALUES (1, '0001_from_another_branch.sql', 'x')")
+            with self.assertRaises(db.MigrationError) as ctx:
+                db.migrate(conn, directory)
+        finally:
+            conn.close()
+        self.assertIn("0001_from_another_branch.sql", str(ctx.exception))
+        self.assertIn("0001_a.sql", str(ctx.exception))
+
+    def test_snapshot_never_creates_or_changes_the_file(self):
+        missing = {**self.cfg, "paths": {**self.cfg["paths"], "data_dir": str(self.root / "no-such-dir")}}
+        with contextlib.closing(db.snapshot(missing)) as conn:            # no database: an empty, current copy
+            self.assertEqual(db.applied_versions(conn), {m.version for m in db.migrations()})
+        self.assertFalse((self.root / "no-such-dir").exists())
+        with contextlib.closing(db.snapshot(self.cfg)) as conn:           # writes land in the copy only
+            conn.execute("DELETE FROM schema_version")
+        self.assertEqual(db.applied_versions(self.conn), {m.version for m in db.migrations()})
 
     def test_bad_file_names_fail(self):
         with self.assertRaises(db.MigrationError):
@@ -428,6 +467,18 @@ class TestTasks(StoreCase):
         self.store.add_task(self.task())
         self.assertEqual(self.store.get_task(t)["status"], "confirmed")
 
+    def test_a_shared_quote_id_adds_the_normalized_action(self):
+        quote = "I'll send the deck to Jamie by Friday"
+        self.assertEqual(task_id(EPISODE, quote, "  Send the DECK\tto Jamie "),
+                         task_id(EPISODE, quote, "send the deck to jamie"))
+        self.assertNotEqual(task_id(EPISODE, quote, "Send the deck to Jamie"), task_id(EPISODE, quote))
+        t = self.store.add_task(self.task(id=task_id(EPISODE, quote, "Send the deck to Jamie")))
+        self.store.set_task_status(t, "confirmed")
+        self.store.add_task(self.task(id=t))                    # re-adding never resets the lifecycle
+        self.assertEqual(self.store.get_task(t)["status"], "confirmed")
+        with self.assertRaises(StoreError):                     # another action's id is no id for this task
+            self.store.add_task(self.task(id=task_id(EPISODE, quote, "Book the room")))
+
     def test_funnel_counts_furthest_stage_reached(self):
         quotes = ["I'll send the deck to Jamie by Friday", "we decided to ship it Friday",
                   "Jamie Doe owns the pricing model", "Me: I'll"]
@@ -611,6 +662,26 @@ class TestItems(StateCase):
         row = self.state.item(item)
         self.assertEqual((row["status"], row["attempts"], row["last_error"]), (QUEUED, 0, None))
         self.assertEqual(self.state.backlog("extract"), 1)
+
+    def test_backoff_holds_an_item_out_of_eligible_until_its_retry_time(self):
+        item = self.state.enqueue("extract", "flaky.md", now=T0)
+        run = self.state.begin_run("ingest", now=T0)
+        self.state.begin_item(run, item, now=T0)
+        retry = T0 + timedelta(minutes=15)
+        self.assertEqual(self.state.item_failed(item, "timeout", now=T0, retry_at=retry), QUEUED)
+        self.assertEqual(self.state.eligible("extract", now=retry - timedelta(seconds=1)), [])
+        self.assertEqual(self.state.backlog("extract"), 1)          # backed off, still in the backlog
+        self.assertEqual([i["id"] for i in self.state.eligible("extract", now=retry)], [item])
+        self.state.item_failed(item, "timeout", now=T0, retry_at=retry + timedelta(days=1))
+        self.state.requeue(item, now=T0)                              # a requeue is due at once
+        self.assertIsNone(self.state.item(item)["next_attempt_at"])
+        self.assertEqual([i["id"] for i in self.state.eligible("extract", now=T0)], [item])
+
+    def test_find_by_stage_and_ref(self):
+        self.assertIsNone(self.state.find("extract", "a.md"))
+        item = self.state.enqueue("extract", "a.md")
+        self.assertEqual(self.state.find("extract", "a.md")["id"], item)
+        self.assertIsNone(self.state.find("write", "a.md"))
 
     def test_enqueue_is_idempotent_and_unknown_items_fail(self):
         item = self.state.enqueue("extract", "a.md")
