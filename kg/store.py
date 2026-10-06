@@ -47,10 +47,11 @@ import json
 import math
 import re
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime
 from typing import Iterable, Optional
 
 from kg.db import fetch_all, fetch_one, new_id, stable_id, transaction, utc_now, utc_time
+from m365.scope import ScopeError, parse_email_scope
 from pipeline.config import config_file, load_schema, named_field, read_yaml, required_fields
 from pipeline.jsonschema_lite import validate
 
@@ -608,6 +609,11 @@ class Store:
             values = [v for t, v in found if t == type_]
             if none in values and len(values) > 1:
                 raise StoreError(f"scope type {type_!r}: {none!r} stands alone, not beside {values}")
+        email_type = self._known(self.cfg["tasks"]["m365"]["scope_type"], self.intake["scope_types"], "scope type")
+        try:                          # whispr-m365 reads these values: refuse one it could not
+            parse_email_scope([v for t, v in found if t == email_type], self.cfg, today=date.today())
+        except ScopeError as exc:
+            raise StoreError(str(exc)) from exc
         return list(found.values())
 
     def _budget(self, value: object) -> dict:
