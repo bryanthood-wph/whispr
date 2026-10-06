@@ -24,15 +24,50 @@
                         back; exits 1 unless all match config and have a NextRunTime
   schedule ... --yes    --apply and --register print each planned write first and write
                         only with --yes; without it they exit 1 having written nothing
+  restore --from BACKUP [--yes]
+      the setup restore drill (D.7) and the real thing: verify a backup folder (one the
+      daily job made under backup.destination) and print what restoring it would do;
+      with --yes, restore it (the live database is copied aside first; existing
+      transcripts are never overwritten). exit 0 ok or planned, 1 unusable backup or a
+      run holds a lock
+  daily [--dry-run]
+      the one daily job (pipeline/daily.py): backup -> maintenance (entity resolution,
+      integrity checks, quarantine digest) -> reconciliation, each step recorded; a
+      failing step does not skip the others but fails the run (and alerts).
+      --dry-run   what each step would do, against an in-memory copy: no model call,
+                  no backup written, nothing alerted
+      exit 0 ok (or another daily run holds the lock), 1 a step failed or was refused,
+      3 partial (entity resolution stopped at a time or spend limit), 4 refused
+      (nested Claude session)
+  liveness [--dry-run]
+      is the recorder running (it holds its own single-instance mutex, liveness.mutex)?
+      If not, relaunch it (liveness.command in liveness.working_dir) outside this task's
+      job object, through Win32_Process::Create, and confirm it takes the mutex.
+      --dry-run   report what it would do: nothing launched, alerted or logged
+      exit 0 running or relaunched, 1 relaunch failed (recorder-down alert), 4 down
+      and liveness.command / working_dir unset (setup alert)
+  doctor [--json]
+      the one status report: each job's last progress and backlog, open alerts,
+      schedule drift (schedule --check, read-only), auth source, the recorder (mutex,
+      log, incidents), the last liveness check and daily reconciliation, the task
+      funnel, notes missing My Actions, quarantined items. Reads only.
+      exit 0 all clear, 1 something needs attention (listed last), 2 bad config
+  alerts [--ack KEY | --session-start]
+      list the open alerts with their fixes (exit 0; 1 the database cannot be read);
+      --ack KEY       acknowledge one by its key or id (exit 0; 2 no open alert has it)
+      --session-start the SessionStart hook's message: one short line when alerts are
+                      open, nothing when none; never fails, always exit 0
 
 The `whispr-pipeline` scheduled task runs `run` at logon and every 15 minutes. Never run
-it without --dry-run from inside a Claude Code session: it refuses (and alerts).
+it without --dry-run from inside a Claude Code session: it refuses (and alerts). The
+`whispr-daily` task runs `daily` once a day, with the same refusal. `whispr-liveness`
+runs `liveness` at logon and every 15 minutes.
 
 Any exception that escapes a command (a bad config under `run`, an unwritable data dir)
 is appended, with a timestamp and traceback, to %LOCALAPPDATA%/whispr/pipeline-fatal.log,
 a fixed place found without config, because under pythonw nothing else would show it;
-the exit code is then 1. `schedule` is run by hand, so it prints a config or scheduler
-error instead and exits 2.
+the exit code is then 1. `schedule` and `doctor` are run by hand, so they print a config
+(or scheduler) error instead and exit 2.
 """
 
 from __future__ import annotations
@@ -46,6 +81,11 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
+from pipeline import alerts as pipeline_alerts
+from pipeline import backup as pipeline_backup
+from pipeline import daily as pipeline_daily
+from pipeline import doctor as pipeline_doctor
+from pipeline import liveness as pipeline_liveness
 from pipeline import run as pipeline_run
 from pipeline import schedule as S
 from pipeline.config import ConfigError, load_config
@@ -133,6 +173,20 @@ def build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     mode.add_argument("--apply", action="store_true")
     mode.add_argument("--register", action="store_true")
     s.add_argument("--yes", action="store_true", help="let --apply / --register write the changes they print")
+    r = sub.add_parser("restore", help="restore a backup (the setup restore drill)")
+    r.add_argument("--from", dest="source", type=Path, required=True, metavar="BACKUP",
+                   help="a backup folder under backup.destination")
+    r.add_argument("--yes", action="store_true", help="restore it; without --yes only print what would happen")
+    d = sub.add_parser("daily", help="the daily job: backup, maintenance, reconciliation")
+    d.add_argument("--dry-run", action="store_true", help="what each step would do: zero model calls, nothing written")
+    lv = sub.add_parser("liveness", help="relaunch the recorder if it is not running")
+    lv.add_argument("--dry-run", action="store_true", help="report only: never launch")
+    dr = sub.add_parser("doctor", help="the status report; exit 1 when something needs attention")
+    dr.add_argument("--json", action="store_true", help="print the report as JSON")
+    al = sub.add_parser("alerts", help="the open alerts; acknowledge one; the session-start message")
+    which = al.add_mutually_exclusive_group()
+    which.add_argument("--ack", metavar="KEY", help="acknowledge the open alert with this key (or id)")
+    which.add_argument("--session-start", action="store_true", help="the SessionStart hook's message; always exit 0")
     return ap, frozenset(sub.choices)
 
 
@@ -166,11 +220,28 @@ def _main(argv: Optional[list[str]], runner: Optional[Callable[[dict], S.Runner]
         except (ConfigError, S.ScheduleError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
+    if args.cmd == "alerts" and args.session_start:     # before load_config: it must never fail
+        return pipeline_alerts.session_start(args.overlay)
+    if args.cmd == "doctor":
+        try:
+            cfg = load_config(overlay_path=args.overlay)
+        except ConfigError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        return pipeline_doctor.doctor(cfg, as_json=args.json, run=runner(cfg) if runner else None)
     if args.cmd == "requeue" and (args.ref is None) == (not args.all_quarantined):
         parser.error("requeue: give exactly one of REF or --all-quarantined")
     cfg = load_config(overlay_path=args.overlay)
     if args.cmd == "requeue":
         return pipeline_run.requeue(cfg, args.ref, all_quarantined=args.all_quarantined)
+    if args.cmd == "restore":
+        return pipeline_backup.restore(cfg, args.source, yes=args.yes)
+    if args.cmd == "daily":
+        return pipeline_daily.daily(cfg, dry_run=args.dry_run)
+    if args.cmd == "liveness":
+        return pipeline_liveness.liveness(cfg, dry_run=args.dry_run)
+    if args.cmd == "alerts":
+        return pipeline_alerts.acknowledge(cfg, args.ack) if args.ack else pipeline_alerts.list_alerts(cfg)
     if args.cmd == "backfill":
         return pipeline_run.backfill(cfg, since=args.since, until=args.until, yes=args.yes)
     return pipeline_run.run(cfg, dry_run=args.dry_run, once=args.once)

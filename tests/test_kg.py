@@ -59,7 +59,8 @@ class TestConfig(unittest.TestCase):
                           "review_statuses": ["captured", "confirmed", "ready", "dropped"]},
                 "rederive_approval_usd": 5})
             self.assertIn(cfg["kg"]["models"]["resolve"], cfg["models"])
-            self.assertEqual(cfg["alerts"], {"quarantine_digest_days": 7, "repeat_item_runs": 3})
+            self.assertEqual({k: cfg["alerts"][k] for k in ("quarantine_digest_days", "repeat_item_runs")},
+                             {"quarantine_digest_days": 7, "repeat_item_runs": 3})   # session_start: test_pipeline_alerts
             bad = overlay(Path(tmp))
             bad["kg"] = {"er": {"max_edit_distance": -1}}
             with self.assertRaises(ConfigError):

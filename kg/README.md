@@ -74,7 +74,7 @@ Agent roles over this database (D.3; least privilege, each tool a stated reason)
 ## Known gaps
 
 - Attendance is recorded only as an attendee's alias row, and an alias row is written once per (person, name), so only the first call a person attended counts for the shared-full-name rule; later ones fall back to the model decision.
-- No nightly job calls `Resolver.run` yet, so nothing binds its `ask` in production; that is the C.5 maintenance job.
+- `Resolver.run` is called by the daily job's maintenance step (`pipeline/daily.py`), which binds its `ask` to the model path; `kg/integrity.py` holds the integrity checks it runs after.
 - Migrations 0002 and 0003 have no Postgres twin yet (`*.postgres.sql`).
 - An empty digest leaves a stale digest alert open.
 - The viewer draws only shortest-route edges (a tree): an edge between two drawn entities that is on no shortest route (a cross-link, or a parallel edge) is not drawn; `get` lists them.

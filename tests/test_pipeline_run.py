@@ -575,6 +575,18 @@ class TestBudgets(RunCase):
         self.assertEqual(len(ask.refs), 1)
         self.assertEqual(self.runs()[-1]["stopped"], runner.RUN_CAP)
 
+    def test_daily_cap_counts_another_jobs_call_in_flight(self):
+        self.transcript("2026-10-05T09:00:00-04:00")
+        cap = self.cfg["pipeline"]["run"]["daily_cap_usd"]
+        runner.reserve_call(self.cfg, job="daily", key="k", per_call=cap, now=T0)    # the daily job, mid-call
+        ask = FakeAsk()
+        self.assertEqual(self.go(ask, now=T0 + timedelta(hours=1)), runner.EXIT_FAILED)
+        self.assertEqual((ask.refs, self.runs()[-1]["stopped"]), ([], runner.DAILY_CAP))
+        models.append_jsonl(runner.files(self.cfg, "ledger"), {"request_key": "k", "cost_usd": 0.0,
+                                                               "ts": db.utc_now(T0)})    # it settles at $0
+        self.assertEqual(self.go(ask, now=T0 + timedelta(hours=2)), runner.EXIT_OK)
+        self.assertEqual(len(ask.refs), 1)
+
     def test_daily_cap_counts_the_ledger(self):
         self.transcript("2026-10-05T09:00:00-04:00")
         models.append_jsonl(runner.files(self.cfg, "ledger"),

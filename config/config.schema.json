@@ -3,7 +3,7 @@
   "title": "whispr pipeline config (defaults.yaml merged with the user overlay)",
   "type": "object",
   "additionalProperties": false,
-  "required": ["config_version", "owner", "paths", "auth", "cli", "models", "prompts", "schemas", "ontology", "prepare", "extract", "pipeline", "kg", "alerts", "schedules", "eval"],
+  "required": ["config_version", "owner", "paths", "auth", "cli", "models", "prompts", "schemas", "ontology", "prepare", "extract", "pipeline", "kg", "alerts", "backup", "maintain", "reconcile", "liveness", "doctor", "schedules", "eval"],
   "$defs": {
     "str": {"type": "string", "minLength": 1},
     "strs": {"type": "array", "items": {"type": "string"}},
@@ -124,9 +124,10 @@
         "max_attempts": {"type": "integer", "minimum": 1},
         "max_budget_per_call_usd": {"$ref": "#/$defs/money"},
         "files": {
-          "type": "object", "additionalProperties": false, "required": ["notes", "log", "ledger", "cache", "lock"],
+          "type": "object", "additionalProperties": false, "required": ["notes", "log", "ledger", "cache", "lock", "daily_lock", "resolve_cache"],
           "properties": {"notes": {"$ref": "#/$defs/str"}, "log": {"$ref": "#/$defs/str"}, "ledger": {"$ref": "#/$defs/str"},
-                         "cache": {"$ref": "#/$defs/str"}, "lock": {"$ref": "#/$defs/str"}}
+                         "cache": {"$ref": "#/$defs/str"}, "lock": {"$ref": "#/$defs/str"},
+                         "daily_lock": {"$ref": "#/$defs/str"}, "resolve_cache": {"$ref": "#/$defs/str"}}
         },
         "run": {
           "type": "object", "additionalProperties": false,
@@ -233,10 +234,74 @@
       }
     },
     "alerts": {
-      "type": "object", "additionalProperties": false, "required": ["quarantine_digest_days", "repeat_item_runs"],
+      "type": "object", "additionalProperties": false, "required": ["quarantine_digest_days", "repeat_item_runs", "session_start"],
       "properties": {
         "quarantine_digest_days": {"type": "number", "minimum": 0},
-        "repeat_item_runs": {"type": "integer", "minimum": 1}
+        "repeat_item_runs": {"type": "integer", "minimum": 1},
+        "session_start": {
+          "type": "object", "additionalProperties": false, "required": ["max_alerts", "message_chars", "timeout_s"],
+          "properties": {
+            "max_alerts": {"type": "integer", "minimum": 1},
+            "message_chars": {"type": "integer", "minimum": 10},
+            "timeout_s": {"type": "number", "minimum": 0.1}
+          }
+        }
+      }
+    },
+    "backup": {
+      "type": "object", "additionalProperties": false, "required": ["destination", "keep", "prefix", "include", "transcripts"],
+      "properties": {
+        "destination": {"type": ["string", "null"], "minLength": 1},
+        "keep": {"type": "integer", "minimum": 1},
+        "prefix": {"$ref": "#/$defs/str"},
+        "include": {"type": "array", "items": {"$ref": "#/$defs/str"}},
+        "transcripts": {"type": "boolean"}
+      }
+    },
+    "maintain": {
+      "type": "object", "additionalProperties": false, "required": ["max_budget_per_call_usd", "cap_usd", "time_budget_s", "listed"],
+      "properties": {
+        "max_budget_per_call_usd": {"$ref": "#/$defs/money"},
+        "cap_usd": {"$ref": "#/$defs/money"},
+        "time_budget_s": {"type": "number", "minimum": 1},
+        "listed": {"type": "integer", "minimum": 0}
+      }
+    },
+    "reconcile": {
+      "type": "object", "additionalProperties": false,
+      "required": ["window_days", "settle_min", "max_tombstones", "outlook_slack_min", "recorder_log"],
+      "properties": {
+        "window_days": {"type": "number", "minimum": 0},
+        "settle_min": {"type": "number", "minimum": 0},
+        "max_tombstones": {"type": "integer", "minimum": 0},
+        "outlook_slack_min": {"type": "number", "minimum": 0},
+        "recorder_log": {
+          "type": "object", "additionalProperties": false, "required": ["stamp", "queued", "written"],
+          "properties": {"stamp": {"$ref": "#/$defs/str"}, "queued": {"$ref": "#/$defs/str"}, "written": {"$ref": "#/$defs/str"}}
+        }
+      }
+    },
+    "liveness": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mutex", "command", "working_dir", "confirm_timeout_s", "confirm_poll_s"],
+      "properties": {
+        "mutex": {"$ref": "#/$defs/str"},
+        "command": {"type": ["array", "null"], "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+        "working_dir": {"type": ["string", "null"], "minLength": 1},
+        "confirm_timeout_s": {"type": "number", "minimum": 0},
+        "confirm_poll_s": {"type": "number", "minimum": 0.1}
+      }
+    },
+    "doctor": {
+      "type": "object", "additionalProperties": false,
+      "required": ["stale_after_h", "liveness_stale_min", "incidents_file", "incident_days", "attention_incidents", "listed"],
+      "properties": {
+        "stale_after_h": {"type": "object", "additionalProperties": {"type": "number", "minimum": 0}},
+        "liveness_stale_min": {"type": "number", "minimum": 0},
+        "incidents_file": {"$ref": "#/$defs/str"},
+        "incident_days": {"type": "number", "minimum": 0},
+        "attention_incidents": {"$ref": "#/$defs/strs"},
+        "listed": {"type": "integer", "minimum": 0}
       }
     },
     "schedules": {

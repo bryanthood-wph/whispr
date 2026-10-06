@@ -240,8 +240,8 @@ class TestDesired(_Base):
         self.assertEqual(repeating[0]["repeat"], {"every_min": every, "duration_min": None})
 
     def test_daily_trigger_from_config(self):
-        triggers = self.want()["whispr-backup"]["triggers"]
-        at = self.cfg["schedules"]["tasks"]["whispr-backup"]["daily_at"]
+        triggers = self.want()["whispr-daily"]["triggers"]
+        at = self.cfg["schedules"]["tasks"]["whispr-daily"]["daily_at"]
         self.assertEqual(triggers, [{"kind": "daily", "at": at, "days_interval": 1, "repeat": None, "enabled": True,
                                      "utc_offset": None, "end": None, "delay_min": None, "random_delay_min": None}])
 
@@ -273,7 +273,7 @@ class TestDesired(_Base):
     def test_reserved_and_wildcard_names_are_refused(self):
         for name in ("whispr-recorder", "whispr-*"):
             cfg = copy.deepcopy(self.cfg)
-            cfg["schedules"]["tasks"][name] = cfg["schedules"]["tasks"].pop("whispr-backup")
+            cfg["schedules"]["tasks"][name] = cfg["schedules"]["tasks"].pop("whispr-daily")
             with self.subTest(name), self.assertRaises(ConfigError):
                 S.desired(cfg)
 
@@ -282,14 +282,14 @@ class TestDesired(_Base):
         for reserved in self.cfg["schedules"]["reserved_names"]:
             for name in (reserved.upper(), reserved.title()):
                 cfg = copy.deepcopy(self.cfg)
-                cfg["schedules"]["tasks"][name] = cfg["schedules"]["tasks"].pop("whispr-backup")
+                cfg["schedules"]["tasks"][name] = cfg["schedules"]["tasks"].pop("whispr-daily")
                 with self.subTest(name), self.assertRaises(ConfigError):
                     S.desired(cfg)
 
     def test_task_names_differing_only_in_case_are_refused(self):
         cfg = copy.deepcopy(self.cfg)
         tasks = cfg["schedules"]["tasks"]
-        tasks["WHISPR-BACKUP"] = copy.deepcopy(tasks["whispr-backup"])
+        tasks["WHISPR-DAILY"] = copy.deepcopy(tasks["whispr-daily"])
         with self.assertRaises(ConfigError) as ctx:
             S.desired(cfg)
         self.assertIn("ignore case", str(ctx.exception))
@@ -297,13 +297,13 @@ class TestDesired(_Base):
     def test_multiple_instances_is_the_cmdlets_enum(self):
         # MultipleInstancesEnum is Parallel, Queue, IgnoreNew: StopExisting would only fail at write time.
         with self.assertRaises(ConfigError):
-            self.load(tasks={"whispr-backup": {"multiple_instances": "StopExisting"}})
+            self.load(tasks={"whispr-daily": {"multiple_instances": "StopExisting"}})
 
     def test_schema_does_not_pin_the_task_names(self):
         cfg = copy.deepcopy(self.cfg)
         tasks = cfg["schedules"]["tasks"]
         tasks["whispr-nightly"] = tasks.pop("whispr-pipeline")
-        del tasks["whispr-backup"]
+        del tasks["whispr-daily"]
         self.assertEqual(validate(cfg, json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))), [])
 
 
@@ -311,7 +311,7 @@ class TestCommands(_Base):
     """A task whose `-m pipeline` subcommand __main__.py does not define is never written."""
 
     def with_args(self, *args: str) -> dict:
-        return self.load(tasks={"whispr-backup": {"args": list(args)}})
+        return self.load(tasks={"whispr-daily": {"args": list(args)}})
 
     def test_subcommands_come_from_mains_parser(self):
         self.assertIn("schedule", REAL_COMMANDS())
@@ -331,7 +331,7 @@ class TestCommands(_Base):
         for task in self.want(cfg).values():
             self.fake.add(task)
         finding, = S.check(cfg, self.fake)
-        self.assertEqual((finding.task, finding.kind), ("whispr-backup", S.NO_COMMAND))
+        self.assertEqual((finding.task, finding.kind), ("whispr-daily", S.NO_COMMAND))
         self.assertIn("no-such-command", finding.detail)
 
     def test_no_subcommand_at_all_is_a_finding(self):
@@ -346,14 +346,14 @@ class TestCommands(_Base):
             S.register(cfg, self.fake)
         self.assertEqual(self.fake.writes(), [("register", "whispr-pipeline"), ("register", "whispr-liveness")])
         self.assertEqual([(f.task, f.kind) for f in ctx.exception.outcome.findings],
-                         [("whispr-backup", S.NO_COMMAND), ("whispr-backup", S.MISSING)])
+                         [("whispr-daily", S.NO_COMMAND), ("whispr-daily", S.MISSING)])
 
     def test_undefined_subcommand_is_never_applied(self):
         cfg = self.with_args("-m", "pipeline", "no-such-command")
         want = self.want(cfg)
         for task in want.values():
             self.fake.add(task)
-        drifted = copy.deepcopy(want["whispr-backup"])
+        drifted = copy.deepcopy(want["whispr-daily"])
         drifted["settings"]["time_limit_min"] = 999
         self.fake.add(drifted)
         outcome = S.apply(cfg, self.fake)
@@ -435,7 +435,7 @@ class TestCheck(_Base):
 
     def test_missing_task(self):
         want = self.want()
-        for name in ("whispr-pipeline", "whispr-backup"):
+        for name in ("whispr-pipeline", "whispr-daily"):
             self.fake.add(want[name])
         self.assertEqual(S.check(self.cfg, self.fake),
                          [S.Finding("whispr-liveness", S.MISSING, "not registered")])
@@ -451,10 +451,10 @@ class TestCheck(_Base):
             with self.subTest(kind):
                 self.fake = FakeScheduler()
                 self.install_all()
-                live = copy.deepcopy(self.want()["whispr-backup"])     # its first trigger is the daily one
+                live = copy.deepcopy(self.want()["whispr-daily"])     # its first trigger is the daily one
                 mutate(live)
                 findings = self.drift(live)
-                self.assertEqual([(f.task, f.kind) for f in findings], [("whispr-backup", kind)])
+                self.assertEqual([(f.task, f.kind) for f in findings], [("whispr-daily", kind)])
 
     def test_setting_finding_names_the_key(self):
         self.install_all()
@@ -474,17 +474,17 @@ class TestCheck(_Base):
         def trigger(kind, **values):
             return lambda task: next(t for t in task["triggers"] if t["kind"] == kind).update(values)
         cases = {
-            "expired": ("whispr-backup", trigger("daily", end="2026-01-01T00:00:00"), S.TRIGGERS),
-            "random delay": ("whispr-backup", trigger("daily", random_delay_min=30), S.TRIGGERS),
+            "expired": ("whispr-daily", trigger("daily", end="2026-01-01T00:00:00"), S.TRIGGERS),
+            "random delay": ("whispr-daily", trigger("daily", random_delay_min=30), S.TRIGGERS),
             "logon delay": ("whispr-liveness", trigger("logon", delay_min=5), S.TRIGGERS),
             "logon of another user": ("whispr-liveness", trigger("logon", user="CORP\\sam"), S.TRIGGERS),
             "logon of any user": ("whispr-liveness", trigger("logon", user=None), S.TRIGGERS),
             "once at another time": ("whispr-liveness", trigger("once", at="08:00"), S.TRIGGERS),
-            "principal of another user": ("whispr-backup", lambda t: t["principal"].update(user="CORP\\sam"),
+            "principal of another user": ("whispr-daily", lambda t: t["principal"].update(user="CORP\\sam"),
                                           S.PRINCIPAL),
-            "idle only": ("whispr-backup", lambda t: t["settings"].update(run_only_if_idle=True), S.SETTINGS),
-            "network only": ("whispr-backup", lambda t: t["settings"].update(run_only_if_network=True), S.SETTINGS),
-            "no hard terminate": ("whispr-backup", lambda t: t["settings"].update(allow_hard_terminate=False),
+            "idle only": ("whispr-daily", lambda t: t["settings"].update(run_only_if_idle=True), S.SETTINGS),
+            "network only": ("whispr-daily", lambda t: t["settings"].update(run_only_if_network=True), S.SETTINGS),
+            "no hard terminate": ("whispr-daily", lambda t: t["settings"].update(allow_hard_terminate=False),
                                   S.SETTINGS),
         }
         for label, (name, mutate, kind) in cases.items():
@@ -497,7 +497,7 @@ class TestCheck(_Base):
 
     def test_utc_offset_start_time_is_drift(self):
         # An offset start time is "synchronize across time zones": it moves an hour with DST.
-        for name, kind, offset in (("whispr-backup", "daily", "-04:00"), ("whispr-liveness", "once", "Z")):
+        for name, kind, offset in (("whispr-daily", "daily", "-04:00"), ("whispr-liveness", "once", "Z")):
             with self.subTest(kind):
                 self.fake = FakeScheduler()
                 self.install_all()
@@ -514,7 +514,7 @@ class TestCheck(_Base):
 
     def test_path_case_is_not_drift(self):
         self.install_all()
-        live = copy.deepcopy(self.want()["whispr-backup"])
+        live = copy.deepcopy(self.want()["whispr-daily"])
         live["actions"][0]["command"] = live["actions"][0]["command"].upper()
         self.assertEqual(self.drift(live), [])
 
@@ -532,12 +532,12 @@ class TestApply(_Base):
     def test_updates_drifted_tasks_and_never_registers(self):
         want = self.want()
         self.fake.add(want["whispr-pipeline"])
-        drifted = copy.deepcopy(want["whispr-backup"])
+        drifted = copy.deepcopy(want["whispr-daily"])
         drifted["settings"]["time_limit_min"] = 999
         self.fake.add(drifted)
         outcome = S.apply(self.cfg, self.fake)
-        self.assertEqual(self.fake.writes(), [("set", "whispr-backup")])
-        self.assertEqual(outcome.changed, ["whispr-backup"])
+        self.assertEqual(self.fake.writes(), [("set", "whispr-daily")])
+        self.assertEqual(outcome.changed, ["whispr-daily"])
         self.assertEqual(outcome.findings, [S.Finding("whispr-liveness", S.MISSING, "not registered")])
         self.assertNotIn("whispr-liveness", self.fake.tasks)
 
@@ -562,7 +562,7 @@ class TestApply(_Base):
 
     def test_confirm_sees_the_planned_changes_before_any_write(self):
         self.install_all()
-        drifted = copy.deepcopy(self.want()["whispr-backup"])
+        drifted = copy.deepcopy(self.want()["whispr-daily"])
         drifted["settings"]["time_limit_min"] = 999
         self.fake.add(drifted)
         seen = []
@@ -571,7 +571,7 @@ class TestApply(_Base):
             seen.append(([(f.task, f.kind) for f in planned], self.fake.writes()))
             return False
         outcome = S.apply(self.cfg, self.fake, confirm=confirm)
-        self.assertEqual(seen, [([("whispr-backup", S.SETTINGS)], [])])
+        self.assertEqual(seen, [([("whispr-daily", S.SETTINGS)], [])])
         self.assertTrue(outcome.declined)
         self.assertEqual((outcome.changed, self.fake.writes()), ([], []))
 
@@ -593,8 +593,8 @@ class TestRegister(_Base):
     def test_registers_missing_tasks_and_reads_them_back(self):
         self.fake.add(self.want()["whispr-pipeline"])
         outcome = S.register(self.cfg, self.fake)
-        self.assertEqual(self.fake.writes(), [("register", "whispr-backup"), ("register", "whispr-liveness")])
-        self.assertEqual(outcome.changed, ["whispr-backup", "whispr-liveness"])
+        self.assertEqual(self.fake.writes(), [("register", "whispr-daily"), ("register", "whispr-liveness")])
+        self.assertEqual(outcome.changed, ["whispr-daily", "whispr-liveness"])
         self.assertEqual(outcome.findings, [])
         self.assertEqual([kind for kind, _ in self.fake.calls][-1], "read")   # the read-back
 
@@ -612,14 +612,14 @@ class TestRegister(_Base):
         self.assertIn("NextRunTime", str(ctx.exception))
 
     def test_existing_task_is_never_re_registered(self):
-        drifted = copy.deepcopy(self.want()["whispr-backup"])
+        drifted = copy.deepcopy(self.want()["whispr-daily"])
         drifted["settings"]["wake_to_run"] = True
         self.fake.add(drifted)
         with self.assertRaises(S.RegistrationFailed) as ctx:
             S.register(self.cfg, self.fake)
-        self.assertNotIn(("register", "whispr-backup"), self.fake.writes())
+        self.assertNotIn(("register", "whispr-daily"), self.fake.writes())
         self.assertEqual([(f.task, f.kind) for f in ctx.exception.outcome.findings],
-                         [("whispr-backup", S.SETTINGS)])
+                         [("whispr-daily", S.SETTINGS)])
 
     def test_task_altered_on_write_fails_the_read_back(self):
         def drop_repetition(task):   # registered cleanly, kept without its repetition
@@ -649,7 +649,7 @@ class TestPowerShellFailures(_Base):
 
     def test_failed_register_stops(self):
         self.install_all()
-        del self.fake.tasks["whispr-backup"]
+        del self.fake.tasks["whispr-daily"]
         real = self.fake.__call__
 
         def run(script, payload):
@@ -680,7 +680,7 @@ class TestPowerShellFailures(_Base):
     def test_apply_failing_partway_reports_the_read_back(self):
         self.install_all()
         want = self.want()
-        for name in ("whispr-pipeline", "whispr-backup"):
+        for name in ("whispr-pipeline", "whispr-daily"):
             drifted = copy.deepcopy(want[name])
             drifted["settings"]["time_limit_min"] = 999
             self.fake.add(drifted)
@@ -786,18 +786,18 @@ class TestCli(_Base):
 
     def test_apply_prints_the_diff_and_writes_only_with_yes(self):
         self.install_all()
-        drifted = copy.deepcopy(self.want()["whispr-backup"])
+        drifted = copy.deepcopy(self.want()["whispr-daily"])
         drifted["settings"]["time_limit_min"] = 999
         self.fake.add(drifted)
         code, out = self.cli("schedule", "--apply")
         self.assertEqual(code, 1)
         self.assertEqual(self.fake.writes(), [])
-        self.assertIn("would change whispr-backup: settings: time_limit_min", out)
+        self.assertIn("would change whispr-daily: settings: time_limit_min", out)
         self.assertIn("re-run with --yes", out)
         code, out = self.cli("schedule", "--apply", "--yes")
         self.assertEqual(code, 0)
-        self.assertEqual(self.fake.writes(), [("set", "whispr-backup")])
-        self.assertLess(out.index("would change whispr-backup"), out.index("updated whispr-backup"))
+        self.assertEqual(self.fake.writes(), [("set", "whispr-daily")])
+        self.assertLess(out.index("would change whispr-daily"), out.index("updated whispr-daily"))
 
     def test_partial_write_failure_exits_2_naming_what_was_written(self):
         real = self.fake

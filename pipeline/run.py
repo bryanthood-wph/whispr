@@ -63,7 +63,8 @@ if os.name == "nt":
 else:
     import fcntl
 
-JOB = "pipeline"                # the kg.state job, and the scheduled task's name
+JOB = "pipeline"                # the kg.state job
+COMMAND = "run"                 # its `python -m pipeline` subcommand
 STAGE = "transcript"            # one queue item per transcript; its ref is the episode id
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_PARTIAL, EXIT_REFUSED = 0, 1, 2, 3, 4
@@ -74,6 +75,8 @@ SUMMARIZED, NO_CONTENT, RETRY, QUARANTINE, REQUEUED = "summarized", "no-content"
 # Why a run stopped early.
 MAX_ITEMS, TIME_BUDGET, RUN_CAP, DAILY_CAP = "max items", "time budget", "run spend cap", "daily spend cap"
 AUTH, UNAVAILABLE = "auth", "model unavailable"
+# A pipeline-ledger row booking a call in flight at its full cap (reserve_call).
+RESERVE = "reserve"
 # What discovery found for a transcript.
 NEW, CHANGED, PENDING, HELD, UNCHANGED = "new", "changed", "queued", "quarantined", "unchanged"
 
@@ -104,8 +107,11 @@ def files(cfg: dict, key: str) -> Path:
 def default_ask(cfg: dict) -> Ask:
     p = cfg["pipeline"]
     ledger, cache = files(cfg, "ledger"), files(cfg, "cache")
+
+    def reserve(key: str, per_call: float) -> None:
+        reserve_call(cfg, job=JOB, key=key, per_call=per_call)     # stop_reason checked the caps just before
     return lambda prep: extract.extract(prep, cfg, role=extract.ROLE, max_budget_usd=p["max_budget_per_call_usd"],
-                                        ledger=ledger, cache_dir=cache)
+                                        ledger=ledger, cache_dir=cache, before_call=reserve)
 
 
 # ---- the single-instance lock -------------------------------------------------------
@@ -231,17 +237,134 @@ def discover(store: Store, state: State, paths: list[Path], now: datetime) -> Co
 
 
 def spent_since(cfg: dict, since: datetime) -> float:
-    """Model spend in the pipeline ledger since `since` (the daily cap's window)."""
-    total = 0.0
+    """Model spend in the pipeline ledger since `since` (the daily cap's window): every
+    job's call rows, plus each reservation (RESERVE: a call in flight, or one killed
+    before its row was written) that no call row with its request key has settled yet,
+    at its full cap. So spend errs high, never low."""
+    total, pending = 0.0, {}
     for row in models.read_jsonl(files(cfg, "ledger")):
         ts = prepare.parse_iso(row.get("ts"))
-        if ts is not None and ts.tzinfo is not None and ts >= since:
-            total += float(row.get("cost_usd") or 0)
-    return total
+        if ts is None or ts.tzinfo is None or ts < since:
+            continue
+        key = row.get("request_key")
+        if row.get("event") == RESERVE:
+            pending.setdefault(key, []).append(float(row.get("reserve_usd") or 0))
+            continue
+        total += float(row.get("cost_usd") or 0)
+        if pending.get(key):
+            pending[key].pop(0)                 # the call row settles its reservation
+    return total + sum(sum(q) for q in pending.values())
+
+
+def spend_stop(cfg: dict, *, spent: float, day_spent: float, per_call: float, cap: float) -> Optional[str]:
+    """RUN_CAP or DAILY_CAP when one more call, counted at its full per-call cap, could
+    pass the run's own `cap` (over `spent`, this run's) or pipeline.run.daily_cap_usd
+    over `day_spent` (spent_since read now: the ledger's last 24 hours, where every
+    job's calls, this run's included, and every call in flight are booked); else None
+    (lesson L3). Every job that spends checks this before each call, with day_spent
+    read fresh, so two jobs running at once see each other."""
+    if spent + per_call > cap:
+        return RUN_CAP
+    if day_spent + per_call > cfg["pipeline"]["run"]["daily_cap_usd"]:
+        return DAILY_CAP
+    return None
+
+
+def reserve_call(cfg: dict, *, job: str, key: str, per_call: float, now: Optional[datetime] = None,
+                 check: Optional[Callable[[float], Optional[str]]] = None) -> Optional[str]:
+    """A before_call guard step, under models.JSONL_LOCK (as the eval's budget guard):
+    read the 24 hours' spend before `now` (default: the clock) fresh (spent_since), and if `check(day_spent)` names a
+    stop reason return it; otherwise book a RESERVE row for this call at its full cap,
+    which its call row settles, and return None. Within one process the lock makes the
+    read and the booking one step; between processes (the daily job and the 15-minute
+    run) each still sees the other's calls in flight, and the window between one's read
+    and its booking is the only overlap left."""
+    now = now or datetime.now(timezone.utc)
+    with models.JSONL_LOCK:
+        if check is not None:
+            reason = check(spent_since(cfg, now - timedelta(days=1)))
+            if reason:
+                return reason
+        models.append_jsonl(files(cfg, "ledger"), {"event": RESERVE, "ts": db.utc_now(now), "job": job,
+                                                   "request_key": key, "reserve_usd": per_call})
+    return None
 
 
 def _error(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
+
+
+# ---- shared by every job's runner (run, daily, liveness) ----------------------------
+
+def job_log(cfg: dict, job: str) -> Callable[[dict], None]:
+    """log(record): one JSON line, stamped and tagged with `job`, in pipeline.files.log."""
+    def log(record: dict) -> None:
+        models.append_jsonl(files(cfg, "log"), {"ts": db.utc_now(), "job": job, **record})
+    return log
+
+
+def task_name(cfg: dict, command: str) -> str:
+    """The configured scheduled task that runs `-m pipeline <command>`, for messages
+    that tell you to start it; a generic phrase when none is configured."""
+    from pipeline import schedule      # deferred: schedule imports __main__, which imports this module
+    sc = cfg["schedules"]
+    for name, job in sc["tasks"].items():
+        if schedule._pipeline_command([*sc["interpreter_args"], *job["args"]]) == command:
+            return name
+    return f"<the task running `-m pipeline {command}`>"
+
+
+def alert_key(kind: str, subject: str) -> str:
+    """An alert's dedupe key: `<kind>:<subject>` (the job, or what the alert is about)."""
+    return f"{kind}:{subject}"
+
+
+def clear_alerts(state: State, keys: list[str], *, now: datetime) -> list[str]:
+    """The cause behind these alerts is gone (the check that raised one has passed):
+    acknowledge each that is open. Returns the keys closed. A recurrence reopens one
+    (State.raise_alert), so closing never hides a problem that comes back."""
+    return [key for key in keys if state.acknowledge(key, now=now)]
+
+
+def refuse(state: State, job: str, kind: str, message: str, fix: str, *, now: datetime,
+           log: Callable[[dict], None], out: Callable[[str], None]) -> int:
+    """Refuse a run of `job`: one alert (dedupe key kind:job), a log line, EXIT_REFUSED."""
+    state.raise_alert(kind, alert_key(kind, job), message, fix, now=now)
+    log({"event": "run", "outcome": REFUSED, "exit": EXIT_REFUSED, "error": message})
+    out(message)
+    return EXIT_REFUSED
+
+
+def refuse_nested(cfg: dict, state: State, job: str, command: str, *, now: datetime,
+                  log: Callable[[dict], None], out: Callable[[str], None]) -> Optional[int]:
+    """While an auth.refuse_if_set variable is set (a nested Claude Code session, where
+    a model call dies at once with zero tokens: lesson L3), refuse() the run of `job`
+    (the subcommand `command`) and return EXIT_REFUSED; else None."""
+    refused = models.refused_env(cfg)
+    if not refused:
+        return None
+    return refuse(state, job, KIND_REFUSED, f"{job} run refused: {refused[0]} is set, so this is a nested Claude "
+                                            "Code session, where a model call dies at once with zero tokens.",
+                  f"Let the scheduled task run it (Start-ScheduledTask -TaskName {task_name(cfg, command)}), or "
+                  "run it from a terminal outside Claude Code; --dry-run is safe anywhere.", now=now, log=log, out=out)
+
+
+def model_alert(cfg: dict, state: State, job: str, run_id: str, exc: models.ModelCallError, *, resumes: str,
+                now: datetime) -> str:
+    """Raise the one alert for a model-call failure that is the machine's, not an
+    item's (signed out, an API key preferred, offline, no CLI, an outage):
+    auth:<job> or model-unavailable:<job>; `resumes` says what happens next. Returns
+    why the run stopped (AUTH or UNAVAILABLE)."""
+    if isinstance(exc, models.AuthError):
+        kind, why, fix = KIND_AUTH, AUTH, ("Sign in to Claude Code with the approved login (auth.approved_sources) "
+                                           "and remove any API key the CLI would prefer")
+    else:
+        kind, why, fix = KIND_UNAVAILABLE, UNAVAILABLE, (
+            f"Check that `{cfg['cli']['executable']}` is installed and signed in and that this machine "
+            "is online (the error above says which failed)")
+    state.raise_alert(kind, alert_key(kind, job), f"{job} run {run_id} stopped: {_error(exc)}", f"{fix}; {resumes}",
+                      now=now)
+    return why
 
 
 # ---- a run --------------------------------------------------------------------------
@@ -256,7 +379,6 @@ class _Run:
         self.spent = 0.0
         self.longest = 0.0          # the slowest item so far, the time budget's estimate of the next
         self.model_answered = False  # a model call returned in this run: a later call failure is the item's
-        self.day_spent = spent_since(cfg, now - timedelta(days=1))
         self.version = extract.version(cfg)
         self.schema = extract.load_schema(cfg)
         self.run_id = ""
@@ -268,16 +390,12 @@ class _Run:
         """Why the next item must not start, or None. Spend is checked as if the next
         item makes a call at its full per-call cap."""
         r = self.cfg["pipeline"]["run"]
-        per_call = self.cfg["pipeline"]["max_budget_per_call_usd"]
         if started_items >= r["max_items"]:
             return MAX_ITEMS
         if self.clock() - self.started + self.longest >= r["time_budget_s"]:
             return TIME_BUDGET
-        if self.spent + per_call > r["cap_usd"]:
-            return RUN_CAP
-        if self.day_spent + self.spent + per_call > r["daily_cap_usd"]:
-            return DAILY_CAP
-        return None
+        return spend_stop(self.cfg, spent=self.spent, day_spent=spent_since(self.cfg, self.now - timedelta(days=1)),
+                          per_call=self.cfg["pipeline"]["max_budget_per_call_usd"], cap=r["cap_usd"])
 
     def work(self, items: list[dict]) -> tuple[Optional[str], Optional[str]]:
         """(why the run stopped early or None, a systemic error or None)."""
@@ -333,16 +451,9 @@ class _Run:
     def systemic(self, item: dict, rec: dict, exc: models.ModelCallError) -> _Systemic:
         """The machine's failure: give the attempt back and raise its one alert; the
         caller raises what this returns, which stops the run."""
-        if isinstance(exc, models.AuthError):
-            kind, why, fix = KIND_AUTH, AUTH, ("Sign in to Claude Code with the approved login (auth.approved_sources) "
-                                               "and remove any API key the CLI would prefer")
-        else:
-            kind, why, fix = KIND_UNAVAILABLE, UNAVAILABLE, (
-                f"Check that `{self.cfg['cli']['executable']}` is installed and signed in and that this machine "
-                "is online (the error above says which failed)")
         self.state.undo_attempt(item, _error(exc), self.now)
-        self.state.raise_alert(kind, f"{kind}:{JOB}", f"{JOB} run {self.run_id} stopped: {_error(exc)}",
-                               fix + "; the queue resumes on the next run, no attempt used.", now=self.now)
+        why = model_alert(self.cfg, self.state, JOB, self.run_id, exc,
+                          resumes="the queue resumes on the next run, no attempt used.", now=self.now)
         rec.update(outcome=REQUEUED, error=_error(exc))
         return _Systemic(why, _error(exc))
 
@@ -400,25 +511,15 @@ class _Run:
 def _locked_run(cfg: dict, conn, *, once: Optional[Path], ask: Optional[Ask], now: datetime,
                 clock: Callable[[], float], log: Callable[[dict], None], out: Callable[[str], None]) -> int:
     state = State(conn, cfg)
-
-    def refuse(kind: str, message: str, fix: str) -> int:
-        state.raise_alert(kind, f"{kind}:{JOB}", message, fix, now=now)
-        log({"event": "run", "outcome": REFUSED, "exit": EXIT_REFUSED, "error": message})
-        out(message)
-        return EXIT_REFUSED
-
-    refused = models.refused_env(cfg)
-    if refused:
-        return refuse(KIND_REFUSED, f"{JOB} run refused: {refused[0]} is set, so this is a nested Claude Code "
-                                    "session, where a model call dies at once with zero tokens.",
-                      f"Let the scheduled task run it (Start-ScheduledTask -TaskName {JOB}), or run it from a "
-                      "terminal outside Claude Code; --dry-run is safe anywhere.")
+    refused = refuse_nested(cfg, state, JOB, COMMAND, now=now, log=log, out=out)
+    if refused is not None:
+        return refused
     since = None
     if once is None:                            # --once names its transcript: no date window
         try:
             since = process_since(cfg)
         except ValueError as exc:
-            return refuse(KIND_SETUP, f"{JOB} run refused: {exc}.", SETUP_FIX)
+            return refuse(state, JOB, KIND_SETUP, f"{JOB} run refused: {exc}.", SETUP_FIX, now=now, log=log, out=out)
     r = _Run(cfg, conn, ask=ask or default_ask(cfg), now=now, clock=clock, log=log)
     r.run_id = state.begin_run(JOB, now)
     eligible, stop, error = 0, None, None
@@ -542,8 +643,7 @@ def run(cfg: dict, *, dry_run: bool = False, once: Optional[str] = None, ask: Op
     started = clock()
     now = now or datetime.now(timezone.utc)
 
-    def log(record: dict) -> None:                # never called by a dry run: it writes nothing
-        models.append_jsonl(files(cfg, "log"), {"ts": db.utc_now(), "job": JOB, **record})
+    log = job_log(cfg, JOB)                     # never called by a dry run: it writes nothing
 
     path = None
     if once is not None:

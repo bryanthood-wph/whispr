@@ -16,7 +16,7 @@ owner:
 paths:
   transcripts: null     # overlay: folder the recorder writes transcripts to
   data_dir: null        # overlay: per-user data outside git (results, cache, ledger, database, backups)
-  recorder_log: null    # overlay: the recorder's whispr.log; the eval needs it (low-mic, B.3), nothing else does
+  recorder_log: null    # overlay: the recorder's whispr.log; the eval (low-mic, B.3), the daily reconciliation and doctor read it
 
 auth:
   # Accepted values of the CLI's init-event `apiKeySource`. "none" = the user's
@@ -141,11 +141,13 @@ pipeline:
   files:                        # under paths.data_dir
     notes: notes                # the write stage's summary notes, one <episode id>.md per transcript
     log: logs/pipeline.jsonl    # one JSON line per item and per run
-    ledger: pipeline-ledger.jsonl   # every extract call's cost (pipeline/models.py); the daily cap reads it
+    ledger: pipeline-ledger.jsonl   # every model call's cost, every job's (pipeline/models.py); the daily cap reads it
     cache: cache/extract        # schema-valid extract outputs by request key, so a retry never pays twice
     # The single-instance lock: an OS lock on this file, which the OS drops when the
     # holding process exits however it dies, so a crash never leaves it held.
     lock: pipeline.lock
+    daily_lock: daily.lock      # the same kind of lock for `python -m pipeline daily`; restore takes both
+    resolve_cache: cache/resolve   # the daily job's "same entity?" decisions by request key (as cache is for extract)
   run:
     # No new item starts once the elapsed time plus the longest item so far would pass
     # this; the run exits PARTIAL and the rest stay queued. The task's time limit must
@@ -268,6 +270,87 @@ alerts:
   # re-raised at most once per this many days, instead of re-alerting every day.
   quarantine_digest_days: 7
   repeat_item_runs: 3           # D.1: an item started in this many consecutive runs of its job raises an alert
+  # `python -m pipeline alerts --session-start`, shown by the Claude Code SessionStart hook
+  # (plugin/hooks/): nothing when no alert is open, else one short message.
+  session_start:
+    max_alerts: 5               # name at most this many (then "and N more")
+    message_chars: 160          # each alert's message clipped to this
+    timeout_s: 5                # the database read gives up after this; the hook's own timeout (hooks.json) must exceed it
+
+backup:
+  # The first step of `python -m pipeline daily` (D.6, L22). A backup is a folder
+  # <prefix><UTC stamp> holding a consistent copy of the graph + state database (the
+  # SQLite backup API, never a file copy, so a run writing meanwhile can't tear it), the
+  # override data and the transcripts (the rebuild source), plus a manifest. It is built
+  # under a .partial name and renamed only once the copy opens and passes PRAGMA
+  # integrity_check, so a half-made backup is never pruned to or restored from.
+  # `python -m pipeline restore --from <folder> [--yes]` is the setup restore drill.
+  destination: null             # overlay: the folder backups go to (D.6: your OneDrive data folder). Null: the step refuses with a setup alert
+  keep: 7                       # verified backups kept; older ones are deleted once a new one has verified
+  prefix: whispr-backup-        # only folders named <prefix>... that hold a manifest are ever pruned
+  # Override data (C.8 human overrides): files or folders under paths.data_dir copied too.
+  # Nothing writes override data yet; list it here once something does.
+  include: []
+  transcripts: true             # copy paths.transcripts too (its *.md files)
+
+maintain:
+  # The C.5 maintenance step of `daily`: entity resolution (kg/resolve.py), whose "same
+  # entity?" decisions go through pipeline/calls.py as the kg.models.resolve role, then the
+  # integrity checks (kg/integrity.py) and the quarantine digest (alerts.quarantine_digest_days).
+  max_budget_per_call_usd: 0.25 # --max-budget-usd per decision: a short prompt (an estimate until measured)
+  # Per run, checked before every decision as if it cost its full per-call cap; the
+  # pipeline's daily cap (pipeline.run.daily_cap_usd) applies too. Over it: PARTIAL, resumed next run.
+  cap_usd: 2.00
+  # No new decision starts once the time since the daily run started (backup included)
+  # plus the slowest decision so far would pass this. The task's time limit must exceed
+  # it plus cli.timeout_s plus reconciliation (see whispr-daily).
+  time_budget_s: 900
+  listed: 20                    # integrity: at most this many problems and orphan ids in its log details
+
+reconcile:
+  # The reconciliation step of `daily` (D.6, L14): transcripts written vs expected calls.
+  window_days: 2                # compare the last N days, so a missed daily run is covered by the next
+  settle_min: 120               # a call or transcript newer than this is not judged yet (transcription and the run come after the call)
+  max_tombstones: 5             # more episodes than this whose transcript is gone: alert, tombstone none (folder offline or moved?)
+  outlook_slack_min: 10         # a transcript starting this long before a meeting still counts as its recording
+  # The recorder's log lines (whispr/log.py's stamp; whispr/__main__.py, whispr/output.py),
+  # read from paths.recorder_log and its rotated copies: a call queued for transcription,
+  # a transcript written (group 1: its path).
+  recorder_log:
+    stamp: '^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)'
+    queued: 'queuing session for transcription \('
+    written: 'Wrote transcript: (.+)$'
+
+liveness:
+  # Recorder liveness: `python -m pipeline liveness` (D.6, L14; the port of
+  # scripts/watch-recorder.ps1). Alive means the recorder holds its own single-instance
+  # mutex, never a process scan (`pythonw -m whispr` is two processes, stub and app).
+  mutex: 'Global\whispr_single_instance'   # whispr/__main__.py::_MUTEX_NAME
+  # Overlay (required to relaunch): the recorder's argv and working directory, e.g.
+  # [C:\github\whispr\.venv\Scripts\pythonw.exe, -m, whispr] and C:\github\whispr.
+  # While either is null a check that finds the recorder down raises setup:liveness.
+  command: null
+  working_dir: null
+  # The recorder's import chain runs before it takes the mutex (~9 s measured, slower on a
+  # cold boot): wait this long, polling this often, before calling a relaunch failed.
+  confirm_timeout_s: 60
+  confirm_poll_s: 2
+
+doctor:
+  # `python -m pipeline doctor`: the one status report (D.6). It exits 1 when anything
+  # below needs attention.
+  # A job whose last successful run is older than this many hours (or that never
+  # succeeded). pipeline: the 15-minute run; daily: once a day plus slack for a late start.
+  stale_after_h:
+    pipeline: 1
+    daily: 26
+  liveness_stale_min: 40        # no liveness check logged for this long (whispr-liveness runs every 15 minutes)
+  # The recorder's incidents (whispr/incidents.py), in the folder of paths.recorder_log:
+  # counted over the last incident_days; any of attention_incidents needs attention.
+  incidents_file: incidents.jsonl
+  incident_days: 7
+  attention_incidents: [crash]
+  listed: 10                    # at most this many ids per list in the report (notes missing My Actions, ...)
 
 schedules:
   # Windows scheduled tasks, generated from this section (D.2, lesson L16).
@@ -340,13 +423,44 @@ schedules:
       restart_count: 0
       restart_interval_min: null
       multiple_instances: IgnoreNew
-    # The nightly backup (D.6, L22): no model spend, so it runs on battery too.
-    whispr-backup:
-      args: [-m, pipeline, backup]
+    # The one daily job (D.6, C.5; decision 2026-10-05): backup -> maintenance ->
+    # reconciliation, each step recorded; a failing step doesn't skip the others but fails
+    # the run, with its alert. It replaces the nightly batch, retired at cutover.
+    # Operating envelope:
+    #   cadence    once a day at 21:30, after the working day's calls. Catch-up runs a missed
+    #              start at the next wake or logon; a missed day is covered by the next run
+    #              (reconcile.window_days spans two days, and entity resolution resumes).
+    #   cost       estimated, not yet measured. Backup and reconciliation make no model call.
+    #              Entity resolution asks only about pairs it has not decided or that changed
+    #              (er_decision), est. $0-0.50 a day; a first pass over a rebuilt graph costs
+    #              more and is spread over several days by the cap.
+    #   caps       maintain.max_budget_per_call_usd per decision (--max-budget-usd), maintain.cap_usd
+    #              per run, and pipeline.run.daily_cap_usd shared with the pipeline (one ledger),
+    #              each checked before every call as if it cost its full per-call cap. Over one,
+    #              resolution stops PARTIAL (exit 3) and the next run resumes it.
+    #   time limit 40 min = maintain.time_budget_s (900 s, counted from the run's start, so a slow
+    #              backup eats the budget, not the slack) + cli.timeout_s (900 s: a decision started
+    #              just inside the budget) + reconciliation (seconds) + about 10 minutes, so the
+    #              scheduler kills only a hung run.
+    #   power      any power, never stopped on battery: model calls run on battery (2026-10-05).
+    #   kill       = failed + retry: the next start fails a killed run (State.begin_run, with a
+    #              run-failed alert) and is its retry; restart_count 1 retries a run the
+    #              scheduler killed or could not start, 10 minutes later.
+    #   alerts     run-failed:daily, setup:backup, auth:daily / model-unavailable:daily,
+    #              reconcile:daily, refused-env:daily: all in the one alert surface (D.6).
+    #   auth       the Claude Code sign-in (auth.approved_sources), asserted on every call by
+    #              pipeline/models.py; refused in a nested Claude Code session (auth.refuse_if_set).
+    #   egress     the "same entity?" prompts (names, emails, short quotes) to the model through
+    #              the CLI; backups go to backup.destination (your OneDrive data folder, the
+    #              tenant's storage). Nothing else leaves the machine.
+    #   first run  supervised: `python -m pipeline daily --dry-run`, then Start-ScheduledTask.
+    #   removal    unregister the task; backups stay in backup.destination.
+    whispr-daily:
+      args: [-m, pipeline, daily]
       daily_at: '21:30'
       at_logon: false
       every_min: null
-      time_limit_min: 30
+      time_limit_min: 40
       ac_power_only: false
       stop_on_battery: false
       start_when_available: true
@@ -356,9 +470,12 @@ schedules:
       multiple_instances: IgnoreNew
     # Recorder liveness (D.6, L14): at logon plus every 15 minutes, the design that fixed the
     # 08-23 outage (three days dead, an AtLogOn-only trigger never re-fired). The repetition
-    # is the retry, so no restart. 5 minutes: a check still running then is hung. Killing it
-    # is safe only while the check launches the recorder outside the task's job object
-    # (Win32_Process::Create, as scripts/watch-recorder.ps1 does); a plain child dies with it.
+    # is the retry, so no restart. 5 minutes: a check still running then is hung (one check
+    # is a mutex probe, plus at most liveness.confirm_timeout_s after a relaunch). Killing it
+    # is safe because pipeline/liveness.py launches the recorder outside the task's job
+    # object (Win32_Process::Create, as scripts/watch-recorder.ps1 did); a plain child would
+    # die with it. No model call, no spend, no egress. It replaces the hand-registered
+    # whispr-recorder watchdog task at cutover; until then only one of the two should run.
     whispr-liveness:
       args: [-m, pipeline, liveness]
       daily_at: null

@@ -21,7 +21,10 @@ merge and unmerge.
   each entity's names, emails and kg.er.context_items facts and edges. Only "same"
   merges; "unsure" is counted as escalated and left for review. A model decision is
   kept (`er_decision`, migration 0004) with a fingerprint of each side's names and
-  email; the pair is skipped on later passes until either fingerprint changes. The model is reached
+  email; the pair is skipped on later passes until either fingerprint changes. A
+  pair whose decision fails in a way the caller's `pair_error` calls the pair's own
+  (bad output, a failed merge) is kept the same way as `failed` and escalated, so one
+  poison pair is not asked, paid for and failed again on every pass. The model is reached
   only through the `ask` callable the caller passes (eval.ask.Ask's shape, bound to
   pipeline.calls / pipeline.models), so tests pass a fake and no model is ever
   imported here.
@@ -57,6 +60,9 @@ from pipeline.jsonschema_lite import validate
 
 # The typed decision; must equal the schema's enum (checked when a Resolver is made).
 SAME, DIFFERENT, UNSURE = "same", "different", "unsure"
+# Recorded in er_decision (never asked of the model) for a pair whose decision failed
+# (bad output, a failed merge, a call failure the caller judged the pair's own).
+FAILED = "failed"
 # Who made a merge decision, as recorded in entity_merge.decision.
 BASIS_RULE, BASIS_MODEL, BASIS_MANUAL = "rule", "model", "manual"
 # maintenance_log check names.
@@ -69,6 +75,9 @@ _NUMBER = re.compile(r"\d+")
 
 # (role, prompt, schema) -> the schema-valid structured output.
 Ask = Callable[[str, str, dict], dict]
+# pair_error(exc) -> True when a failure deciding one candidate is that pair's own: it is
+# recorded as FAILED and the pass goes on; False re-raises it (the machine's: stop).
+PairError = Callable[[Exception], bool]
 
 
 def _email(entity: dict) -> Optional[str]:
@@ -290,11 +299,14 @@ class Resolver:
         kept, dropped = sorted((a, b), key=rank)
         return kept, dropped
 
-    def run(self, run_id: str, ask: Ask, now: Optional[datetime] = None) -> dict:
-        """One resolution pass: attach mentions, then decide and merge every candidate."""
+    def run(self, run_id: str, ask: Ask, now: Optional[datetime] = None,
+            pair_error: Optional[PairError] = None) -> dict:
+        """One resolution pass: attach mentions, then decide and merge every candidate.
+        A failure deciding a candidate re-raises unless `pair_error` says it is that
+        pair's own; then it is recorded as FAILED (with the fingerprints) and the pass goes on."""
         attached = self.attach_unresolved(run_id, now=now)
         found = self.candidates()
-        merged, unsure, different, skipped = [], [], 0, 0
+        merged, unsure, failed, different, skipped = [], [], [], 0, 0
         for candidate in found:
             a, b = self.store.live_id(candidate.a), self.store.live_id(candidate.b)
             if a == b:                    # an earlier merge in this pass already joined them
@@ -304,21 +316,30 @@ class Resolver:
             if not candidate.certain and self._decided(candidate, prints):
                 skipped += 1              # asked before, and neither side's names or email changed
                 continue
-            decision = self.decide(candidate, ask)
-            if decision["decision"] == SAME:
-                kept, dropped = self.survivor(a, b)
-                merged.append(self.merge(kept, dropped, reason=decision["reason"], run_id=run_id,
-                                         decision=decision, now=now))
-            elif decision["decision"] == UNSURE:
+            try:
+                decision = self.decide(candidate, ask)
+                if decision["decision"] == SAME:
+                    kept, dropped = self.survivor(a, b)
+                    merged.append(self.merge(kept, dropped, reason=decision["reason"], run_id=run_id,
+                                             decision=decision, now=now))
+            except Exception as exc:
+                if pair_error is None or not pair_error(exc):
+                    raise
+                reason = f"{type(exc).__name__}: {exc}"
+                failed.append([a, b, reason])
+                if not candidate.certain:     # a certain pair is never asked: it retries by rule next pass
+                    self._record(candidate, {"decision": FAILED, "reason": reason}, prints, now)
+                continue
+            if decision["decision"] == UNSURE:
                 unsure.append([a, b])
-            else:
+            elif decision["decision"] != SAME:
                 different += 1
             if decision["basis"] == BASIS_MODEL:
                 self._record(candidate, decision, prints, now)
         summary = {"attached": len(attached), "candidates": len(found), "merged": merged,
-                   "different": different, "unsure": unsure, "skipped": skipped}
+                   "different": different, "unsure": unsure, "failed": failed, "skipped": skipped}
         self.state.log_maintenance(run_id, CHECK_RESOLVE, found=len(found), repaired=len(merged),
-                                   escalated=len(unsure), details=json.dumps(summary), now=now)
+                                   escalated=len(unsure) + len(failed), details=json.dumps(summary), now=now)
         return summary
 
     def _fingerprint(self, entity_id: str) -> str:
