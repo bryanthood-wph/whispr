@@ -3,7 +3,7 @@
   "title": "whispr pipeline config (defaults.yaml merged with the user overlay)",
   "type": "object",
   "additionalProperties": false,
-  "required": ["config_version", "owner", "paths", "auth", "cli", "models", "prompts", "schemas", "ontology", "prepare", "extract", "pipeline", "eval"],
+  "required": ["config_version", "owner", "paths", "auth", "cli", "models", "prompts", "schemas", "ontology", "prepare", "extract", "pipeline", "kg", "alerts", "eval"],
   "$defs": {
     "str": {"type": "string", "minLength": 1},
     "strs": {"type": "array", "items": {"type": "string"}},
@@ -105,6 +105,26 @@
       "properties": {
         "max_attempts": {"type": "integer", "minimum": 1},
         "max_budget_per_call_usd": {"$ref": "#/$defs/money"}
+      }
+    },
+    "kg": {
+      "type": "object", "additionalProperties": false, "required": ["database", "search_cards", "busy_timeout_ms", "er", "rederive_approval_usd"],
+      "properties": {
+        "database": {"$ref": "#/$defs/str"},
+        "search_cards": {"type": "integer", "minimum": 1},
+        "busy_timeout_ms": {"type": "integer", "minimum": 0},
+        "er": {
+          "type": "object", "additionalProperties": false, "required": ["max_edit_distance"],
+          "properties": {"max_edit_distance": {"type": "integer", "minimum": 0}}
+        },
+        "rederive_approval_usd": {"$ref": "#/$defs/money"}
+      }
+    },
+    "alerts": {
+      "type": "object", "additionalProperties": false, "required": ["quarantine_digest_days", "repeat_item_runs"],
+      "properties": {
+        "quarantine_digest_days": {"type": "number", "minimum": 0},
+        "repeat_item_runs": {"type": "integer", "minimum": 1}
       }
     },
     "eval": {

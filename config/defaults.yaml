@@ -131,6 +131,25 @@ pipeline:
   max_attempts: 3
   max_budget_per_call_usd: 1.00
 
+kg:
+  # The graph + state database (C.4, D.1), a SQLite file under paths.data_dir.
+  database: whispr.db
+  # MCP `search` returns at most this many short cards (C.4 progressive disclosure).
+  search_cards: 20
+  # A writer waits this long (ms) for another process's write lock before "database is locked".
+  busy_timeout_ms: 5000
+  er:
+    max_edit_distance: 2        # C.5 entity resolution: names this many edits apart are merge candidates
+  # C.5: a re-derivation (extractor or ontology change) estimated above this waits for
+  # your approval before it spends (lesson L3).
+  rederive_approval_usd: 5
+
+alerts:
+  # D.1: an item quarantined this many days ago leaves the open alerts for a digest,
+  # re-raised at most once per this many days, instead of re-alerting every day.
+  quarantine_digest_days: 7
+  repeat_item_runs: 3           # D.1: an item started in this many consecutive runs of its job raises an alert
+
 eval:
   budget_usd: 100
   stop_margin_usd: 5            # stop and write RESUME.md once spend is within this of the cap (G.5)
