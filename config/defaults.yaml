@@ -347,9 +347,11 @@ tasks:
     # With no since clause the window opens this many days before the server starts; with
     # no until clause it closes today.
     default_window_days: 90
-    # Folders (paths under the mailbox root, folder_separator between levels) searched when
-    # the scope names no folder.
-    default_folders: [Inbox, Sent Items]
+    # Outlook's default folders searched (with their subfolders) when the scope names no
+    # folder: OlDefaultFolders names (m365/outlook.py OL_DEFAULT_FOLDERS) or numbers, so the
+    # mailbox's language does not matter. One that does not resolve is an error in the
+    # search's error count and makes the result partial, never a refusal.
+    default_folders: [olFolderInbox, olFolderSentMail]
     # The task statuses a server may be bound to; any other is refused at start.
     bind_statuses: [ready, in_progress]
     # The Windows short-date picture (e.g. M/d/yyyy) dates are written in for Outlook's
@@ -370,6 +372,7 @@ tasks:
     mail:
       max_results: 25             # cards per search call at most (use offset for the next page)
       max_scan: 1000              # rows read per search (all folders) before it stops, partial
+      max_folders: 50             # folders a search walks (scope folders and their subfolders) before it stops, partial
       body_max_results: 10        # body-snippet hits per call at most: each opens one item
       snippet_chars: 300          # characters around the first match
       body_chars: 20000           # get_message returns at most this much text (truncated flags a cut)
@@ -385,10 +388,17 @@ tasks:
       max_bytes: 26214400         # 25 MiB: larger ones are refused, saved or attached
       name_chars: 120             # a saved file name is cut to this many characters
       fallback_name: attachment   # used when nothing of the original name survives cleaning
+      ext_chars: 16               # a saved name keeps at most this much extension (the dot included)
+      digest_chars: 12            # sha256 hex characters added to a name already holding other content
+      temp_suffix: .part          # a save is written under a temporary name ending so, then renamed
     drafts:
       # The UserProperty that marks a draft with its task id (F13): Drafts is checked for
       # it before a draft is made, and an existing one is reported instead.
       marker_property: WhisprTaskId
+      # The UserProperty holding the source message's EntryID on a reply or forward: a task
+      # may have one draft per source message, and one new-mail draft per subject
+      # (letter case and spacing ignored).
+      source_property: WhisprSourceId
       max_attachments: 10
       body_chars: 100000          # a longer body argument is refused
     # The HTML a draft body may hold; everything else is dropped (its text kept, except
@@ -402,6 +412,8 @@ tasks:
         th: [colspan, rowspan]
         td: [colspan, rowspan]
       url_schemes: [https, http, mailto]
+      # Attributes holding a URL: kept only with a scheme in url_schemes.
+      url_attributes: [href, src]
 
 alerts:
   # D.1: an item quarantined this many days ago leaves the open alerts for a digest,

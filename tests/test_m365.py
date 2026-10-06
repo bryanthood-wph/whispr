@@ -4,6 +4,7 @@ layer. No real Outlook, no model calls; every database and folder is a temp one.
 
 from __future__ import annotations
 
+import _winapi
 import ast
 import contextlib
 import json
@@ -35,6 +36,13 @@ EP = "ep-2026-09-30-1000"
 WHO = "tester"
 DISCONNECT = -2147417848          # RPC_E_DISCONNECTED
 SCOPE = ["sender:@example.com", "folder:Inbox", "since:2026-09-01"]
+# COM verbs no m365 source may name, as an attribute or a string (getattr, Invoke):
+# sending, deleting, moving, showing, flagging, copying, closing or saving-as an item.
+FORBIDDEN_VERBS = {"Send", "Delete", "PermanentDelete", "Move", "Display", "FlagRequest", "MarkAsTask", "FlagStatus",
+                   "SaveAs", "Copy", "Close", "ClearConversationIndex"}
+# Explicit exceptions, (file, name) -> why. None today: SaveAsFile (an attachment to a
+# file in the task folder) and Save (an unsent draft) are different names.
+VERB_EXCEPTIONS: dict = {}
 
 
 # ---- the fake Outlook ----------------------------------------------------------------
@@ -71,6 +79,10 @@ class Recipient:
 
 
 class Recipients(list):
+    @property
+    def Count(self):
+        return len(self)
+
     def Add(self, address):
         r = Recipient(address)
         self.append(r)
@@ -105,6 +117,9 @@ class UserProperties(dict):
         prop = type("Prop", (), {"Value": None})()
         self[name] = prop
         return prop
+
+    def value(self, name):
+        return self[name].Value if name in self else None
 
 
 class Draft:
@@ -234,12 +249,11 @@ class Folder:
             raise self.fail.pop(0)
         marker = re.search(r'/WhisprTaskId" = \'([^\']*)\'', dasl)
         if marker:
-            return Table([Row((d.EntryID, d.Subject)) for d in self.items
-                          if d.UserProperties.get("WhisprTaskId") and d.UserProperties["WhisprTaskId"].Value
-                          == marker.group(1)])
+            return Table([Row((d.EntryID, d.Subject, d.UserProperties.value("WhisprSourceId"))) for d in self.items
+                          if d.UserProperties.value("WhisprTaskId") == marker.group(1)])
         return Table([m if isinstance(m, Row) else
                       Row((m.EntryID, m.Subject, m.ReceivedTime, m.SenderName, m.smtp, bool(m.Attachments)))
-                      for m in sorted(self.items, key=lambda m: getattr(m, "ReceivedTime", datetime.min),
+                      for m in sorted(self.items, key=lambda m: getattr(m, "ReceivedTime", None) or datetime.min,
                                       reverse=True)])
 
 
@@ -256,10 +270,11 @@ class FakeOutlook:
         self.m4 = Mail("m4", "amy@example.com", d(25), "Apollo plan")
         self.m5 = Mail("m5", "jane@example.com", d(16), "Elsewhere")
         self.m6 = Mail("m6", "jane@example.com", d(18), "Apollo all hands", cc=["bob@other.org"])
+        self.m7 = Mail("m7", "jane@example.com", d(17), "Sent one")
         root = "\\\\pat@example.com"
         self.projects = Folder("Projects", root + "\\Inbox\\Projects", [self.m4])
         self.inbox = Folder("Inbox", root + "\\Inbox", [self.m1, self.m2, self.m3, self.m6], [self.projects])
-        self.sent = Folder("Sent Items", root + "\\Sent Items")
+        self.sent = Folder("Sent Items", root + "\\Sent Items", [self.m7])
         self.other = Folder("Other", root + "\\Other", [self.m5])
         self.drafts = Folder("Drafts", root + "\\Drafts")
         self.calendar = Folder("Calendar", root + "\\Calendar", [
@@ -268,7 +283,7 @@ class FakeOutlook:
             Appointment("a3", datetime(2026, 12, 1, 9), datetime(2026, 12, 1, 10), "Far away")])
         self.root = Folder("pat@example.com", root, [], [self.inbox, self.sent, self.other, self.drafts,
                                                          self.calendar])
-        for folder in (self.projects, self.inbox, self.other):
+        for folder in (self.projects, self.inbox, self.other, self.sent):
             for m in folder.items:
                 m.outlook = self
         self.connects = 0
@@ -278,18 +293,20 @@ class FakeOutlook:
             DefaultStore = type("Store", (), {"StoreID": "store-1", "GetRootFolder": lambda s: app.root})()
 
             def GetDefaultFolder(self, n):
-                return {ol.OL_FOLDER_CALENDAR: app.calendar, ol.OL_FOLDER_DRAFTS: app.drafts}[n]
+                return {ol.OL_FOLDER_CALENDAR: app.calendar, ol.OL_FOLDER_DRAFTS: app.drafts, 6: app.inbox,
+                        5: app.sent}[n]
 
             def GetItemFromID(self, entry_id, store_id):
                 for item in app.all_items():
-                    if item.EntryID == entry_id:
+                    if getattr(item, "EntryID", None) == entry_id:
                         return item
                 raise FakeComError(-2147221233)          # MAPI_E_NOT_FOUND
 
         self.ns = NS()
 
     def all_items(self):
-        return [*self.inbox.items, *self.projects.items, *self.other.items, *self.drafts.items, *self.calendar.items]
+        return [*self.inbox.items, *self.projects.items, *self.other.items, *self.sent.items, *self.drafts.items,
+                *self.calendar.items]
 
     def connect(self):
         self.connects += 1
@@ -311,6 +328,11 @@ def m365_overlay(root: Path, **m365) -> dict:
     return ov
 
 
+def junction(link: Path, target: Path) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    _winapi.CreateJunction(str(target), str(link))
+
+
 class M365Case(unittest.TestCase):
     """A temp config and database holding one ready task with an email scope."""
 
@@ -329,24 +351,30 @@ class M365Case(unittest.TestCase):
         self.tid = self.add_task(SCOPE)
         self.fake = FakeOutlook()
 
+    def email_scope(self, values) -> list:
+        intake = self.store.intake
+        return [{"type": "email", "value": v} for v in values] + [
+            {"type": t, "value": intake["scope_none"]} for t in intake["scope_types"] if t != "email"]
+
     def add_task(self, email_values, *, quote="I'll send Jane the budget", status="ready"):
         tid = self.store.add_task({"id": task_id(EP, quote), "owner": "Pat Example", "owner_basis": "volunteered",
                                    "action": "Send Jane the budget", "due": "Friday", "due_basis": "stated",
                                    "context": "", "quote": quote, "source": {"episode": EP, "start": "00:00:01"},
                                    "confidence": 0.9, "status": "captured", "tools_allowed": []})
-        intake = self.store.intake
         brief = {f: f"the {f}" for f in self.store.required_fields
                  if f not in (self.store.scope_field, self.store.budget_field)}
         brief["audience"] = "Jane Doe <Jane@Example.com>"
         brief[self.store.budget_field] = budget_answer(self.store)
-        scope = [{"type": "email", "value": v} for v in email_values] + [
-            {"type": t, "value": intake["scope_none"]} for t in intake["scope_types"] if t != "email"]
-        self.store.update_task(tid, actor=WHO, brief=brief, scope=scope, brief_source="stated")
+        self.store.update_task(tid, actor=WHO, brief=brief, scope=self.email_scope(email_values),
+                               brief_source="stated")
         for step in {"captured": (), "ready": ("confirmed", "ready")}[status]:
             self.store.update_task(tid, actor=WHO, status=step, reason="step")
         return tid
 
-    def server(self, role=READ, tid=None, env=None, **kw) -> M365Server:
+    def task_dir(self, tid=None) -> Path:
+        return Path(self.cfg["paths"]["data_dir"]) / "tasks" / (tid or self.tid)
+
+    def server(self, role=READ, tid=None, env=None) -> M365Server:
         env = env if env is not None else {TASK_ENV: tid or self.tid, ROLE_ENV: role}
         binding = load_binding(self.cfg, env, today=TODAY)
         worker = ComWorker(context=contextlib.nullcontext)
@@ -368,6 +396,9 @@ class M365Case(unittest.TestCase):
         self.assertTrue(is_error, body)
         self.assertRegex(body["error"], pattern)
         return body
+
+    def ids(self, out) -> list:
+        return [r["entry_id"] for r in out["results"]]
 
 
 # ---- the grammar ---------------------------------------------------------------------
@@ -418,11 +449,13 @@ class TestGrammar(M365Case):
         with self.assertRaises(ConfigError):
             load_config(overlay={**overlay(self.root), "tasks": {"m365": {"scope_type": "mail"}}})
 
-    def test_allowed_recipients_are_addresses_named(self):
+    def test_allowed_recipients_are_addresses_named_never_domains(self):
         s = parse_email_scope(["sender:bob@x.org", "sender:@y.org"], self.cfg, today=TODAY)
         brief = {"audience": {"value": "Jane <JANE@example.com> and Al"}, "budget": {"value": {"reason": "a@b.cc"}},
                  "scope": {"value": [{"type": "folder", "value": "C:/x"}]}}
-        self.assertEqual(allowed_recipients(brief, s), {"jane@example.com", "a@b.cc", "bob@x.org"})
+        allowed = allowed_recipients(brief, s)
+        self.assertEqual(allowed, {"jane@example.com", "a@b.cc", "bob@x.org"})
+        self.assertFalse(any(a.endswith("@y.org") for a in allowed))
 
 
 # ---- binding and roles ---------------------------------------------------------------
@@ -444,6 +477,17 @@ class TestBinding(M365Case):
         tid = self.add_task(SCOPE, quote="captured one", status="captured")
         self.refused(self.server(tid=tid), "scope_get", {}, "bind_statuses")
 
+    def test_status_and_scope_are_read_again_on_every_call(self):
+        server = self.server()
+        self.assertEqual(self.ids(self.ok(server, "mail_search")), ["m4", "m6", "m1"])
+        self.store.update_task(self.tid, actor=WHO, scope=self.email_scope(["sender:jane@example.com",
+                                                                            "folder:Inbox", "since:2026-09-01"]),
+                               brief_source="stated")
+        self.assertEqual(self.ids(self.ok(server, "mail_search")), ["m6", "m1"])          # narrowed at once
+        self.store.update_task(self.tid, actor=WHO, status="done", reason="finished")
+        self.refused(server, "mail_search", {}, "bind_statuses")
+        self.refused(server, "scope_get", {}, "bind_statuses")
+
     def test_bad_role_serves_nothing(self):
         server = self.server(env={TASK_ENV: self.tid, ROLE_ENV: "admin"})
         self.assertEqual(server.dispatch("tools/list", {})["tools"], [])
@@ -464,12 +508,14 @@ class TestBinding(M365Case):
 
     def test_no_tool_sends_moves_deletes_or_flags(self):
         for spec in MANIFEST:
-            self.assertNotRegex(spec.name, r"(?i)send|move|delete|flag|remove|display")
+            self.assertNotRegex(spec.name, r"(?i)send|move|delete|flag|remove|display|copy|close")
         for path in (REPO / "m365").glob("*.py"):
-            names = {n.attr for n in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
-                     if isinstance(n, ast.Attribute)}
-            self.assertFalse(names & {"Send", "Display", "Move", "Delete", "MarkAsTask", "FlagRequest",
-                                      "FlagStatus", "PermanentDelete"}, path.name)
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            names = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+            names |= {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+            names |= {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+            found = {v for v in names & FORBIDDEN_VERBS if (path.name, v) not in VERB_EXCEPTIONS}
+            self.assertFalse(found, path.name)
 
     def test_scope_get_shows_the_binding(self):
         out = self.ok(self.server(DRAFT), "scope_get")
@@ -502,31 +548,52 @@ class TestBinding(M365Case):
 
 
 class TestMailReads(M365Case):
-    def test_search_returns_only_what_the_scope_allows(self):
+    def test_search_returns_only_what_the_scope_allows_subfolders_included(self):
         out = self.ok(self.server(), "mail_search")
-        self.assertEqual([r["entry_id"] for r in out["results"]], ["m6", "m1"])    # not m2 (sender), m3 (date)
+        self.assertEqual(self.ids(out), ["m4", "m6", "m1"])          # not m2 (sender), m3 (date), m5/m7 (folder)
+        self.assertEqual({r["folder"] for r in out["results"]}, {"Inbox", "Inbox/Projects"})
         self.assertEqual((out["search_complete"], out["truncated_reason"], out["scanned_count"], out["error_count"]),
-                         (True, None, 4, 0))
+                         (True, None, 5, 0))
         self.assertIn("UNTRUSTED", out["untrusted"])
         dasl = self.fake.inbox.filters[-1]
         self.assertIn(f'"{ol.PR_SENDER_SMTP}" LIKE \'%@example.com\'', dasl)
         self.assertIn("'8/31/2026'", dasl)                                       # the locale picture, widened a day
         self.assertEqual(self.fake.other.filters, [])                            # never searched
-        sub = self.ok(self.server(), "mail_search", {"folder": "inbox/projects"})
-        self.assertEqual([r["entry_id"] for r in sub["results"]], ["m4"])
+        self.assertEqual(self.ids(self.ok(self.server(), "mail_search", {"folder": "inbox/projects"})), ["m4"])
+
+    def test_the_folder_cap_marks_a_partial_result(self):
+        self.cfg["tasks"]["m365"]["mail"]["max_folders"] = 1
+        out = self.ok(self.server(), "mail_search")
+        self.assertEqual((self.ids(out), out["search_complete"], out["truncated_reason"]),
+                         (["m6", "m1"], False, "folder_cap"))
+
+    def test_default_folders_resolve_by_constant_and_a_bad_one_is_counted(self):
+        tid = self.add_task(["sender:@example.com", "since:2026-09-01"], quote="no folder clause")
+        out = self.ok(self.server(tid=tid), "mail_search")
+        self.assertEqual(self.ids(out), ["m4", "m6", "m7", "m1"])             # Inbox, its subfolder, Sent Items
+        self.assertTrue(out["search_complete"])
+        for bad in ("olFolderBogus", 23):                                     # unknown name; no such folder
+            self.cfg["tasks"]["m365"]["default_folders"] = ["olFolderInbox", bad]
+            out = self.ok(self.server(tid=tid), "mail_search")
+            self.assertEqual((self.ids(out), out["error_count"], out["truncated_reason"]),
+                             (["m4", "m6", "m1"], 1, "folder_unavailable"))
+            self.assertEqual(self.ok(self.server(tid=tid), "mail_get", {"entry_id": "m1"})["entry_id"], "m1")
 
     def test_queries_outside_the_scope_are_refused(self):
         server = self.server()
         self.refused(server, "mail_search", {"folder": "Other"}, "outside")
         self.refused(server, "mail_search", {"sender": "bob@other.org"}, "outside")
+        self.refused(server, "mail_search", {"sender": "@other.org"}, "outside")
+        self.refused(server, "mail_search", {"sender": "bob"}, "a sender is")
         self.refused(server, "mail_search", {"since": "2026-08-01"}, "outside")
         self.refused(server, "mail_search", {"until": "2026-10-30"}, "outside")
         self.refused(server, "mail_search", {"since": "1 Sept"}, "not a date")
-        self.assertEqual(self.ok(server, "mail_search", {"sender": "jane@example.com"})["results"][0]["sender"],
-                         "jane@example.com")
+        self.assertEqual({r["sender"] for r in self.ok(server, "mail_search", {"sender": "jane@example.com"})[
+            "results"]}, {"jane@example.com"})
         for entry_id, why in (("m2", "sender"), ("m5", "folder"), ("m3", "date")):
             self.refused(server, "mail_get", {"entry_id": entry_id}, why)
         self.refused(server, "mail_get", {"entry_id": "nope"}, "no item")
+        self.assertEqual(self.ok(server, "mail_get", {"entry_id": "m4"})["entry_id"], "m4")     # a subfolder
 
     def test_an_email_scope_of_none_refuses_reads(self):
         tid = self.add_task(["none"], quote="no mail")
@@ -555,14 +622,15 @@ class TestMailReads(M365Case):
         self.cfg["tasks"]["m365"]["mail"]["max_scan"] = 100
         page = self.ok(self.server(), "mail_search", {"limit": 1})
         self.assertEqual((len(page["results"]), page["has_more"], page["truncated_reason"]), (1, True, "limit"))
-        self.assertEqual(self.ok(self.server(), "mail_search", {"limit": 1, "offset": 1})["results"][0]["entry_id"],
-                         "m1")
+        self.assertEqual(self.ids(self.ok(self.server(), "mail_search", {"limit": 1, "offset": 1})), ["m6"])
 
     def test_errors_are_counted_not_swallowed(self):
         self.fake.inbox.items.append(Row(FakeComError(-2147467259)))
+        self.fake.inbox.items.append(Row(("m9", "No time", None, "Jane", "jane@example.com", False)))
         out = self.ok(self.server(), "mail_search")
-        self.assertEqual((out["error_count"], len(out["errors"])), (1, 1))
-        self.assertEqual([r["entry_id"] for r in out["results"]], ["m6", "m1"])
+        self.assertEqual((out["error_count"], len(out["errors"])), (2, 2))
+        self.assertIn("ReceivedTime", " ".join(out["errors"]))
+        self.assertEqual(self.ids(out), ["m4", "m6", "m1"])
 
     def test_attach_once_and_reattach_after_a_disconnect(self):
         server = self.server()
@@ -570,7 +638,7 @@ class TestMailReads(M365Case):
         self.ok(server, "mail_search")
         self.assertEqual(self.fake.connects, 1)
         self.fake.inbox.fail = [FakeComError(DISCONNECT)]
-        self.assertEqual(len(self.ok(server, "mail_search")["results"]), 2)       # one retry, re-attached
+        self.assertEqual(len(self.ok(server, "mail_search")["results"]), 3)       # one retry, re-attached
         self.assertEqual(self.fake.connects, 2)
         self.fake.inbox.fail = [FakeComError(DISCONNECT), FakeComError(DISCONNECT)]
         self.refused(server, "mail_search", {}, "dropped the connection")
@@ -579,9 +647,20 @@ class TestMailReads(M365Case):
 class TestCalendar(M365Case):
     def test_search_expands_recurrences_and_keeps_to_scope(self):
         out = self.ok(self.server(), "calendar_search")
-        self.assertEqual([r["entry_id"] for r in out["results"]], ["a1"])       # a2's people are outside scope
+        self.assertEqual(self.ids(out), ["a1"])                              # a2's people are outside scope
         self.assertEqual(out["window"], {"since": "2026-10-06", "until": "2026-10-12"})
         self.assertTrue(out["search_complete"])
+        only_until = self.ok(self.server(), "calendar_search", {"until": "2026-10-20"})
+        self.assertEqual(only_until["window"], {"since": "2026-10-14", "until": "2026-10-20"})
+
+    def test_defaults_are_clamped_into_the_scope(self):
+        past = self.add_task(["sender:@example.com", "since:2026-09-01", "until:2026-09-30"], quote="past")
+        out = self.ok(self.server(tid=past), "calendar_search")
+        self.assertEqual(out["window"], {"since": "2026-09-30", "until": "2026-09-30"})
+        future = self.add_task(["since:2027-06-01"], quote="far future")
+        out = self.ok(self.server(tid=future), "calendar_search")
+        self.assertEqual((out["results"], out["search_complete"], out["truncated_reason"]),
+                         ([], False, "empty_window"))
 
     def test_windows_are_capped_and_bounded(self):
         server = self.server()
@@ -614,24 +693,29 @@ class TestAttachments(M365Case):
         self.assertEqual(safe_name("lpt1.tar.gz", self.cfg), "_lpt1.tar.gz")
         self.assertEqual(safe_name("...", self.cfg), "attachment")
         self.assertEqual(safe_name("report. ", self.cfg), "report")
+        self.assertEqual(safe_name("inv\u202eexe.pdf", self.cfg), "invexe.pdf")        # a bidi override
+        self.assertEqual(safe_name("a\u200bb\x07c\x00.pdf", self.cfg), "abc.pdf")       # zero-width, control
+        acfg = self.cfg["tasks"]["m365"]["attachments"]
         long = safe_name("x" * 500 + ".docx", self.cfg)
-        self.assertEqual((len(long), long[-5:]), (self.cfg["tasks"]["m365"]["attachments"]["name_chars"], ".docx"))
+        self.assertEqual((len(long), long[-5:]), (acfg["name_chars"], ".docx"))
+        self.assertEqual(len(os.path.splitext(safe_name("a." + "e" * 40, self.cfg))[1]), acfg["ext_chars"])
 
     def test_saves_into_the_task_folder_only_and_never_overwrites(self):
+        self.cfg["tasks"]["m365"]["attachments"]["digest_chars"] = 8
         server = self.server()
         self.assertEqual(self.ok(server, "attachment_list", {"entry_id": "m1"})["attachments"],
                          [{"index": 1, "name": "q4 plan.xlsx", "size": 6, "type": 1}])
         att = self.fake.m1.Attachments[0]
         att.FileName = "..\\..\\evil:CON.xlsx"
         first = self.ok(server, "attachment_save", {"entry_id": "m1", "index": 1})
-        folder = Path(self.cfg["paths"]["data_dir"]) / "tasks" / self.tid / "attachments"
+        folder = self.task_dir() / "attachments"
         self.assertEqual(Path(first["path"]).parent, folder)
         self.assertEqual((first["name"], first["already_saved"]), ("evilCON.xlsx", False))
         self.assertTrue(self.ok(server, "attachment_save", {"entry_id": "m1", "index": 1})["already_saved"])
         att.data = b"other content"
         att.Size = len(att.data)
         third = self.ok(server, "attachment_save", {"entry_id": "m1", "index": 1})
-        self.assertNotEqual(third["name"], first["name"])
+        self.assertRegex(third["name"], r"^evilCON-[0-9a-f]{8}\.xlsx$")
         self.assertEqual(Path(first["path"]).read_bytes(), b"budget")             # not overwritten
         self.assertEqual(sorted(p.name for p in folder.iterdir()), sorted([first["name"], third["name"]]))
         self.refused(server, "attachment_save", {"entry_id": "m1", "index": 2}, "index")
@@ -640,6 +724,17 @@ class TestAttachments(M365Case):
     def test_size_cap(self):
         self.cfg["tasks"]["m365"]["attachments"]["max_bytes"] = 3
         self.refused(self.server(), "attachment_save", {"entry_id": "m1", "index": 1}, "max_bytes")
+
+    def test_a_junction_in_the_save_path_is_refused(self):
+        for link in (self.task_dir() / "attachments", self.task_dir()):
+            link.mkdir(parents=True, exist_ok=True)
+            link.rmdir()                                   # the parent exists; the link takes its place
+            junction(link, self.root / f"elsewhere-{link.name}")
+            try:
+                self.refused(self.server(), "attachment_save", {"entry_id": "m1", "index": 1}, "junction")
+            finally:
+                os.rmdir(link)
+            self.assertEqual(list((self.root / f"elsewhere-{link.name}").iterdir()), [])
 
 
 # ---- drafts --------------------------------------------------------------------------
@@ -650,36 +745,64 @@ class TestDrafts(M365Case):
         return self.call(server, "draft_new", {"subject": "Budget", "to": ["jane@example.com"],
                                                "body": "Hi Jane,\n\nThe budget.", **kw})
 
+    def assert_no_mail_text(self, out):
+        """A draft result carries ids, counts and reason codes: no subject, no address."""
+        text = json.dumps(out)
+        self.assertNotIn("@", text)
+        self.assertNotIn("subject", text.casefold())
+        for mail in (self.fake.m1, self.fake.m6):
+            self.assertNotIn(mail.Subject, text)
+
     def test_a_new_draft_is_saved_marked_and_never_sent(self):
         is_error, out = self.new(self.server(DRAFT))
         self.assertFalse(is_error, out)
-        self.assertEqual((out["created"], out["recipients"]), (True, ["jane@example.com"]))
+        self.assertEqual((out["created"], out["recipient_count"], out["entry_id"]), (True, 1, "draft-1"))
+        self.assert_no_mail_text(out)
         [draft] = self.fake.drafts.items
-        self.assertEqual(draft.UserProperties["WhisprTaskId"].Value, self.tid)
+        self.assertEqual(draft.UserProperties.value("WhisprTaskId"), self.tid)
+        self.assertIsNone(draft.UserProperties.value("WhisprSourceId"))
         self.assertIn("<p>Hi Jane,</p><p>The budget.</p>", draft.HTMLBody)
         self.assertFalse(hasattr(draft, "Send") or hasattr(draft, "Display"))
 
-    def test_a_rerun_reports_the_existing_draft(self):
+    def test_one_draft_per_source_message_and_per_new_subject(self):
         server = self.server(DRAFT)
-        self.new(server)
-        is_error, again = self.new(server)
-        self.assertFalse(is_error)
-        self.assertEqual((again["created"], [d["entry_id"] for d in again["existing"]]), (False, ["draft-1"]))
-        self.assertEqual(len(self.fake.drafts.items), 1)
+        self.assertTrue(self.ok(server, "draft_reply", {"entry_id": "m1", "body": "a"})["created"])
+        self.assertTrue(self.ok(server, "draft_reply", {"entry_id": "m6", "body": "b"})["created"])
+        again = self.ok(server, "draft_forward", {"entry_id": "m1", "to": ["jane@example.com"], "body": "c"})
+        self.assertEqual((again["created"], again["reason"], again["existing"]), (False, "draft_exists", ["draft-1"]))
+        self.assert_no_mail_text(again)
+        self.assertEqual([d.UserProperties.value("WhisprSourceId") for d in self.fake.drafts.items], ["m1", "m6"])
+        self.assertTrue(self.new(server)[1]["created"])
+        same = self.new(server, subject="  BUDGET ")[1]
+        self.assertEqual((same["created"], same["existing"]), (False, ["draft-3"]))
+        self.assertTrue(self.new(server, subject="Budget, part two")[1]["created"])
+        self.assertEqual(len(self.fake.drafts.items), 4)
 
     def test_a_recipient_the_brief_does_not_name_is_refused(self):
         server = self.server(DRAFT)
-        self.refused(server, "draft_new", {"subject": "s", "to": ["amy@example.com"], "body": "b"}, "do not name")
-        self.refused(server, "draft_new", {"subject": "s", "to": ["jane@example.com"], "cc": ["x@y.com"],
-                                           "body": "b"}, "x@y.com")
+        for args in ({"to": ["jane@example.com"], "cc": ["x@y.com"]}, {"to": ["JANE@example.com", "z@q.org"]}):
+            err = self.refused(server, "draft_new", {"subject": "s", "body": "b", **args}, "recipients_outside_scope")
+            self.assertNotIn("@", err["error"])
         self.assertEqual(self.fake.drafts.items, [])
+
+    def test_a_domain_clause_never_authorizes_a_recipient(self):
+        server = self.server(DRAFT)                      # the scope holds sender:@example.com
+        self.refused(server, "draft_new", {"subject": "s", "to": ["amy@example.com"], "body": "b"},
+                     "recipients_outside_scope: 1 recipient")
+        self.refused(server, "draft_reply", {"entry_id": "m4", "body": "b"}, "1 inherited")    # amy's message
+        self.assertEqual(self.fake.drafts.items, [])
+        self.assertNotIn("@example.com", self.ok(server, "scope_get")["allowed_recipients"])
 
     def test_reply_checks_inherited_recipients_and_inserts_after_body(self):
         server = self.server(DRAFT)
-        self.refused(server, "draft_reply", {"entry_id": "m6", "reply_all": True, "body": "b"}, "bob@other.org")
+        err = self.refused(server, "draft_reply", {"entry_id": "m6", "reply_all": True, "body": "b"},
+                           r"1 recipient\(s\) .*\(1 inherited")
+        self.assertNotIn("@", err["error"])
         self.assertEqual(self.fake.drafts.items, [])
         out = self.ok(server, "draft_reply", {"entry_id": "m6", "body": "Thanks"})
-        self.assertEqual(out["recipients"], ["jane@example.com"])
+        self.assertEqual((out["recipient_count"], out["inherited_recipient_count"], out["source_entry_id"]),
+                         (1, 1, "m6"))
+        self.assert_no_mail_text(out)
         html = self.fake.drafts.items[0].HTMLBody
         self.assertLess(html.index("<body>"), html.index("Thanks"))
         self.assertLess(html.index("Thanks"), html.index("quoted"))
@@ -691,22 +814,33 @@ class TestDrafts(M365Case):
         out = self.ok(self.server(DRAFT), "draft_forward", {"entry_id": "m1", "to": ["jane@example.com"],
                                                             "body": "FYI"})
         self.assertEqual(out["forwarded_attachments"], {"original": 1, "carried": 1, "all_carried": True})
+        self.assert_no_mail_text(out)
 
     def test_attachments_only_from_the_task_folder(self):
-        task_dir = Path(self.cfg["paths"]["data_dir"]) / "tasks" / self.tid
-        (task_dir / "out").mkdir(parents=True)
-        (task_dir / "out" / "memo.docx").write_bytes(b"memo")
+        (self.task_dir() / "out").mkdir(parents=True)
+        (self.task_dir() / "out" / "memo.docx").write_bytes(b"memo")
         outside = self.root / "secret.txt"
         outside.write_text("s", encoding="utf-8")
         server = self.server(DRAFT)
-        for bad in ("../secret.txt", str(outside), "..\\..\\..\\secret.txt"):
+        for bad in ("../secret.txt", str(outside), "..\\..\\..\\secret.txt", "C:secret.txt"):
             self.refused(server, "draft_new", {"subject": "s", "to": ["jane@example.com"], "body": "b",
                                                "attachments": [bad]}, "outside the task folder")
         self.refused(server, "draft_new", {"subject": "s", "to": ["jane@example.com"], "body": "b",
                                            "attachments": ["out/missing.docx"]}, "not a file")
         is_error, out = self.new(server, attachments=["out/memo.docx"])
         self.assertFalse(is_error, out)
-        self.assertEqual(out["attachments"], ["memo.docx"])
+        self.assertEqual(out["attachment_count"], 1)
+
+    def test_a_junction_under_the_task_folder_is_refused(self):
+        real = self.task_dir() / "real"
+        real.mkdir(parents=True)
+        (real / "memo.docx").write_bytes(b"memo")
+        link = self.task_dir() / "link"
+        junction(link, real)                               # stays inside the folder, still refused
+        self.addCleanup(os.rmdir, link)
+        self.refused(self.server(DRAFT), "draft_new", {"subject": "s", "to": ["jane@example.com"], "body": "b",
+                                                       "attachments": ["link/memo.docx"]}, "junction")
+        self.assertEqual(self.fake.drafts.items, [])
 
     def test_html_bodies_are_sanitized(self):
         self.ok(self.server(DRAFT), "draft_new", {"subject": "s", "to": ["jane@example.com"], "body_format": "html",
@@ -733,6 +867,13 @@ class TestSanitizer(unittest.TestCase):
         self.assertEqual(text_to_html("a<b>\nc\n\nd"), "<p>a&lt;b&gt;<br>c</p><p>d</p>")
         self.assertEqual(insert_after_body("<html><BODY class='x'>q</BODY></html>", "N"),
                          "<html><BODY class='x'>Nq</BODY></html>")
+
+    def test_url_attributes_come_from_config(self):
+        rules = {**self.RULES, "attributes": {"a": ["href", "title"]}, "url_attributes": ["href", "title"]}
+        self.assertEqual(sanitize_html('<a href="https://e.com" title="ftp://x">x</a>', rules),
+                         '<a href="https://e.com">x</a>')
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(ConfigError):
+            load_config(overlay={**overlay(Path(tmp)), "tasks": {"m365": {"sanitize": {"url_attributes": []}}}})
 
 
 # ---- health --------------------------------------------------------------------------

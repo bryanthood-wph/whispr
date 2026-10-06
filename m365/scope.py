@@ -9,8 +9,9 @@ the email scope, one clause per value, `<prefix><separator><value>`:
 
 - **sender**: an address, or every address at a domain (`@` then the domain). Senders
   are alternatives; with none, any sender.
-- **folder**: a path under the mailbox root, levels split by folder_separator; a
-  subfolder of one counts. With none, tasks.m365.default_folders.
+- **folder**: a path under the mailbox root, levels split by folder_separator; its
+  subfolders are searched too. With none, tasks.m365.default_folders (Outlook's own
+  default folders, by olFolder name or number) and their subfolders.
 - **subject**: words the subject contains, letter case ignored; alternatives.
 - **since / until**: the window, inclusive days in grammar.date_format, at most one of
   each. With no since, the window opens tasks.m365.default_window_days before today; with
@@ -77,6 +78,17 @@ def folder_path(text: str, cfg: dict) -> tuple[str, ...]:
     return parts
 
 
+def parse_sender(text: str, what: str = "sender") -> tuple[str, str]:
+    """A sender: ('address', jane@x.com) or ('domain', x.com), casefolded; else a ScopeError."""
+    text = text.strip()
+    if ADDRESS.fullmatch(text):
+        return "address", text.casefold()
+    if DOMAIN.fullmatch(text):
+        return "domain", text[1:].casefold()
+    raise ScopeError(f"{what}: a sender is an address (jane@example.com) or a domain (@example.com), "
+                     f"not {text!r}")
+
+
 def parse_clause(value: str, cfg: dict) -> tuple[str, Any]:
     """One scope value -> (kind, parsed): sender -> ('address' | 'domain', text casefolded),
     folder -> levels, subject -> words, since/until -> a date."""
@@ -90,11 +102,7 @@ def parse_clause(value: str, cfg: dict) -> tuple[str, Any]:
     if not rest:
         raise ScopeError(f"{value!r} has nothing after {prefix.strip()}{g['separator']}")
     if kind == "sender":
-        if ADDRESS.fullmatch(rest):
-            return kind, ("address", rest.casefold())
-        if DOMAIN.fullmatch(rest):
-            return kind, ("domain", rest[1:].casefold())
-        raise ScopeError(f"{value!r}: a sender is an address (jane@example.com) or a domain (@example.com)")
+        return kind, parse_sender(rest, what=repr(value))
     if kind == "folder":
         return kind, folder_path(rest, cfg)
     if kind == "subject":
@@ -127,6 +135,12 @@ class EmailScope:
             return True
         a = (address or "").strip().casefold()
         return bool(a) and (a in self.addresses or ("@" in a and a.rpartition("@")[2] in self.domains))
+
+    def sender_arg_ok(self, sender: tuple[str, str]) -> bool:
+        """Whether a parsed sender argument lies inside the scope's senders: an address the
+        scope allows, or a domain the scope names whole (or any, with no senders)."""
+        kind, value = sender
+        return self.sender_ok(value) if kind == "address" else (not self.has_senders or value in self.domains)
 
     def subject_ok(self, subject: str) -> bool:
         s = (subject or "").casefold()

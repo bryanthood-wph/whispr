@@ -13,21 +13,28 @@ the tools' Outlook work, every query inside the task's email scope (m365/scope.p
   A call that runs longer is abandoned (the server then refuses every later call).
 - **Searches never scan in Python** (§5 improve 1, 2). Mail is `Folder.GetTable("@SQL=")`
   with only the columns a card needs, filtered by date, class, the scope's senders and
-  subjects and, for a body search, `textdescription LIKE`; items are opened only for a
-  body snippet, get_message, attachments and drafts. Every row is checked against the
-  scope again in Python, so a filter Outlook reads loosely can never widen it. Calendar is
+  subjects and, for a body search, `textdescription LIKE`, over each scope folder and its
+  subfolders (at most mail.max_folders); items are opened only for a body snippet,
+  get_message, attachments and drafts. Every row is checked against the scope again in
+  Python, so a filter Outlook reads loosely can never widen it. Calendar is
   IncludeRecurrences, then Sort, then Restrict, with dates in the user's short-date
   format (§5 improve 5).
-- **Partial results say so**: search_complete, truncated_reason (limit: more beyond this
-  page; scan_cap: stopped after max_scan rows), scanned_count, and the count of rows or
-  items that failed to read, with the first error_samples messages (§5 improve 6, 7).
+- **Partial results say so** (`_page`): search_complete, truncated_reason (scan_cap,
+  folder_cap, folder_unavailable, empty_window, or limit: more beyond this page),
+  scanned_count, and the count of rows, items or folders that failed to read, with the
+  first error_samples messages (§5 improve 6, 7). A folder that does not resolve, or a
+  row with no received time, is counted, never a refusal.
 - **Text only, capped, untrusted** (§5 improve 3): bodies are the plain-text Body cut to
   body_chars with `truncated`; no internet headers; tasks.m365.untrusted_label beside it.
 - **Drafts are saved, never sent or shown** (§5 improve 9-14): no Send or Display
-  anywhere; attachments only from the task folder; every recipient of the built draft,
-  inherited ones included, must be one the brief or scope names, or nothing is saved;
-  the sanitized text goes after <body>; the task id is a UserProperty, and an existing
-  draft with it is reported instead of a new one (F13).
+  anywhere; attachments only from the task folder, through no junction or link; every
+  recipient of the built draft, inherited ones included, must be an address the brief or
+  scope names, or nothing is saved; the sanitized text goes after <body>; the task id and,
+  for a reply or forward, the source message's EntryID are UserProperties, and an
+  existing draft for the same source (or a new-mail draft with the same subject) is
+  reported instead of a second (F13). A draft tool returns ids, counts and reason codes
+  only, never text or addresses taken from mail, so nothing in the mailbox reaches the
+  draft role (F5).
 """
 
 from __future__ import annotations
@@ -37,15 +44,17 @@ import logging
 import os
 import queue
 import re
+import stat
 import threading
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Optional
 
 from m365.sanitize import sanitize_html, text_to_html
-from m365.scope import ADDRESS, DOMAIN, EmailScope, ScopeError, folder_path, parse_day
+from m365.scope import ADDRESS, EmailScope, ScopeError, folder_path, parse_day, parse_sender
 from whispr.winutil import com_initialized
 
 log = logging.getLogger("m365.outlook")
@@ -54,6 +63,9 @@ PROG_ID = "Outlook.Application"
 # Outlook object-model constants.
 OL_MAIL_ITEM = 0
 OL_FOLDER_CALENDAR, OL_FOLDER_DRAFTS = 9, 16
+# OlDefaultFolders, by name, for tasks.m365.default_folders.
+OL_DEFAULT_FOLDERS = {"olFolderDeletedItems": 3, "olFolderOutbox": 4, "olFolderSentMail": 5, "olFolderInbox": 6,
+                      "olFolderCalendar": 9, "olFolderDrafts": 16, "olFolderJunk": 23}
 OL_TO, OL_CC = 1, 2
 OL_TEXT = 1                            # OlUserPropertyType olText
 OL_USER_ITEMS = 0                      # OlTableContents olUserItems
@@ -81,7 +93,9 @@ DISCONNECT_HRESULTS = frozenset({
 # File names Windows reserves, with or without an extension.
 RESERVED_NAMES = frozenset({"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
                             *(f"lpt{i}" for i in range(1, 10))})
-UNSAFE_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+UNSAFE_NAME_CHARS = re.compile(r'[<>:"/\\|?*]')
+# Unicode categories removed from a saved name: format (bidi overrides, zero-width) and control.
+UNSAFE_NAME_CATEGORIES = frozenset({"Cf", "Cc"})
 BODY_TAG = re.compile(r"<body\b[^>]*>", re.IGNORECASE)
 PICTURE_TOKEN = re.compile(r"'[^']*'|([A-Za-z])\1*|.", re.DOTALL)
 PICTURE_LENGTHS = {"d": (1, 2), "M": (1, 2), "y": (2, 4)}
@@ -156,6 +170,12 @@ def hresult(exc: BaseException) -> Optional[int]:
     if code is None and exc.args and isinstance(exc.args[0], int):
         code = exc.args[0]
     return code
+
+
+def _reraise_disconnect(exc: BaseException) -> None:
+    """A dropped connection is never counted as one failed row: it goes up to Outlook.run."""
+    if hresult(exc) in DISCONNECT_HRESULTS:
+        raise exc
 
 
 @dataclass(frozen=True)
@@ -283,19 +303,42 @@ def sender_smtp(item: Any) -> str:
 
 def safe_name(name: str, cfg: dict) -> str:
     """An attachment's file name made safe to save: the last path part only, no
-    characters Windows forbids (':' included), no trailing dots or spaces, a reserved
-    device name (CON, NUL, COM1...) prefixed with '_', cut to name_chars."""
+    characters Windows forbids (':' included), no Unicode format or control characters
+    (bidi overrides, zero-width), no trailing dots or spaces, a reserved device name (CON,
+    NUL, COM1...) prefixed with '_', the extension cut to ext_chars and the whole to name_chars."""
     acfg = cfg["tasks"]["m365"]["attachments"]
     base = re.split(r"[\\/]", name or "")[-1]
+    base = "".join(c for c in base if unicodedata.category(c) not in UNSAFE_NAME_CATEGORIES)
     base = UNSAFE_NAME_CHARS.sub("", base).strip().rstrip(". ")
     stem, ext = os.path.splitext(base)
     if not stem:
-        stem, ext = acfg["fallback_name"], ext
+        stem = acfg["fallback_name"]
     if stem.split(".")[0].strip().casefold() in RESERVED_NAMES:
         stem = "_" + stem
     limit = acfg["name_chars"]
-    ext = ext[:max(0, limit // 2)]
+    ext = ext[:min(acfg["ext_chars"], limit // 2)]
     return stem[:limit - len(ext)].rstrip(". ") + ext
+
+
+def is_link(path: Path) -> bool:
+    """Whether `path` itself is a junction, symlink or any other reparse point."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    if stat.S_ISLNK(st.st_mode) or getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        return True
+    return bool(getattr(path, "is_junction", lambda: False)())
+
+
+def refuse_links(path: Path, base: Path) -> None:
+    """A ScopeError when `base` or any component of `path` under it (as written, not
+    resolved) is a junction, symlink or reparse point, so no link redirects a read or save."""
+    current = base
+    for part in ("",) + path.relative_to(base).parts:
+        current = current / part if part else current
+        if is_link(current):
+            raise ScopeError(f"{current.name or current} is a junction or link; refused")
 
 
 def insert_after_body(page: str, fragment: str) -> str:
@@ -306,8 +349,12 @@ def insert_after_body(page: str, fragment: str) -> str:
     return page[:m.end()] + fragment + page[m.end():]
 
 
+def normal_subject(subject: Optional[str]) -> str:
+    return " ".join((subject or "").split()).casefold()
+
+
 class _Errors:
-    """Per-search count of rows or items that failed to read, and the first few."""
+    """Per-search count of rows, items or folders that failed to read, and the first few."""
 
     def __init__(self, keep: int):
         self.keep, self.count, self.samples = keep, 0, []
@@ -326,7 +373,8 @@ class _Errors:
 
 class Mailbox:
     """The tools, over one Outlook, inside one task's scope (`scope`, `recipients`,
-    `task_dir`). `today` is fixed when the server starts, like the scope's window."""
+    `task_dir`; the server refreshes scope and recipients from the database before each
+    call). `today` is fixed when the server starts, like the scope's default window."""
 
     def __init__(self, cfg: dict, outlook: Outlook, *, task_id: str, task_dir: Path, scope: EmailScope,
                  recipients: frozenset, today: date):
@@ -362,20 +410,12 @@ class Mailbox:
         return since, until
 
     def _sender_arg(self, a: dict) -> Optional[tuple[str, str]]:
-        """The sender argument, which must lie inside the scope's senders."""
+        """The sender argument, parsed as a scope sender clause is, inside the scope's senders."""
         if "sender" not in a:
             return None
-        text = a["sender"].strip()
-        if ADDRESS.fullmatch(text):
-            parsed = ("address", text.casefold())
-            ok = self.scope.sender_ok(parsed[1])
-        elif DOMAIN.fullmatch(text):
-            parsed = ("domain", text[1:].casefold())
-            ok = not self.scope.has_senders or parsed[1] in self.scope.domains
-        else:
-            raise ScopeError(f"sender {text!r} is not an address or @domain")
-        if not ok:
-            raise ScopeError(f"sender {text!r} is outside the task's email scope")
+        parsed = parse_sender(a["sender"])
+        if not self.scope.sender_arg_ok(parsed):
+            raise ScopeError(f"sender {a['sender'].strip()!r} is outside the task's email scope")
         return parsed
 
     @staticmethod
@@ -385,20 +425,7 @@ class Mailbox:
         kind, value = arg
         return smtp == value if kind == "address" else smtp.rpartition("@")[2] == value
 
-    def _allowed_folders(self) -> list[tuple[str, ...]]:
-        return list(self.scope.folders) or [folder_path(f, self.cfg) for f in self.m["default_folders"]]
-
-    def _search_folders(self, a: dict) -> list[tuple[str, ...]]:
-        allowed = self._allowed_folders()
-        if "folder" not in a:
-            return allowed
-        levels = folder_path(a["folder"], self.cfg)
-        folded = tuple(p.casefold() for p in levels)
-        if not any(folded[:len(f)] == tuple(p.casefold() for p in f) for f in allowed):
-            raise ScopeError(f"folder {a['folder']!r} is outside the task's email scope")
-        return [levels]
-
-    def _folder(self, s: Session, levels: tuple[str, ...]) -> Any:
+    def _path_folder(self, s: Session, levels: tuple[str, ...]) -> Any:
         folder = s.store.GetRootFolder()
         for name in levels:
             match = None
@@ -411,42 +438,104 @@ class Mailbox:
             folder = match
         return folder
 
+    def _default_folder(self, s: Session, ref: Any) -> Any:
+        code = ref if isinstance(ref, int) else OL_DEFAULT_FOLDERS.get(ref)
+        if code is None:
+            raise OutlookError(f"tasks.m365.default_folders: {ref!r} is not an olFolder name "
+                               f"{sorted(OL_DEFAULT_FOLDERS)} or number")
+        return s.ns.GetDefaultFolder(code)
+
+    def _roots(self, s: Session, errors: _Errors) -> tuple[list, bool]:
+        """The scope's folders, or the default folders, resolved; one that does not
+        resolve is counted in `errors` (second value True), never raised."""
+        specs = ([lambda lv=lv: self._path_folder(s, lv) for lv in self.scope.folders] if self.scope.folders
+                 else [lambda r=r: self._default_folder(s, r) for r in self.m["default_folders"]])
+        roots, missing = [], False
+        for resolve in specs:
+            try:
+                roots.append(resolve())
+            except Exception as exc:
+                _reraise_disconnect(exc)
+                errors.add(exc)
+                missing = True
+        return roots, missing
+
+    @staticmethod
+    def _under(folder: Any, roots: list) -> bool:
+        where = (folder.FolderPath or "").casefold()
+        return any(where == r.FolderPath.casefold() or where.startswith(r.FolderPath.casefold() + FOLDER_PATH_SEP)
+                   for r in roots)
+
+    def _expand(self, starts: list, errors: _Errors) -> tuple[list, bool]:
+        """`starts` and their subfolders, breadth first, each once, at most mail.max_folders
+        (second value True when the cap cut the walk)."""
+        cap, seen, out, todo = self.m["mail"]["max_folders"], set(), [], list(starts)
+        while todo:
+            folder = todo.pop(0)
+            key = (folder.FolderPath or "").casefold()
+            if key in seen:
+                continue
+            if len(out) >= cap:
+                return out, True
+            seen.add(key)
+            out.append(folder)
+            try:
+                todo.extend(folder.Folders)
+            except Exception as exc:
+                _reraise_disconnect(exc)
+                errors.add(exc)
+        return out, False
+
+    def _display(self, s: Session, folder: Any) -> str:
+        root = s.store.GetRootFolder().FolderPath
+        path = folder.FolderPath or ""
+        rest = path[len(root):] if path.casefold().startswith(root.casefold()) else path
+        return rest.strip(FOLDER_PATH_SEP).replace(FOLDER_PATH_SEP, self.m["grammar"]["folder_separator"])
+
     def _open(self, s: Session, entry_id: str) -> Any:
         try:
             return s.ns.GetItemFromID(entry_id, s.store.StoreID)
         except Exception as exc:
-            if hresult(exc) in DISCONNECT_HRESULTS:
-                raise
+            _reraise_disconnect(exc)
             raise OutlookError(f"no item with entry_id {entry_id!r} in the default store") from exc
 
-    def _in_window(self, day: date, until: date) -> bool:
-        return self.scope.since <= day <= until
-
     def _mail_item(self, s: Session, entry_id: str) -> Any:
-        """A mail item, refused unless it lies inside the scope: folder, sender, date, subject."""
+        """A mail item, refused unless it lies inside the scope: folder (or a subfolder),
+        sender, date, subject."""
         scope = self._need_scope()
         item = self._open(s, entry_id)
         if not (item.MessageClass or "").startswith(MAIL_CLASS):
             raise ScopeError("that item is not a mail message")
-        where = (item.Parent.FolderPath or "").casefold()
-        roots = [self._folder(s, f).FolderPath.casefold() for f in self._allowed_folders()]
-        if not any(where == r or where.startswith(r + FOLDER_PATH_SEP) for r in roots):
+        roots, _ = self._roots(s, _Errors(0))
+        if not self._under(item.Parent, roots):
             raise ScopeError("that message is outside the task's email scope (its folder)")
         if not scope.sender_ok(sender_smtp(item)):
             raise ScopeError("that message is outside the task's email scope (its sender)")
-        if not self._in_window(naive(item.ReceivedTime).date(), scope.closes(self.today)):
+        received = naive(item.ReceivedTime)
+        if received is None or not scope.since <= received.date() <= scope.closes(self.today):
             raise ScopeError("that message is outside the task's email scope (its date)")
         if not scope.subject_ok(item.Subject):
             raise ScopeError("that message is outside the task's email scope (its subject)")
         return item
 
-    def _partial(self, *, complete: bool, reason: Optional[str], scanned: int, errors: _Errors) -> dict:
-        return {"search_complete": complete, "truncated_reason": reason, "scanned_count": scanned,
-                **errors.report()}
+    def _page(self, hits: list, a: dict, limit: int, *, more: bool, scanned: int, errors: _Errors,
+              window: tuple[date, date], partial: Optional[str]) -> dict:
+        """The tail every search ends with: one page of `hits`, and the partial flags.
+        `partial` is why the search stopped short (scan_cap, folder_cap, ...), if it did."""
+        offset = a.get("offset", 0)
+        more = more or len(hits) > offset + limit
+        reason = partial or ("limit" if more else None)
+        return {"results": hits[offset:offset + limit], "offset": offset, "has_more": more,
+                "window": {"since": window[0].isoformat(), "until": window[1].isoformat()},
+                "search_complete": reason is None, "truncated_reason": reason, "scanned_count": scanned,
+                **errors.report(), "untrusted": self.m["untrusted_label"]}
 
     def _text(self, text: str, cap: int) -> dict:
         text = text or ""
         return {"body": text[:cap], "body_chars": len(text), "truncated": len(text) > cap}
+
+    def _limit(self, a: dict, cap: int) -> int:
+        return min(a.get("limit", cap), cap)
 
     # ---- mail ------------------------------------------------------------------------
 
@@ -471,30 +560,38 @@ class Mailbox:
         return " AND ".join(terms)
 
     def search(self, a: dict, *, body: bool) -> dict:
-        """Mail cards newest first, in scope; with `body`, only messages whose text holds
-        a['query'], each with a snippet around it."""
+        """Mail cards newest first, in scope, over the scope folders and their subfolders;
+        with `body`, only messages whose text holds a['query'], each with a snippet."""
         since, until = self._mail_window(a)
         sender = self._sender_arg(a)
-        folders = self._search_folders(a)
+        target = folder_path(a["folder"], self.cfg) if "folder" in a else None
         mail = self.m["mail"]
-        cap = mail["body_max_results"] if body else mail["max_results"]
-        limit, offset = min(a.get("limit", cap), cap), a.get("offset", 0)
+        limit = self._limit(a, mail["body_max_results"] if body else mail["max_results"])
+        want = a.get("offset", 0) + limit
         text = a["query"].strip() if body else None
         subject = a.get("subject", "").strip() or None
         dasl = self._mail_filter(since, until, sender, subject, text)
-        sep = self.m["grammar"]["folder_separator"]
 
         def work(s: Session) -> dict:
-            errors, hits, scanned, capped, more = _Errors(self.m["error_samples"]), [], 0, False, False
-            for levels in folders:
-                table = self._folder(s, levels).GetTable("@SQL=" + dasl, OL_USER_ITEMS)
+            errors = _Errors(self.m["error_samples"])
+            roots, missing = self._roots(s, errors)
+            starts = roots
+            if target is not None:
+                folder = self._path_folder(s, target)
+                if not self._under(folder, roots):
+                    raise ScopeError(f"folder {a['folder']!r} is outside the task's email scope")
+                starts = [folder]
+            folders, folder_cap = self._expand(starts, errors)
+            hits, scanned, capped, more = [], 0, False, False
+            for folder in folders:
+                table = folder.GetTable("@SQL=" + dasl, OL_USER_ITEMS)
                 table.Columns.RemoveAll()
                 for column in MAIL_COLUMNS:
                     table.Columns.Add(column)
                 table.Sort("[ReceivedTime]", True)
-                found = 0
+                found, where = 0, self._display(s, folder)
                 while not table.EndOfTable:
-                    if found > offset + limit:
+                    if found > want:
                         more = True
                         break
                     if scanned >= mail["max_scan"]:
@@ -504,7 +601,10 @@ class Mailbox:
                     try:
                         entry_id, subj, received, name, smtp, has_att = table.GetNextRow().GetValues()
                         smtp, received = (smtp or "").casefold(), naive(received)
+                        if received is None:
+                            raise OutlookError("a row has no ReceivedTime")
                     except Exception as exc:
+                        _reraise_disconnect(exc)
                         errors.add(exc)
                         continue
                     if not (self.scope.sender_ok(smtp) and self._sender_matches(sender, smtp)
@@ -512,30 +612,25 @@ class Mailbox:
                             and (subject is None or subject.casefold() in (subj or "").casefold())):
                         continue
                     found += 1
-                    hits.append({"entry_id": entry_id, "folder": sep.join(levels), "subject": subj,
-                                 "sender_name": name, "sender": smtp, "received": received.isoformat(),
-                                 "has_attachments": bool(has_att)})
+                    hits.append({"entry_id": entry_id, "folder": where, "subject": subj, "sender_name": name,
+                                 "sender": smtp, "received": received.isoformat(), "has_attachments": bool(has_att)})
                 if capped:
                     break
             hits.sort(key=lambda h: h["received"], reverse=True)
-            more = more or len(hits) > offset + limit
-            page = hits[offset:offset + limit]
+            partial = ("scan_cap" if capped else "folder_cap" if folder_cap
+                       else "folder_unavailable" if missing else None)
+            out = self._page(hits, a, limit, more=more, scanned=scanned, errors=errors, window=(since, until),
+                             partial=partial)
             if body:
-                for card in page:
+                for card in out["results"]:
                     try:
-                        found_text = self._open(s, card["entry_id"]).Body or ""
+                        card.update(self._snippet(self._open(s, card["entry_id"]).Body or "", text))
                     except Exception as exc:
-                        if hresult(exc) in DISCONNECT_HRESULTS:
-                            raise
+                        _reraise_disconnect(exc)
                         errors.add(exc)
                         card["snippet"] = None
-                        continue
-                    card.update(self._snippet(found_text, text))
-            reason = "scan_cap" if capped else ("limit" if more else None)
-            return {"results": page, "offset": offset, "has_more": more,
-                    "window": {"since": since.isoformat(), "until": until.isoformat()},
-                    **self._partial(complete=not (capped or more), reason=reason, scanned=scanned, errors=errors),
-                    "untrusted": self.m["untrusted_label"]}
+                out.update(errors.report())
+            return out
 
         return self.outlook.run(work, read=True)
 
@@ -568,10 +663,10 @@ class Mailbox:
 
     def save_attachment(self, a: dict) -> dict:
         """One attachment saved into <task folder>/<attachments.folder>/ under its cleaned
-        name; never over a file: the same content already there is reported, other content
-        gets the name with its sha256 prefix added."""
-        max_bytes = self.m["attachments"]["max_bytes"]
-        dest = self.attachments_dir()
+        name, through no junction or link; never over a file: the same content already
+        there is reported, other content gets the name with its sha256 prefix added."""
+        acfg = self.m["attachments"]
+        max_bytes, dest, base = acfg["max_bytes"], self.attachments_dir(), self.task_dir.parent
 
         def work(s: Session) -> dict:
             atts = self._mail_item(s, a["entry_id"]).Attachments
@@ -581,17 +676,21 @@ class Mailbox:
             if att.Size > max_bytes:
                 raise OutlookError(f"attachment is {att.Size} bytes, over tasks.m365.attachments.max_bytes {max_bytes}")
             name = safe_name(att.FileName, self.cfg)
+            refuse_links(dest, base)
             dest.mkdir(parents=True, exist_ok=True)
-            temp = dest / f"~{uuid.uuid4().hex}.part"
+            refuse_links(dest, base)
+            temp = dest / f"~{uuid.uuid4().hex}{acfg['temp_suffix']}"
             att.SaveAsFile(str(temp))
             try:
+                refuse_links(temp, base)
                 data = temp.read_bytes()
                 if len(data) > max_bytes:
                     raise OutlookError(f"saved file is {len(data)} bytes, over {max_bytes}")
                 digest = hashlib.sha256(data).hexdigest()
                 stem, ext = os.path.splitext(name)
-                for candidate in (name, f"{stem}-{digest[:12]}{ext}"):
+                for candidate in (name, f"{stem}-{digest[:acfg['digest_chars']]}{ext}"):
                     target = dest / candidate
+                    refuse_links(target, base)
                     if target.resolve().parent != dest.resolve():
                         raise OutlookError(f"{candidate!r} would land outside the attachments folder")
                     if target.exists():
@@ -610,11 +709,23 @@ class Mailbox:
 
     # ---- calendar --------------------------------------------------------------------
 
-    def _calendar_window(self, a: dict) -> tuple[date, date]:
+    def _calendar_latest(self) -> date:
+        """The last day a calendar read may reach: the scope's until, or future_days past today."""
+        scope = self._need_scope()
+        return scope.until if scope.until is not None else self.today + timedelta(days=self.m["calendar"]["future_days"])
+
+    def _calendar_window(self, a: dict) -> Optional[tuple[date, date]]:
+        """The window asked for, refused outside the scope; defaults are clamped into it.
+        None when the scope leaves no day to read."""
         scope, cal = self._need_scope(), self.m["calendar"]
-        since = self._arg_day(a, "since") or max(self.today, scope.since)
-        until = self._arg_day(a, "until") or since + timedelta(days=cal["default_days"] - 1)
-        latest = scope.until if scope.until is not None else self.today + timedelta(days=cal["future_days"])
+        latest, span = self._calendar_latest(), timedelta(days=cal["default_days"] - 1)
+        if scope.since > latest:
+            return None
+        since, until = self._arg_day(a, "since"), self._arg_day(a, "until")
+        if since is None:
+            since = max(scope.since, until - span) if until is not None else min(max(self.today, scope.since), latest)
+        if until is None:
+            until = min(since + span, latest)
         if since > until:
             raise ScopeError(f"since {since} is after until {until}")
         if since < scope.since or until > latest:
@@ -632,13 +743,18 @@ class Mailbox:
         return any(self.scope.sender_ok(p) for p in people if p)
 
     def calendar_search(self, a: dict) -> dict:
-        since, until = self._calendar_window(a)
         cal = self.m["calendar"]
-        limit, offset = min(a.get("limit", cal["max_results"]), cal["max_results"]), a.get("offset", 0)
+        limit = self._limit(a, cal["max_results"])
+        window = self._calendar_window(a)
+        if window is None:
+            return self._page([], a, limit, more=False, scanned=0, errors=_Errors(0),
+                              window=(self.scope.since, self._calendar_latest()), partial="empty_window")
+        since, until = window
+        want = a.get("offset", 0) + limit
         query = a.get("query", "").strip().casefold()
         jet = f"[Start] < {_quote(self._day(until + timedelta(days=1)))} AND [End] > {_quote(self._day(since))}"
-        lo, hi = datetime.combine(since, datetime.min.time()), datetime.combine(until + timedelta(days=1),
-                                                                                datetime.min.time())
+        lo = datetime.combine(since, datetime.min.time())
+        hi = datetime.combine(until + timedelta(days=1), datetime.min.time())
 
         def work(s: Session) -> dict:
             items = s.ns.GetDefaultFolder(OL_FOLDER_CALENDAR).Items
@@ -648,7 +764,7 @@ class Mailbox:
             errors, hits, scanned, capped, more = _Errors(self.m["error_samples"]), [], 0, False, False
             item = found.GetFirst()
             while item is not None:
-                if len(hits) > offset + limit:
+                if len(hits) > want:
                     more = True
                     break
                 if scanned >= cal["max_scan"]:
@@ -664,23 +780,16 @@ class Mailbox:
                                      "location": item.Location, "organizer": item.Organizer,
                                      "recurring": bool(item.IsRecurring)})
                 except Exception as exc:
-                    if hresult(exc) in DISCONNECT_HRESULTS:
-                        raise
+                    _reraise_disconnect(exc)
                     errors.add(exc)
                 item = found.GetNext()
-            more = more or len(hits) > offset + limit
-            reason = "scan_cap" if capped else ("limit" if more else None)
-            return {"results": hits[offset:offset + limit], "offset": offset, "has_more": more,
-                    "window": {"since": since.isoformat(), "until": until.isoformat()},
-                    **self._partial(complete=not (capped or more), reason=reason, scanned=scanned, errors=errors),
-                    "untrusted": self.m["untrusted_label"]}
+            return self._page(hits, a, limit, more=more, scanned=scanned, errors=errors, window=(since, until),
+                              partial="scan_cap" if capped else None)
 
         return self.outlook.run(work, read=True)
 
     def calendar_get(self, a: dict) -> dict:
-        scope = self._need_scope()
-        latest = scope.until if scope.until is not None else \
-            self.today + timedelta(days=self.m["calendar"]["future_days"])
+        scope, latest = self._need_scope(), self._calendar_latest()
 
         def work(s: Session) -> dict:
             item = self._open(s, a["entry_id"])
@@ -715,86 +824,101 @@ class Mailbox:
         return text_to_html(body)
 
     def _draft_files(self, names: list[str]) -> list[Path]:
-        """Each file to attach: inside the task folder, existing, at most max_bytes."""
+        """Each file to attach: a relative path inside the task folder, through no junction
+        or link (the task folder included), existing, at most max_bytes."""
         if len(names) > self.m["drafts"]["max_attachments"]:
             raise OutlookError(f"at most {self.m['drafts']['max_attachments']} attachments")
         root, files = self.task_dir.resolve(), []
-        for name in names:
-            path = (self.task_dir / name).resolve()
-            if path != root and root not in path.parents:
-                raise ScopeError(f"{name!r} is outside the task folder; attach only files under {self.task_dir}")
+        for i, name in enumerate(names):
+            lexical = self.task_dir / name
+            if PureWindowsPath(name).anchor or (lexical.resolve() != root and root not in lexical.resolve().parents):
+                raise ScopeError(f"attachments[{i}] is outside the task folder; attach only files under it")
+            refuse_links(lexical, self.task_dir.parent)
+            path = lexical.resolve()
             if not path.is_file():
-                raise OutlookError(f"{name!r} is not a file in the task folder")
+                raise OutlookError(f"attachments[{i}] is not a file in the task folder")
             if path.stat().st_size > self.m["attachments"]["max_bytes"]:
-                raise OutlookError(f"{name!r} is over tasks.m365.attachments.max_bytes")
+                raise OutlookError(f"attachments[{i}] is over tasks.m365.attachments.max_bytes")
             files.append(path)
         return files
 
-    def _check_recipients(self, addresses: list[str]) -> None:
-        outside = [x for x in addresses if not x or x.casefold() not in self.recipients]
+    def _check_recipients(self, addresses: list[str], *, inherited: int = 0) -> None:
+        """Refused when any address is not one the brief or scope names. The error gives
+        counts and a reason code only, never the addresses (they may come from mail)."""
+        outside = [i for i, x in enumerate(addresses) if not x or x.casefold() not in self.recipients]
         if outside:
-            raise ScopeError(f"recipients the brief and email scope do not name: "
-                             f"{[x or '<unresolved>' for x in outside]}; nothing was saved")
+            from_mail = sum(1 for i in outside if i < inherited)
+            raise ScopeError(f"recipients_outside_scope: {len(outside)} recipient(s) the brief and email scope do "
+                             f"not name ({from_mail} inherited from the original); nothing was saved")
 
-    def existing_drafts(self, s: Session) -> list[dict]:
-        """Drafts already marked with this task id (F13)."""
-        marker = f'"{PS_PUBLIC_STRINGS}{self.m["drafts"]["marker_property"]}" = {_quote(self.task_id)}'
+    def _task_drafts(self, s: Session) -> list[tuple[str, str, str]]:
+        """(entry_id, normalized subject, source EntryID or '') of every draft marked with this task."""
+        d = self.m["drafts"]
+        marker = f'"{PS_PUBLIC_STRINGS}{d["marker_property"]}" = {_quote(self.task_id)}'
         table = s.ns.GetDefaultFolder(OL_FOLDER_DRAFTS).GetTable("@SQL=" + marker, OL_USER_ITEMS)
         table.Columns.RemoveAll()
-        for column in ("EntryID", "Subject"):
+        for column in ("EntryID", "Subject", PS_PUBLIC_STRINGS + d["source_property"]):
             table.Columns.Add(column)
         found = []
         while not table.EndOfTable:
-            entry_id, subject = table.GetNextRow().GetValues()
-            found.append({"entry_id": entry_id, "subject": subject})
+            entry_id, subject, source = table.GetNextRow().GetValues()
+            found.append((entry_id, normal_subject(subject), source or ""))
         return found
 
     def draft(self, a: dict, *, kind: str) -> dict:
         """An unsaved draft built (new, reply or forward), checked, then saved, never sent:
         refused before Save() when any recipient, inherited ones included, is not named
-        by the brief or scope; reported instead when one for this task exists."""
+        by the brief or scope; reported instead when this task already has one for the same
+        source message (a reply or forward) or the same subject (a new mail). Returns ids,
+        counts and reason codes only."""
+        d = self.m["drafts"]
         fragment = self._draft_body(a)
         files = self._draft_files(a.get("attachments", []))
-        explicit = [(OL_TO, x) for x in a.get("to", [])] + [(OL_CC, x) for x in a.get("cc", [])]
-        self._check_recipients([x.strip() for _, x in explicit])
+        explicit = [(OL_TO, x.strip()) for x in a.get("to", [])] + [(OL_CC, x.strip()) for x in a.get("cc", [])]
+        self._check_recipients([x for _, x in explicit])
 
         def work(s: Session) -> dict:
-            existing = self.existing_drafts(s)
+            original = None if kind == "new" else self._mail_item(s, a["entry_id"])
+            source = "" if original is None else original.EntryID
+            key = normal_subject(a["subject"]) if original is None else None
+            existing = [e for e, subj, src in self._task_drafts(s)
+                        if (src == source if original is not None else (not src and subj == key))]
             if existing:
-                return {"created": False, "existing": existing,
-                        "message": f"a draft for task {self.task_id} is already in Drafts; review it there"}
-            original = None
-            if kind == "new":
+                return {"created": False, "reason": "draft_exists", "existing": existing}
+            if original is None:
                 item = s.app.CreateItem(OL_MAIL_ITEM)
                 item.Subject = a["subject"]
             else:
-                original = self._mail_item(s, a["entry_id"])
                 item = (original.Forward() if kind == "forward"
                         else original.ReplyAll() if a.get("reply_all") else original.Reply())
+            inherited = item.Recipients.Count
             for kind_code, address in explicit:
-                item.Recipients.Add(address.strip()).Type = kind_code
+                item.Recipients.Add(address).Type = kind_code
             item.Recipients.ResolveAll()
             got = []
             for r in item.Recipients:
                 try:
                     got.append(recipient_smtp(r))
                 except Exception as exc:
-                    if hresult(exc) in DISCONNECT_HRESULTS:
-                        raise
+                    _reraise_disconnect(exc)
                     got.append("")
             if not got:
-                raise OutlookError("the draft has no recipients; nothing was saved")
-            self._check_recipients(got)
+                raise OutlookError("no_recipients: the draft has no recipients; nothing was saved")
+            self._check_recipients(got, inherited=inherited)
             carried = None
             if kind == "forward":
                 carried = {"original": original.Attachments.Count, "carried": item.Attachments.Count}
             item.HTMLBody = insert_after_body(item.HTMLBody, fragment)
             for path in files:
                 item.Attachments.Add(str(path))
-            item.UserProperties.Add(self.m["drafts"]["marker_property"], OL_TEXT, False).Value = self.task_id
+            item.UserProperties.Add(d["marker_property"], OL_TEXT, False).Value = self.task_id
+            if source:
+                item.UserProperties.Add(d["source_property"], OL_TEXT, False).Value = source
             item.Save()
-            out = {"created": True, "entry_id": item.EntryID, "subject": item.Subject, "recipients": got,
-                   "attachments": [p.name for p in files]}
+            out = {"created": True, "entry_id": item.EntryID, "recipient_count": len(got),
+                   "inherited_recipient_count": inherited, "attachment_count": len(files)}
+            if source:
+                out["source_entry_id"] = source
             if carried is not None:
                 out["forwarded_attachments"] = {**carried, "all_carried": carried["carried"] >= carried["original"]}
             return out

@@ -11,8 +11,9 @@ e.g. `{"command": "<python>", "args": ["-s", "-P", "-m", "m365"], "env": {"PYTHO
 "<whispr_root>", "PYTHONNOUSERSITE": "1", "WHISPR_OVERLAY": "<overlay or empty>",
 "WHISPR_TASK_ID": "<id>", "WHISPR_M365_ROLE": "read"}}`.
 
-- **Bound to one task.** At start it reads the task's brief and scope once, through
-  kg.db.connect_readonly, and closes the connection. With no task id, an unknown one, a
+- **Bound to one task.** At start, and again before every call, it reads the task's
+  status, brief and scope through kg.db.connect_readonly (a short-lived read-only
+  connection each time). With no task id, an unknown one, a
   status outside tasks.m365.bind_statuses or an email scope that does not parse, it still
   serves, but every tool refuses with the reason. Every query is checked against the
   task's email scope (m365/scope.py); a draft's recipients against the addresses the
@@ -65,8 +66,9 @@ INSTRUCTIONS = {
     DRAFT: ("whispr-m365 (draft role): unsent Outlook drafts for one task, saved in Drafts for the owner to "
             "review; nothing is ever sent. draft_new, draft_reply and draft_forward refuse any recipient the "
             "task's brief or email scope does not name, and any attachment outside the task folder. One draft "
-            "per task: when one exists it is reported instead of a new one. scope_get shows the allowed "
-            "recipients."),
+            "per source message for a reply or forward, one per subject for new mail: when one exists its id "
+            "is reported instead of a new one. Results are ids, counts and reason codes only. scope_get shows "
+            "the allowed recipients."),
 }
 
 
@@ -216,8 +218,9 @@ class Binding:
 
 def load_binding(cfg: dict, env: Mapping[str, str], *, today: date,
                  connect: Callable[[dict], sqlite3.Connection] = db.connect_readonly) -> Binding:
-    """The task and role the environment names, the task's email scope and allowed
-    recipients, read once; any failure is the Binding's error, never an exception."""
+    """The task and role the environment names, the task's status, email scope and
+    allowed recipients, read through a read-only connection; any failure is the Binding's
+    error, never an exception. The server reads it again before every call."""
     m = cfg["tasks"]["m365"]
     role = env.get(ROLE_ENV, "").strip()
     binding = Binding(role=role if role in ROLES else None, today=today)
@@ -270,15 +273,14 @@ class M365Server(RpcServer):
     or unhealthy, runs each call on the COM thread with a timeout."""
     name = SERVER_NAME
 
-    def __init__(self, cfg: dict, binding: Binding, outlook: Outlook, worker: ComWorker):
-        self.cfg, self.binding, self.worker = cfg, binding, worker
+    def __init__(self, cfg: dict, binding: Binding, outlook: Outlook, worker: ComWorker,
+                 connect: Callable[[dict], sqlite3.Connection] = db.connect_readonly):
+        self.cfg, self.binding, self.worker, self.outlook, self.connect = cfg, binding, worker, outlook, connect
         self.instructions = INSTRUCTIONS.get(binding.role) or binding.error
         self.served = set(tool_names(binding.role)) if binding.role else set()
         self.unhealthy: Optional[str] = None
-        self.mailbox = None
-        if binding.error is None:
-            self.mailbox = Mailbox(cfg, outlook, task_id=binding.task_id, task_dir=binding.task_dir,
-                                   scope=binding.scope, recipients=binding.recipients, today=binding.today)
+        self.mailbox: Optional[Mailbox] = None
+        self._bind(binding)
         calls = {t.name: (lambda a, t=t: self._call(t, a)) for t in MANIFEST}
         super().__init__(tool_definitions(cfg), calls)
 
@@ -306,16 +308,29 @@ class M365Server(RpcServer):
             out["allowed_recipients"] = sorted(b.recipients)
         return out
 
+    def _bind(self, binding: Binding) -> None:
+        """Take a (re-read) binding: the Mailbox follows its scope and recipients."""
+        self.binding = binding
+        if binding.error is not None:
+            return
+        if self.mailbox is None:
+            self.mailbox = Mailbox(self.cfg, self.outlook, task_id=binding.task_id, task_dir=binding.task_dir,
+                                   scope=binding.scope, recipients=binding.recipients, today=binding.today)
+        self.mailbox.scope, self.mailbox.recipients = binding.scope, binding.recipients
+
     def refusal(self, name: str) -> Optional[str]:
-        """Why a call to `name` is refused before its arguments are read, or None."""
+        """Why a call to `name` is refused before its arguments are read, or None. The
+        task's status and scope are read again first (F5), so a task leaving
+        tasks.m365.bind_statuses, or a scope narrowed, holds from the next call on."""
         b = self.binding
         if name not in self.served:
             return b.error if b.role is None else f"{name!r} is not served to the {b.role!r} role ({ROLE_ENV})"
-        if b.error is not None:
-            return b.error
         if self.unhealthy is not None:
             return f"server unhealthy: {self.unhealthy}; restart it"
-        return None
+        if b.task_id is not None:
+            self._bind(load_binding(self.cfg, {TASK_ENV: b.task_id, ROLE_ENV: b.role}, today=b.today,
+                                    connect=self.connect))
+        return self.binding.error
 
     def call_tool(self, name: Any, arguments: Any) -> dict:
         why = self.refusal(name) if name in self.tools else None

@@ -1,8 +1,8 @@
 """The allowlist sanitizer for a draft's HTML body (tasks.m365.sanitize; §5 "keep").
 
 Only tags listed in `tags` survive, each with only its `attributes`; a URL attribute
-keeps only a scheme in `url_schemes` (a relative or schemeless URL is dropped). Any
-other tag is dropped but its text kept, except inside `drop_content` tags, which go
+(`url_attributes`) keeps only a scheme in `url_schemes` (a relative or schemeless URL is
+dropped). Any other tag is dropped but its text kept, except inside `drop_content` tags, which go
 whole. Text and attribute values are re-escaped, comments and declarations dropped, and
 every tag left open is closed, so the fragment cannot reach outside where it is inserted.
 """
@@ -14,7 +14,6 @@ from html.parser import HTMLParser
 
 # HTML elements with no end tag.
 VOID = frozenset({"br", "hr", "img", "wbr"})
-URL_ATTRIBUTES = frozenset({"href", "src"})
 
 
 class _Cleaner(HTMLParser):
@@ -24,6 +23,7 @@ class _Cleaner(HTMLParser):
         self.drop = {t.casefold() for t in rules["drop_content"]}
         self.attrs = {t.casefold(): {a.casefold() for a in names} for t, names in rules["attributes"].items()}
         self.schemes = {s.casefold() for s in rules["url_schemes"]}
+        self.url_attrs = {a.casefold() for a in rules["url_attributes"]}
         self.out: list[str] = []
         self.open: list[str] = []
         self.dropping: list[str] = []
@@ -45,7 +45,7 @@ class _Cleaner(HTMLParser):
             name = name.casefold()
             if name not in self.attrs.get(tag, ()) or value is None:
                 continue
-            if name in URL_ATTRIBUTES and not self._url_ok(value):
+            if name in self.url_attrs and not self._url_ok(value):
                 continue
             kept.append(f' {name}="{html.escape(value, quote=True)}"')
         self.out.append(f"<{tag}{''.join(kept)}>")
