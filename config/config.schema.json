@@ -3,7 +3,7 @@
   "title": "whispr pipeline config (defaults.yaml merged with the user overlay)",
   "type": "object",
   "additionalProperties": false,
-  "required": ["config_version", "owner", "paths", "auth", "cli", "models", "prompts", "schemas", "ontology", "prepare", "extract", "pipeline", "kg", "alerts", "eval"],
+  "required": ["config_version", "owner", "paths", "auth", "cli", "models", "prompts", "schemas", "ontology", "prepare", "extract", "pipeline", "kg", "alerts", "schedules", "eval"],
   "$defs": {
     "str": {"type": "string", "minLength": 1},
     "strs": {"type": "array", "items": {"type": "string"}},
@@ -15,6 +15,24 @@
         "model": {"$ref": "#/$defs/str"},
         "effort": {"type": ["string", "null"], "enum": [null, "low", "medium", "high", "xhigh", "max"]},
         "thinking_tokens": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "job": {
+      "type": "object", "additionalProperties": false,
+      "required": ["args", "daily_at", "at_logon", "every_min", "time_limit_min", "ac_power_only", "stop_on_battery", "start_when_available", "wake_to_run", "restart_count", "restart_interval_min", "multiple_instances"],
+      "properties": {
+        "args": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+        "daily_at": {"type": ["string", "null"], "minLength": 1},
+        "at_logon": {"type": "boolean"},
+        "every_min": {"type": ["integer", "null"], "minimum": 1},
+        "time_limit_min": {"type": "integer", "minimum": 1},
+        "ac_power_only": {"type": "boolean"},
+        "stop_on_battery": {"type": "boolean"},
+        "start_when_available": {"type": "boolean"},
+        "wake_to_run": {"type": "boolean"},
+        "restart_count": {"type": "integer", "minimum": 0},
+        "restart_interval_min": {"type": ["integer", "null"], "minimum": 1},
+        "multiple_instances": {"enum": ["IgnoreNew", "Parallel", "Queue"]}
       }
     },
     "cell": {
@@ -125,6 +143,25 @@
       "properties": {
         "quarantine_digest_days": {"type": "number", "minimum": 0},
         "repeat_item_runs": {"type": "integer", "minimum": 1}
+      }
+    },
+    "schedules": {
+      "type": "object", "additionalProperties": false,
+      "required": ["task_path", "reserved_names", "powershell", "powershell_timeout_s", "interpreter", "interpreter_name", "interpreter_args", "version_stamp_patterns", "principal", "tasks"],
+      "properties": {
+        "task_path": {"$ref": "#/$defs/str"},
+        "reserved_names": {"$ref": "#/$defs/strs"},
+        "powershell": {"$ref": "#/$defs/str"},
+        "powershell_timeout_s": {"type": "number", "minimum": 1},
+        "interpreter": {"type": ["string", "null"], "minLength": 1},
+        "interpreter_name": {"$ref": "#/$defs/str"},
+        "interpreter_args": {"$ref": "#/$defs/strs"},
+        "version_stamp_patterns": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+        "principal": {
+          "type": "object", "additionalProperties": false, "required": ["logon_type", "run_level"],
+          "properties": {"logon_type": {"enum": ["Interactive", "S4U"]}, "run_level": {"enum": ["Limited", "Highest"]}}
+        },
+        "tasks": {"type": "object", "additionalProperties": {"$ref": "#/$defs/job"}}
       }
     },
     "eval": {

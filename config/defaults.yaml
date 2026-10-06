@@ -150,6 +150,106 @@ alerts:
   quarantine_digest_days: 7
   repeat_item_runs: 3           # D.1: an item started in this many consecutive runs of its job raises an alert
 
+schedules:
+  # Windows scheduled tasks, generated from this section (D.2, lesson L16).
+  # `python -m pipeline schedule --check` compares the live tasks with it (exit 1 on drift),
+  # `--apply` updates tasks that already exist (Set-ScheduledTask, never re-registers), and
+  # `--register` creates missing ones and reads each back (/whispr-setup only). Both print
+  # what they would write and write only with --yes. A task whose `-m pipeline` subcommand
+  # does not exist yet is a finding and is never written.
+  task_path: '\'                # Task Scheduler folder the tasks live in
+  # Hand-registered tasks on the author's machine (scripts/register-task.ps1). A task here
+  # with one of these names, in any letter case, is refused, so --apply can never rewrite a live job.
+  reserved_names: [whispr-recorder, whispr-nightly-ingest, whispr-weekly-lint-compile, whispr-nightly-freshness-check]
+  # Every read and write goes through this host, with the request as JSON on stdin.
+  # Windows PowerShell 5.1: ships with Windows and carries the ScheduledTasks module.
+  powershell: powershell.exe
+  powershell_timeout_s: 120
+  # The interpreter each task action runs. null = interpreter_name in the folder of the
+  # interpreter running `pipeline schedule` (the venv's Scripts\ or the installer's python\).
+  # Either way it is refused when it, or a venv's base interpreter, matches a
+  # version_stamp_pattern: an update deletes that folder and every task stops starting.
+  interpreter: null             # overlay (optional): an absolute path
+  interpreter_name: pythonw.exe # no console window, which matters for a run every 15 minutes
+  # Before each task's args. -s: no per-user site-packages. A task action cannot set
+  # PYTHONNOUSERSITE, which the embeddable install needs (CLAUDE.md, "Embeddable Python isolation").
+  interpreter_args: ["-s"]
+  version_stamp_patterns:
+    - '(?i)\\WindowsApps\\[^\\]+_\d+(\.\d+)+_'   # an MSIX package folder: ...\Microsoft.PowerShell_7.6.5.0_x64__8wekyb3d8bbwe\
+  # Interactive = run only when the user is logged on. The model calls use the user's
+  # Claude Code sign-in, which a non-interactive (Session 0) run may not have.
+  principal: {logon_type: Interactive, run_level: Limited}
+  # One entry per task; the key is the task name. Fields:
+  #   args                 after interpreter_args (`-m pipeline run` = python -s -m pipeline run)
+  #   daily_at             HH:MM local time, or null
+  #   at_logon             also start at logon
+  #   every_min            repeat every N minutes, forever, or null. Built as its own trigger,
+  #                        anchored at midnight so it is armed at once: a repetition grafted
+  #                        onto the logon trigger stays dormant until the next logon (L16).
+  #                        Every task needs daily_at or every_min, so NextRunTime proves it is armed.
+  #   time_limit_min       the scheduler kills a run still going after this (L6). A job's own
+  #                        time budget reads it and exits PARTIAL first (D.6).
+  #   ac_power_only        don't start on battery (D.6: model spend runs on AC power)
+  #   stop_on_battery      kill a started run when the power cord comes out
+  #   start_when_available catch-up: run as soon as possible after a missed start (asleep, off)
+  #   wake_to_run          wake the machine for the start time
+  #   restart_count, restart_interval_min
+  #                        retry a run the SCHEDULER failed or killed (time limit). It never fires
+  #                        when the process exits non-zero on its own (L16, 2026-07-17 test), so a
+  #                        job's own failure is a failed run in its ledger, retried next night.
+  #                        0 / null = no restart.
+  #   multiple_instances   IgnoreNew: a start while a run is still going is dropped
+  tasks:
+    # The nightly pipeline (D.1). wake_to_run off: a run woken from sleep was killed 12 s
+    # later when the machine slept again (L6, 10-02); catch-up runs it at the next real wake.
+    # stop_on_battery off: a run killed mid-batch loses the spend of its calls in flight.
+    whispr-pipeline:
+      args: [-m, pipeline, run]
+      daily_at: '22:00'
+      at_logon: false
+      every_min: null
+      time_limit_min: 120
+      ac_power_only: true
+      stop_on_battery: false
+      start_when_available: true
+      wake_to_run: false
+      restart_count: 1
+      restart_interval_min: 10
+      multiple_instances: IgnoreNew
+    # The nightly backup (D.6, L22): no model spend, so it runs on battery too. Before the
+    # pipeline, so each night's copy is the state the run started from.
+    whispr-backup:
+      args: [-m, pipeline, backup]
+      daily_at: '21:30'
+      at_logon: false
+      every_min: null
+      time_limit_min: 30
+      ac_power_only: false
+      stop_on_battery: false
+      start_when_available: true
+      wake_to_run: false
+      restart_count: 1
+      restart_interval_min: 10
+      multiple_instances: IgnoreNew
+    # Recorder liveness (D.6, L14): at logon plus every 15 minutes, the design that fixed the
+    # 08-23 outage (three days dead, an AtLogOn-only trigger never re-fired). The repetition
+    # is the retry, so no restart. 5 minutes: a check still running then is hung. Killing it
+    # is safe only while the check launches the recorder outside the task's job object
+    # (Win32_Process::Create, as scripts/watch-recorder.ps1 does); a plain child dies with it.
+    whispr-liveness:
+      args: [-m, pipeline, liveness]
+      daily_at: null
+      at_logon: true
+      every_min: 15
+      time_limit_min: 5
+      ac_power_only: false
+      stop_on_battery: false
+      start_when_available: true
+      wake_to_run: false
+      restart_count: 0
+      restart_interval_min: null
+      multiple_instances: IgnoreNew
+
 eval:
   budget_usd: 100
   stop_margin_usd: 5            # stop and write RESUME.md once spend is within this of the cap (G.5)
