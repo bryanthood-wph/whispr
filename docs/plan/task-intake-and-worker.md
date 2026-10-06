@@ -166,6 +166,122 @@ as `schedules.skip` (F8).
 go into this plan, not just a pointer to the plugin cache, which moves when Admin updates
 (F16).
 
+### P0 review notes: Admin v0.8.0 (2026-10-06, read-only review of the source)
+
+The licence is `UNLICENSED` (`.claude-plugin/plugin.json:9`), with a no-responsibility
+disclaimer (`plugin.json:4`, `README.md:15-17`) and no LICENSE file. That confirms whispr
+reimplements this, and copies nothing.
+
+**Outlook (COM): keep**
+- **One thread for all COM work.** whispr's single-threaded serve loop
+  (`kg/mcp_server.py`) inside `com_initialized()` gives the same guarantee without a
+  worker thread.
+- **Attach to a running Outlook before launching one.** It finds the exe through App
+  Paths.
+- **One retry on an RPC disconnect, for reads only.**
+- **Partial results say so** (`search_complete`, `truncated_reason`, `scanned_count`).
+  This feeds the F7 output header.
+- **Calendar recurrences:** IncludeRecurrences, then Sort, then Restrict.
+- **Item ids:** store id plus entry id, opened with GetItemFromID.
+- **Attachments:** listing returns metadata only. Saving never overwrites, returns a
+  sha256, and checks that the path stays inside the folder.
+- **Drafts:**
+  - built with Outlook's own Reply/ReplyAll/Forward, which keeps threading;
+  - forwards check that the original's attachments came through;
+  - no code calls Send;
+  - a timeout is reported as "unknown, do not retry".
+- **An allowlist sanitizer for generated HTML.**
+
+**Outlook: improve** (Admin's behaviour, then whispr's)
+1. **Metadata search.** Admin scans up to 10,000 items in Python, about 15 COM calls
+   each, with an Exchange lookup for every sender. whispr uses
+   `Folder.GetTable("@SQL=...")` with added columns, or a DASL `Restrict`, and opens an
+   item only for get_message.
+2. **Body search.** Admin reads the whole body of every scanned item. whispr restricts on
+   `urn:schemas:httpmail:textdescription LIKE` first, then cuts snippets from the hits.
+3. **get_message.** Admin returns the full body, with an HTML option. whispr returns
+   text only, capped, with a truncated flag, marked untrusted, and without internet
+   headers.
+4. **Attach once.** Admin re-attaches to Outlook and walks every store on each call.
+   whispr caches the app, namespace and default store, and re-attaches only after a
+   disconnect.
+5. **Calendar dates.** Admin's filter uses the US format `%m/%d/%Y`. whispr tests it on
+   this PC or formats to the locale, and caps the length of a search window.
+6. **Partial calendar results.** Admin returns nothing from an incomplete calendar
+   search. whispr returns the partial results, the way mail search does.
+7. **Errors.** Admin swallows exceptions (`_safe`), so items silently drop out of
+   filters. whispr counts errors per search and reports the count.
+8. **Attachment saves.** Admin saves to a path the caller chooses. whispr saves only to
+   `tasks\<id>\attachments`, using the file name alone, strips `:` and Windows reserved
+   names, and caps the size.
+9. **Draft attachments.** Admin allows any file on disk. whispr allows only files under
+   `tasks\<id>\`.
+10. **Reply recipients.** Admin takes them from the original message. whispr checks the
+    built draft's recipients against the people the brief names before `Save()`.
+11. **Where draft text goes.** Admin puts new text before `<html>`. whispr inserts it
+    after `<body>`.
+12. **No draft windows.** Admin calls `Display()`. The headless worker doesn't.
+13. **Timeouts.** In Admin a timed-out call keeps running and blocks the queue. whispr
+    marks the server unhealthy and refuses further calls.
+14. **Task marker on drafts (F13).** whispr stores the task id in a UserProperty and
+    checks Drafts for it before creating another.
+
+**Teams web (CDP): keep**
+- **Finding the page.** The Teams tab is looked up through the local debug endpoint on
+  every call, so the server can start before Chrome is open.
+- **Where it connects.** Loopback only, https only, a host allowlist, and a fixed table
+  of target hosts.
+- **Requests run inside the page,** with the page's own session.
+- **Input handling.** Ids are percent-encoded per path segment and validated. Values are
+  JSON-encoded before they go into the page script.
+- **Output limits.** `limit` is held to 1–50, and message bodies are labelled untrusted.
+- **Errors.** A 401 maps to a "reload the tab" hint.
+
+**Teams web: improve**
+- **Local port exposure.** Admin uses the well-known port 9222, and while the profile is
+  open any program on the PC can drive it.
+  - whispr uses a non-default port and connects only to a profile you started (F14).
+  - It reminds you to close the profile.
+  - It doesn't run code tasks while the profile is open, or keeps a shell tripwire.
+- **Message size and injection.** Bodies come back as raw HTML with no cap. whispr:
+  - picks out only the needed fields inside the page;
+  - converts HTML to text;
+  - caps length per message and in total;
+  - returns the text as quoted data to the researcher only (F5).
+- **Silent failures:**
+  - A missing `websockets` install is reported as "connection failed". whispr names the
+    real cause.
+  - A 200 with no `value` becomes an empty list ("no teams"). whispr treats it as an
+    error.
+  - Result paging (`@odata.nextLink`) is ignored, so long lists are silently cut off.
+    whispr follows it up to a cap, or reports `has_more`.
+- **Fragility.** whispr runs a health check before each run, and reports Teams as
+  skipped when it fails.
+
+**Leave out**
+- **Admin's startup machinery,** replaced by the task-scope check and whispr's RpcServer.
+  This is safe because the check refuses when the task id is missing or unknown, and the
+  pipeline, not the model, writes the MCP config:
+  - the roots/list and project-marker checks;
+  - the venv check;
+  - the mcp-SDK serving workarounds.
+- **Body-search receipts and cursors.** offset/limit within a date window replaces them;
+  they protected nothing.
+- **The write-confirmation two-step and its hooks.** They gated writes only. Draft
+  previews are replaced by attachments confined to the task folder, the recipient check,
+  and your review of every unsent draft.
+- **Out-of-scope tools:** batch drafts, invites, contacts, Free/Busy, sends, meetings,
+  and the all-folders walk.
+- **The tool-name allowlist hook stays,** but its list is generated from the server's own
+  manifest. Admin keeps two hand-copied lists that can drift apart.
+
+**Dependency:** the Teams route needs `websockets`, which is not stdlib (Admin pins 17.1).
+Installing it needs your approval in P2.
+
+**Teams chats:** not reachable this way. Admin's comment (`teams_mcp/tools_messaging.py:4-6`)
+says the session lacks `Chat.Read`, and its host table is fixed to Graph. A chat read would
+mean adding the Teams chat service as a new target. That's what the chats spike tests.
+
 | Area | Tools (read plus unsent drafts) | Left out |
 |---|---|---|
 | Outlook (Classic, COM) | search message metadata → bounded body snippets, get message, list and save attachments (only into `tasks\<id>\`), calendar search and get, unsent draft, reply draft, forward draft | send, move, delete, flag, saving meetings |
