@@ -130,13 +130,17 @@ def named_field(cfg: dict, key: str) -> str:
 def check_intake(cfg: dict) -> None:
     """The intake's names must agree (docs/plan/task-intake-and-worker.md §3): fields and
     scope types defined, no two alike but for letter case, required_fields naming
-    defined fields, and scope_field and budget_field two different ones. Any break is a
+    defined fields, scope_field and budget_field two different ones, and
+    tasks.m365.scope_type one of the scope types. Any break is a
     ConfigError at load."""
     intake = cfg["tasks"]["intake"]
     for key in ("fields", "scope_types"):
         if not intake[key]:
             raise ConfigError(f"tasks.intake.{key} is empty")
-    _folded(list(intake["scope_types"]), "tasks.intake.scope_types")
+    scope_types = _folded(list(intake["scope_types"]), "tasks.intake.scope_types")
+    if cfg["tasks"]["m365"]["scope_type"].casefold() not in scope_types:
+        raise ConfigError(f"tasks.m365.scope_type {cfg['tasks']['m365']['scope_type']!r} is not one of "
+                          f"tasks.intake.scope_types {list(scope_types.values())}")
     required_fields(cfg)
     named = [named_field(cfg, key) for key in STRUCTURED_FIELD_KEYS]
     if len(set(named)) != len(named):

@@ -238,8 +238,70 @@
       }
     },
     "tasks": {
-      "type": "object", "additionalProperties": false, "required": ["intake"],
+      "type": "object", "additionalProperties": false, "required": ["intake", "folder", "m365"],
       "properties": {
+        "folder": {"$ref": "#/$defs/str"},
+        "m365": {
+          "type": "object", "additionalProperties": false,
+          "required": ["scope_type", "grammar", "default_window_days", "default_folders", "bind_statuses", "date_picture", "call_timeout_s", "read_retries", "error_samples", "untrusted_label", "mail", "calendar", "attachments", "drafts", "sanitize"],
+          "properties": {
+            "scope_type": {"$ref": "#/$defs/str"},
+            "grammar": {
+              "type": "object", "additionalProperties": false, "required": ["separator", "keys", "date_format", "folder_separator"],
+              "properties": {
+                "separator": {"$ref": "#/$defs/str"},
+                "keys": {
+                  "type": "object", "additionalProperties": false, "required": ["sender", "folder", "subject", "since", "until"],
+                  "properties": {"sender": {"$ref": "#/$defs/str"}, "folder": {"$ref": "#/$defs/str"}, "subject": {"$ref": "#/$defs/str"},
+                                 "since": {"$ref": "#/$defs/str"}, "until": {"$ref": "#/$defs/str"}}
+                },
+                "date_format": {"$ref": "#/$defs/str"},
+                "folder_separator": {"$ref": "#/$defs/str"}
+              }
+            },
+            "default_window_days": {"type": "integer", "minimum": 1},
+            "default_folders": {"type": "array", "items": {"type": ["string", "integer"], "minLength": 1, "minimum": 0}, "minItems": 1},
+            "bind_statuses": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+            "date_picture": {"type": ["string", "null"], "minLength": 1},
+            "call_timeout_s": {"type": "number", "minimum": 0.01},
+            "read_retries": {"type": "integer", "minimum": 0},
+            "error_samples": {"type": "integer", "minimum": 0},
+            "untrusted_label": {"$ref": "#/$defs/str"},
+            "mail": {
+              "type": "object", "additionalProperties": false, "required": ["max_results", "max_scan", "max_folders", "body_max_results", "snippet_chars", "body_chars"],
+              "properties": {"max_results": {"type": "integer", "minimum": 1}, "max_scan": {"type": "integer", "minimum": 1},
+                             "max_folders": {"type": "integer", "minimum": 1},
+                             "body_max_results": {"type": "integer", "minimum": 1}, "snippet_chars": {"type": "integer", "minimum": 1},
+                             "body_chars": {"type": "integer", "minimum": 1}}
+            },
+            "calendar": {
+              "type": "object", "additionalProperties": false, "required": ["default_days", "max_window_days", "future_days", "max_results", "max_scan", "body_chars"],
+              "properties": {"default_days": {"type": "integer", "minimum": 1}, "max_window_days": {"type": "integer", "minimum": 1},
+                             "future_days": {"type": "integer", "minimum": 0}, "max_results": {"type": "integer", "minimum": 1},
+                             "max_scan": {"type": "integer", "minimum": 1}, "body_chars": {"type": "integer", "minimum": 1}}
+            },
+            "attachments": {
+              "type": "object", "additionalProperties": false, "required": ["folder", "max_bytes", "name_chars", "fallback_name", "ext_chars", "digest_chars", "temp_suffix"],
+              "properties": {"folder": {"$ref": "#/$defs/str"}, "max_bytes": {"type": "integer", "minimum": 1},
+                             "name_chars": {"type": "integer", "minimum": 8}, "fallback_name": {"$ref": "#/$defs/str"},
+                             "ext_chars": {"type": "integer", "minimum": 0}, "digest_chars": {"type": "integer", "minimum": 8, "maximum": 64},
+                             "temp_suffix": {"$ref": "#/$defs/str"}}
+            },
+            "drafts": {
+              "type": "object", "additionalProperties": false, "required": ["marker_property", "source_property", "max_attachments", "body_chars"],
+              "properties": {"marker_property": {"$ref": "#/$defs/str"}, "source_property": {"$ref": "#/$defs/str"}, "max_attachments": {"type": "integer", "minimum": 0},
+                             "body_chars": {"type": "integer", "minimum": 1}}
+            },
+            "sanitize": {
+              "type": "object", "additionalProperties": false, "required": ["tags", "drop_content", "attributes", "url_schemes", "url_attributes"],
+              "properties": {"tags": {"type": "array", "items": {"$ref": "#/$defs/str"}},
+                             "drop_content": {"type": "array", "items": {"$ref": "#/$defs/str"}},
+                             "attributes": {"type": "object", "additionalProperties": {"type": "array", "items": {"$ref": "#/$defs/str"}}},
+                             "url_schemes": {"type": "array", "items": {"$ref": "#/$defs/str"}},
+                             "url_attributes": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1}}
+            }
+          }
+        },
         "intake": {
           "type": "object", "additionalProperties": false,
           "required": ["fields", "required_fields", "answer_sources", "scope_field", "scope_types", "scope_none", "scope_entity_type", "budget_field", "budget"],

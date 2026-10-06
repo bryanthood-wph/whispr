@@ -107,6 +107,16 @@ the way `/clarify` runs:
 4. Ask one question per source type: confirm or edit the saved values and candidates
    (multi-select), and for an open type offer **none** as a one-click option. Ask about
    Teams chats by name: which chats have context for this task?
+   **Email** is recorded one clause per scope item, in the grammar the worker's Outlook
+   tools read (the `email` scope type's description in the `task_update_status` schema
+   spells it): `sender:jane@example.com` or `sender:@example.com` (a whole domain),
+   `folder:Inbox/Projects` (a path under the mailbox; its subfolders count),
+   `subject:<words in the thread's subject>`, `since:YYYY-MM-DD`, `until:YYYY-MM-DD`.
+   Propose senders from the attendees' addresses, and ask the window as a since date
+   (with none, the server's default window applies). Clauses of one kind are
+   alternatives; different kinds all apply. A draft may go only to an address the brief
+   names, so a recipient the user wants should be named by address in the audience or a
+   `sender:` item. A malformed clause is refused by name: fix that item, don't drop the type.
 5. **Teams is pasted, not read.** No tool on this machine can read Teams, so for each
    `teams_channel` and `teams_chat` item in the answer, ask the user to paste the lines
    that matter. Save each paste as one of the call's `inputs`, starting with the item's
