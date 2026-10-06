@@ -205,6 +205,48 @@ kg:
   # C.5: a re-derivation (extractor or ontology change) estimated above this waits for
   # your approval before it spends (lesson L3).
   rederive_approval_usd: 5
+  # The neighbourhood viewer (kg/view.py, `python -m kg.view`): one JSON answer with a
+  # self-contained SVG, for a Claude Code pane. Read-only, like the MCP server. Sizes are
+  # SVG px; the walk itself is bounded by kg.traverse.* as for MCP neighbors.
+  view:
+    default_hops: 2             # hops when the caller names none (still cut to kg.traverse.max_hops)
+    max_nodes: 60               # neighbours drawn at most; fetched in pages of kg.traverse.max_results
+    svg_max_chars: 131072       # the host pane's limit: farthest, least recently linked nodes are dropped to fit
+    canvas_px: 960              # the SVG is a square this wide
+    margin_px: 180              # room outside the outer ring for leaf labels
+    ring_px: 140                # distance between depth rings, shrunk when the hops would not fit the canvas
+    start_deg: -90              # where the first neighbour's wedge starts (-90 = top; clockwise from there)
+    node_radius_px: 8
+    center_radius_px: 14
+    label_gap_px: 4             # between a node and its label
+    label_chars: 22             # a label is cut to this many characters (the tooltip has the whole name)
+    quote_chars: 120            # quotes in the answer, tooltips and text are cut to this many characters
+    font_family: system-ui, sans-serif   # letters, digits, spaces, commas and hyphens only
+    font_px: 12
+    coord_decimals: 1           # node coordinates are rounded to this many decimals
+    text_indent: 2              # spaces per depth in the plain-text tree
+    route_only_opacity: 0.5     # fill opacity of an entity drawn only because a route passes it
+    stroke_px:
+      edge: 1.5
+      hover: 3                  # an edge or node outline under the pointer
+      hit: 10                   # an edge's invisible hover target
+      node: 1.5
+      halo: 3                   # the outline behind label text
+    # Hex colours (#rgb or #rrggbb). Mid-saturation fills and dark labels on a light halo
+    # read on both light and dark backgrounds.
+    colors:
+      edge: "#8b949e"
+      highlight: "#e8a317"
+      label: "#1f2328"
+      label_halo: "#ffffff"
+      node_stroke: "#ffffff"
+    # Fill per entity type: one for every type in config/ontology.yaml (checked on start).
+    palette:
+      person: "#4e79a7"
+      organization: "#f28e2b"
+      project: "#59a14f"
+      system: "#b07aa1"
+      topic: "#9c755f"
 
 alerts:
   # D.1: an item quarantined this many days ago leaves the open alerts for a digest,

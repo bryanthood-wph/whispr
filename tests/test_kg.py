@@ -44,6 +44,8 @@ class TestConfig(unittest.TestCase):
     def test_kg_and_alerts_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = load_config(overlay=overlay(Path(tmp)))
+            view = cfg["kg"].pop("view")          # the viewer's block: tests/test_kg_view.py
+            self.assertEqual(view["svg_max_chars"], 131072)   # the host pane's limit
             self.assertEqual(cfg["kg"], {
                 "database": "whispr.db", "search_cards": 20, "busy_timeout_ms": 5000,
                 "traverse": {"max_hops": 3, "default_hops": 1, "max_results": 25, "max_paths": 3, "quote_chars": 240,

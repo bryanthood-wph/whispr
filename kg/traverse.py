@@ -63,6 +63,15 @@ def _placeholders(values: Sequence) -> str:
     return ", ".join("?" for _ in values)
 
 
+def cut(text: Optional[str], limit: int) -> Optional[str]:
+    """`text` cut to `limit` characters, ending with the cut mark when it was cut, so
+    a reader knows there is more (open `source` for the whole quote). None stays None.
+    Shared by the cards here and the viewer (kg/view.py), each with its own limit."""
+    if text is None or len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + _CUT_MARK
+
+
 class Traverser:
     def __init__(self, store: Store):
         self.store = store
@@ -167,10 +176,7 @@ class Traverser:
         return self.store.live_id(keyed_id(PERSON, name_key(email)))
 
     def _cut(self, text: Optional[str]) -> Optional[str]:
-        limit = self.caps["quote_chars"]
-        if text is None or len(text) <= limit:
-            return text
-        return text[:limit].rstrip() + _CUT_MARK
+        return cut(text, self.caps["quote_chars"])
 
     def _edge_card(self, row: dict, parallel: int = 0) -> dict:
         return {"kind": "edge", "id": row["id"], "relation": row["relation"],

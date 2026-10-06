@@ -202,6 +202,23 @@ class Store:
             "SELECT DISTINCT alias, alias_key FROM alias WHERE entity_id = ? ORDER BY alias_key, alias",
             (entity_id,))]
 
+    def entities_named(self, name: str) -> list[str]:
+        """Live entities `name` exactly names (after name_key): an alias of theirs, or
+        their canonical key (a person's email, any other type's name), each followed
+        to its survivor, sorted. Empty when nothing matches; more than one when the
+        name is shared. For callers that take a name where an id is expected (the
+        viewer, kg/view.py); a key is looked up by id, an alias through its index."""
+        key = name_key(name)
+        if not key:
+            return []
+        keyed = [keyed_id(type_, key) for type_ in sorted(self.entity_types)]
+        keyed.append(keyed_id(PERSON, NAME_KEY_PREFIX + key))
+        found = {r[0] for r in self.conn.execute(
+            f"SELECT id FROM entity WHERE id IN ({', '.join('?' for _ in keyed)})", keyed)}
+        found |= {r[0] for r in self.conn.execute(
+            "SELECT DISTINCT entity_id FROM alias WHERE alias_key = ? AND entity_id IS NOT NULL", (key,))}
+        return sorted({self.live_id(entity_id) for entity_id in found})
+
     def unresolved_aliases(self) -> list[dict]:
         """Mentions waiting for C.5 entity resolution."""
         return fetch_all(self.conn, "SELECT * FROM alias WHERE entity_id IS NULL ORDER BY created_at")

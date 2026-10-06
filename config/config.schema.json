@@ -155,7 +155,7 @@
       }
     },
     "kg": {
-      "type": "object", "additionalProperties": false, "required": ["database", "search_cards", "busy_timeout_ms", "traverse", "er", "models", "rederive_approval_usd"],
+      "type": "object", "additionalProperties": false, "required": ["database", "search_cards", "busy_timeout_ms", "traverse", "er", "models", "rederive_approval_usd", "view"],
       "properties": {
         "database": {"$ref": "#/$defs/str"},
         "search_cards": {"type": "integer", "minimum": 1},
@@ -185,7 +185,39 @@
           "type": "object", "additionalProperties": false, "required": ["resolve"],
           "properties": {"resolve": {"$ref": "#/$defs/str"}}
         },
-        "rederive_approval_usd": {"$ref": "#/$defs/money"}
+        "rederive_approval_usd": {"$ref": "#/$defs/money"},
+        "view": {
+          "type": "object", "additionalProperties": false,
+          "required": ["default_hops", "max_nodes", "svg_max_chars", "canvas_px", "margin_px", "ring_px", "start_deg", "node_radius_px", "center_radius_px", "label_gap_px", "label_chars", "quote_chars", "font_family", "font_px", "coord_decimals", "text_indent", "route_only_opacity", "stroke_px", "colors", "palette"],
+          "properties": {
+            "default_hops": {"type": "integer", "minimum": 1},
+            "max_nodes": {"type": "integer", "minimum": 1},
+            "svg_max_chars": {"type": "integer", "minimum": 1},
+            "canvas_px": {"type": "number", "minimum": 1},
+            "margin_px": {"type": "number", "minimum": 0},
+            "ring_px": {"type": "number", "minimum": 0},
+            "start_deg": {"type": "number"},
+            "node_radius_px": {"type": "number", "minimum": 0},
+            "center_radius_px": {"type": "number", "minimum": 0},
+            "label_gap_px": {"type": "number", "minimum": 0},
+            "label_chars": {"type": "integer", "minimum": 1},
+            "quote_chars": {"type": "integer", "minimum": 1},
+            "font_family": {"$ref": "#/$defs/str"},
+            "font_px": {"type": "number", "minimum": 1},
+            "coord_decimals": {"type": "integer", "minimum": 0},
+            "text_indent": {"type": "integer", "minimum": 0},
+            "route_only_opacity": {"$ref": "#/$defs/frac"},
+            "stroke_px": {
+              "type": "object", "additionalProperties": false, "required": ["edge", "hover", "hit", "node", "halo"],
+              "properties": {"edge": {"type": "number", "minimum": 0}, "hover": {"type": "number", "minimum": 0}, "hit": {"type": "number", "minimum": 0}, "node": {"type": "number", "minimum": 0}, "halo": {"type": "number", "minimum": 0}}
+            },
+            "colors": {
+              "type": "object", "additionalProperties": false, "required": ["edge", "highlight", "label", "label_halo", "node_stroke"],
+              "properties": {"edge": {"$ref": "#/$defs/str"}, "highlight": {"$ref": "#/$defs/str"}, "label": {"$ref": "#/$defs/str"}, "label_halo": {"$ref": "#/$defs/str"}, "node_stroke": {"$ref": "#/$defs/str"}}
+            },
+            "palette": {"type": "object", "additionalProperties": {"$ref": "#/$defs/str"}}
+          }
+        }
       }
     },
     "alerts": {
