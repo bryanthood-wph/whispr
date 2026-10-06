@@ -16,6 +16,7 @@
 | [E. Lessons learned](E-lessons.md) | you're about to build anything (26 mistakes not to repeat) |
 | [F. ASR & live assist](F-asr-live.md) | you're working on the audio or live tracks |
 | [G. Git & tracking](G-git-and-tracking.md) | you're opening a branch, issue or PR |
+| [Task intake and worker](task-intake-and-worker.md) | you're building task intake, the worker, or the Microsoft tools |
 
 ---
 
@@ -115,7 +116,7 @@ until its trigger fires.
 | Separate system-time columns | an "as recorded on" query is ever needed |
 | Audio replay harness for recorder tests | the live-call checklist misses a regression |
 | Effort sweeps beyond D/E, more prompt variants | a later change record needs them |
-| **Future state (your note, 2026-10-06; revised the same day): a clarify-style task intake, replacing open-ended "talk it through with Claude".** For each of your tasks, Claude asks structured questions, round by round like /clarify, for every frontmatter detail needed to execute it competently (field list to be agreed with you), records the answers on the task, and allows `ready` only when none is open. It builds on `/create-tasks` and `/execute-tasks` (D.5) | the pipeline is built, cut over and running; then **discuss first**, no build before that |
+| **Task intake and worker (your note, 2026-10-06): a clarify-style intake that sets each task's scope and brief, plus an on-demand whispr worker.** Planned in full in [task-intake-and-worker.md](task-intake-and-worker.md) | you say go (plan only for now) |
 
 ## 4. Agents: encouraged, least privilege
 
