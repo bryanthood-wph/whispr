@@ -86,6 +86,12 @@ _PARSED_USAGE = ("input_tokens", "output_tokens", "cache_read_input_tokens", "ca
 TOKEN_FIELDS = tuple(f.name for f in fields(CallResult) if f.name.endswith("_tokens"))
 
 
+# The scheduled jobs run under pythonw.exe, which has no console, so Windows gives each
+# console-subsystem child (claude.exe) a new terminal window. A hidden console keeps the
+# pipes working and is inherited by the CLI's own children (its MCP servers). 0 off Windows.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 def resolve_executable(name: str) -> str:
     """A path to a directly runnable CLI. An npm shim (.cmd/.ps1) can't take our
     arguments safely through a shell, so prefer the native exe beside it."""
@@ -107,6 +113,7 @@ def cli_version(cfg: dict) -> str:
     arguments and environment. Makes no model call."""
     out = subprocess.run([resolve_executable(cfg["cli"]["executable"]), *cli_args(cfg), "--version"],
                          capture_output=True, text=True, stdin=subprocess.DEVNULL, env=child_env(cfg),
+                         creationflags=NO_WINDOW,
                          timeout=cfg["cli"]["timeout_s"])
     words = out.stdout.split()
     if out.returncode != 0 or not words:
@@ -247,6 +254,7 @@ def _launch(cfg: dict, role: str, prompt: str, system_append: Optional[Path], *,
         proc = subprocess.Popen(
             args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             cwd=data_dir(cfg, "work"), env=child_env(cfg, role), text=True, encoding="utf-8", errors="replace",
+            creationflags=NO_WINDOW,
         )
     except OSError as exc:            # nothing ran, so nothing was spent; the row settles any reservation
         append_jsonl(ledger, {"role": role, "model": spec["model"], "request_key": request_key, "cost_usd": 0.0,

@@ -112,6 +112,15 @@ class TestModelsCall(_CallBase):
         row = self._ledger()[0]                   # settles the reservation the hook made
         self.assertEqual((row["request_key"], row["cost_usd"], row["is_error"]), ("k1", 0.0, True))
 
+    def test_cli_launches_without_a_console_window(self):
+        # pythonw.exe has no console, so without this every call pops a terminal window
+        real = models.subprocess.Popen
+        with mock.patch("pipeline.models.subprocess.Popen", side_effect=real) as popen:
+            self._call()
+        self.assertEqual(popen.call_args.kwargs["creationflags"], models.NO_WINDOW)
+        if sys.platform == "win32":
+            self.assertTrue(models.NO_WINDOW)
+
     def test_api_key_auth_fails_closed(self):
         os.environ["FAKE_CLAUDE_MODE"] = "apikey"
         with self.assertRaises(models.AuthError):
