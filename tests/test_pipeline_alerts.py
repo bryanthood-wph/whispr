@@ -218,21 +218,30 @@ class TestHook(HookCase):
 
 
 class TestGraphFirstNote(HookCase):
-    """P2b: the hook's graph-first note, in Claude's context only, on unless switched off."""
+    """P2b: the hook's graph-first note, in Claude's context only, set by the switch or default_on."""
 
     def note(self) -> str:
         return self.cfg["graph_first_note"]["text"].strip()
 
-    def test_the_note_is_context_only_and_on_by_default(self):
+    def test_the_note_is_context_only_when_switched_on(self):
         with self.db():
             pass
-        del self.env[self.switch]
+        on = self.cfg["graph_first_note"]["on_value"]
+        self.env[self.switch] = on
         out = json.loads(self.hook('{"hook_event_name": "SessionStart", "source": "startup"}').stdout)
         self.assertNotIn("systemMessage", out)                       # nothing shown to you
         self.assertEqual(out["hookSpecificOutput"], {"hookEventName": "SessionStart", "additionalContext": self.note()})
-        on = self.cfg["graph_first_note"]["on_value"]
-        out = json.loads(self.hook("{}", **{self.switch: on}).stdout)
+        out = json.loads(self.hook("{}", **{self.switch: f" {on.upper()} "}).stdout)
         self.assertEqual(out["hookSpecificOutput"]["additionalContext"], self.note())
+
+    def test_unset_switch_follows_default_on(self):
+        # off until P2b's run passes, so the nightly sync jobs never see an unvetted note
+        self.assertIs(self.cfg["graph_first_note"]["default_on"], False)
+        for default in (False, True):
+            cfg = {**self.cfg, "graph_first_note": {**self.cfg["graph_first_note"], "default_on": default}}
+            with self.subTest(default_on=default):
+                for environ in ({}, {self.switch: "unexpected"}):
+                    self.assertEqual(A.graph_first_note(cfg, environ), self.note() if default else "")
 
     def test_the_switch_turns_it_off(self):
         with self.db():
@@ -244,7 +253,7 @@ class TestGraphFirstNote(HookCase):
 
     def test_alerts_come_first_and_only_they_are_shown(self):
         self.raise_alerts(1)
-        del self.env[self.switch]
+        self.env[self.switch] = self.cfg["graph_first_note"]["on_value"]
         out = json.loads(self.hook("{}").stdout)
         self.assertIn("test:0", out["systemMessage"])
         self.assertNotIn(self.note(), out["systemMessage"])
@@ -253,13 +262,14 @@ class TestGraphFirstNote(HookCase):
     def test_no_note_when_the_config_does_not_load(self):
         bad = self.root / "bad.yaml"
         bad.write_text("owner: {unknown_key: 1}\n", encoding="utf-8")
-        del self.env[self.switch]
+        self.env[self.switch] = self.cfg["graph_first_note"]["on_value"]
         out = json.loads(self.hook(**{CONFIG_OPTION: str(bad)}).stdout)
         self.assertEqual(out["hookSpecificOutput"]["additionalContext"], out["systemMessage"])
 
     def test_context_function(self):
         with self.db():
             pass
-        off = self.cfg["graph_first_note"]["off_value"]
-        self.assertEqual(A.session_start_context(cfg=self.cfg, environ={}), ("", self.note()))
-        self.assertEqual(A.session_start_context(cfg=self.cfg, environ={self.switch: off}), ("", ""))
+        note = self.cfg["graph_first_note"]
+        self.assertEqual(A.session_start_context(cfg=self.cfg, environ={self.switch: note["on_value"]}), ("", self.note()))
+        self.assertEqual(A.session_start_context(cfg=self.cfg, environ={self.switch: note["off_value"]}), ("", ""))
+        self.assertEqual(A.session_start_context(cfg=self.cfg, environ={}), ("", ""))   # default_on: false

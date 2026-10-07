@@ -338,8 +338,9 @@
       }
     },
     "graph_first_note": {
-      "type": "object", "additionalProperties": false, "required": ["switch_env", "off_value", "on_value", "text"],
+      "type": "object", "additionalProperties": false, "required": ["default_on", "switch_env", "off_value", "on_value", "text"],
       "properties": {
+        "default_on": {"type": "boolean"},
         "switch_env": {"$ref": "#/$defs/str"},
         "off_value": {"$ref": "#/$defs/str"},
         "on_value": {"$ref": "#/$defs/str"},

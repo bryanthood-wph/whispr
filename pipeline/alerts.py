@@ -14,8 +14,8 @@
   never blocked or broken by whispr.
 - `session_start_context` is what the hook itself uses: that alert line plus the
   graph-first note (graph_first_note.text, P2b), which goes to Claude's context only.
-  The note is on unless the session's environment sets graph_first_note.switch_env to
-  its off_value.
+  The session's environment turns it on or off (graph_first_note.switch_env set to
+  on_value or off_value); otherwise graph_first_note.default_on decides.
 """
 
 from __future__ import annotations
@@ -117,13 +117,14 @@ def session_start_text(overlay_path: Optional[Path] = None, *, cfg: Optional[dic
 
 
 def graph_first_note(cfg: dict, environ: Mapping[str, str]) -> str:
-    """The graph-first note, or "" when `environ` sets graph_first_note.switch_env to its
-    off_value (letter case and surrounding space ignored). P2b's harness sets the switch
-    in each session it starts; in every other session it is unset, so the note is on."""
+    """The graph-first note, or "". `environ`'s graph_first_note.switch_env picks on_value
+    or off_value (letter case and surrounding space ignored); unset or any other value
+    falls back to default_on. P2b's harness sets the switch in each session it starts."""
     note = cfg["graph_first_note"]
-    if (environ.get(note["switch_env"]) or "").strip().casefold() == note["off_value"].strip().casefold():
-        return ""
-    return note["text"].strip()
+    value = (environ.get(note["switch_env"]) or "").strip().casefold()
+    fold = lambda key: note[key].strip().casefold()
+    on = True if value == fold("on_value") else False if value == fold("off_value") else note["default_on"]
+    return note["text"].strip() if on else ""
 
 
 def session_start_context(overlay_path: Optional[Path] = None, environ: Optional[Mapping[str, str]] = None, *,

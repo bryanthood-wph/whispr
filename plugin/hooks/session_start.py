@@ -4,8 +4,8 @@ tell Claude to use whispr's knowledge first.
 Prints one JSON object, or nothing when there is neither an open alert nor a note:
 - `systemMessage` (shown to you): the alert line, only when an alert is open;
 - `hookSpecificOutput.additionalContext` (Claude's context): the alert line, then the
-  graph-first note (config graph_first_note, P2b) unless the session's environment turns
-  it off (graph_first_note.switch_env set to its off_value).
+  graph-first note (config graph_first_note, P2b) when the session's environment turns it
+  on (graph_first_note.switch_env), or by graph_first_note.default_on when it is unset.
 Both come from pipeline/alerts.py (`session_start_context`; the alert line is also
 `python -m pipeline alerts --session-start`), which reads the database read-only on a
 bounded thread.
