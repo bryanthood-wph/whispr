@@ -298,13 +298,15 @@ def estimate(cfg: dict, rows: list[dict]) -> tuple[float, str]:
 
 def hook_context(cfg: dict, note_on: bool, *, python: str = sys.executable) -> Optional[str]:
     """What the plugin's SessionStart hook gives Claude in an arm (its additionalContext,
-    "" for nothing), run as Claude Code runs it; None when it could not run. Reads the
-    alerts read-only; makes no model call."""
+    "" for nothing), run as Claude Code runs it, with no console window (models.NO_WINDOW,
+    as every launch from the one-shot task); None when it could not run. Reads the alerts
+    read-only; makes no model call."""
     env = {k: v for k, v in os.environ.items() if k != settings(cfg)["plugin_dirs_env"]}
     env.update(session_env(cfg, note_on))
     try:
         proc = subprocess.run([python, "-s", str(plugin_dir(cfg) / HOOK)], input=json.dumps(HOOK_EVENT),
-                              capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
+                              capture_output=True, text=True, encoding="utf-8", env=env, timeout=60,
+                              creationflags=models.NO_WINDOW)
         if proc.returncode != 0:
             return None
         return json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"] if proc.stdout.strip() else ""
