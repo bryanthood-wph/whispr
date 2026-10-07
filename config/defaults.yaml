@@ -435,10 +435,11 @@ graph_first_note:
   # note to Claude's context (additionalContext; it is not shown to you), so questions
   # about your work reach whispr-kg first. A session whose environment sets switch_env to
   # on_value or off_value gets that; any other session gets default_on. The P2b harness sets
-  # the switch in both arms. default_on stays false until the before/after run passes, so
-  # nothing else (the nightly sync jobs included) sees the note before it is vetted. The
-  # /vault clause stays until /vault retires (D.8).
-  default_on: false
+  # the switch in both arms. default_on was false until the before/after run passed
+  # (2026-10-06, run gf-20261007T022303Z-40c756: after 10/10 vs before 2/10). The nightly
+  # and weekly sync jobs set the switch off, so the note leaves them unchanged. The /vault
+  # clause stays until /vault retires (D.8).
+  default_on: true
   switch_env: WHISPR_GRAPH_FIRST_NOTE
   off_value: "off"
   on_value: "on"

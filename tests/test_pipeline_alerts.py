@@ -235,8 +235,8 @@ class TestGraphFirstNote(HookCase):
         self.assertEqual(out["hookSpecificOutput"]["additionalContext"], self.note())
 
     def test_unset_switch_follows_default_on(self):
-        # off until P2b's run passes, so the nightly sync jobs never see an unvetted note
-        self.assertIs(self.cfg["graph_first_note"]["default_on"], False)
+        # on since P2b's run passed (2026-10-06); the sync jobs switch it off themselves
+        self.assertIs(self.cfg["graph_first_note"]["default_on"], True)
         for default in (False, True):
             cfg = {**self.cfg, "graph_first_note": {**self.cfg["graph_first_note"], "default_on": default}}
             with self.subTest(default_on=default):
@@ -272,4 +272,4 @@ class TestGraphFirstNote(HookCase):
         note = self.cfg["graph_first_note"]
         self.assertEqual(A.session_start_context(cfg=self.cfg, environ={self.switch: note["on_value"]}), ("", self.note()))
         self.assertEqual(A.session_start_context(cfg=self.cfg, environ={self.switch: note["off_value"]}), ("", ""))
-        self.assertEqual(A.session_start_context(cfg=self.cfg, environ={}), ("", ""))   # default_on: false
+        self.assertEqual(A.session_start_context(cfg=self.cfg, environ={}), ("", self.note()))   # default_on: true
