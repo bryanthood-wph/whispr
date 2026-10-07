@@ -49,7 +49,7 @@ class TestScoreSession(_Case):
         s = self.score("graph_first_cited")
         self.assertEqual(s["first_knowledge_tool"], KG + "search")      # ToolSearch is no lookup
         self.assertTrue(s["first_is_graph"] and s["graph_used"] and s["passed"])
-        self.assertIn("forecast agent", s["cited_quote"])                # curly vs straight apostrophe
+        self.assertIn("seating chart", s["cited_quote"])                # curly vs straight apostrophe
 
     def test_vault_first_fails_even_with_a_graph_quote(self):
         s = self.score("vault_first")
@@ -72,7 +72,7 @@ class TestScoreSession(_Case):
         s = self.score("tasks_first_cited")
         self.assertEqual(s["first_knowledge_tool"], "mcp__plugin_whispr_whispr-tasks__task_list")
         self.assertTrue(s["first_is_graph"] and s["passed"])
-        self.assertIn("send the MAPE", s["cited_quote"])
+        self.assertIn("send the venue cost", s["cited_quote"])
         write = G.ToolCall("1", "mcp__plugin_whispr_whispr-tasks__task_update_status", {})
         self.assertEqual(G.lookup_kind(write, self.rules), G.OTHER)   # only its read tools are graph tools
 
@@ -108,23 +108,23 @@ class TestScoreSession(_Case):
         self.assertEqual(G.lookup_kind(G.ToolCall("1", "Skill", {"skill": "plugin:vault"}), r), G.OTHER)
         self.assertIsNone(G.lookup_kind(G.ToolCall("1", "Skill", {"skill": "clarify"}), r))
         self.assertEqual(G.lookup_kind(G.ToolCall("1", "Read", {"file_path": r"C:\github\cohoodOBS\index.md"}), r), G.OTHER)
-        self.assertEqual(G.lookup_kind(G.ToolCall("1", "Grep", {"pattern": "Purina"}), r), G.OTHER)   # no path
+        self.assertEqual(G.lookup_kind(G.ToolCall("1", "Grep", {"pattern": "Northwind"}), r), G.OTHER)   # no path
         self.assertEqual(G.lookup_kind(G.ToolCall("1", "Glob", {"pattern": "*.md"}), r), G.OTHER)
         self.assertEqual(G.lookup_kind(G.ToolCall("1", "Read", {"file_path": r"C:\code\app.py"}), r), G.OTHER)
         self.assertIsNone(G.lookup_kind(G.ToolCall("1", "ToolSearch", {"query": "whispr"}), r))
         self.assertEqual(G.lookup_kind(G.ToolCall("1", "mcp__whispr-kg__get", {}), r), G.GRAPH)
 
     def test_quote_rules(self):
-        hay = [json.dumps({"quote": "the export keeps the 4-4-5 retail calendar format, not Gregorian"})]
+        hay = [json.dumps({"quote": "the export keeps the 24-hour wall clock format, not AM/PM"})]
         n = self.rules.quote_min_words
-        self.assertIsNotNone(G.cited_quote('They said "the export keeps the 4-4-5 retail calendar".', hay, n))
-        self.assertIsNotNone(G.cited_quote('"the export keeps the 4-4-5 ... calendar format, not Gregorian"', hay, n))
-        self.assertIsNone(G.cited_quote('"not Gregorian"', hay, n))               # too short to prove anything
-        self.assertIsNone(G.cited_quote('"the export keeps the weekly calendar"', hay, n))
-        self.assertIsNone(G.cited_quote("the export keeps the 4-4-5 retail calendar", hay, n))   # not quoted
-        self.assertIsNotNone(G.cited_quote('“the export keeps [Purina’s] 4-4-5   retail\ncalendar format”',
+        self.assertIsNotNone(G.cited_quote('They said "the export keeps the 24-hour wall clock".', hay, n))
+        self.assertIsNotNone(G.cited_quote('"the export keeps the 24-hour ... clock format, not AM/PM"', hay, n))
+        self.assertIsNone(G.cited_quote('"not AM/PM"', hay, n))               # too short to prove anything
+        self.assertIsNone(G.cited_quote('"the export keeps the analog clock"', hay, n))
+        self.assertIsNone(G.cited_quote("the export keeps the 24-hour wall clock", hay, n))   # not quoted
+        self.assertIsNotNone(G.cited_quote('“the export keeps [Northwind’s] 24-hour   wall\nclock format”',
                                            hay, n))     # curly quotes, an insertion, extra whitespace
-        self.assertIsNotNone(G.cited_quote('"the export keeps the 4-4-5"', ['{"quote": "the export keeps the 4-4-5 ret'],
+        self.assertIsNotNone(G.cited_quote('"the export keeps the 24-hour"', ['{"quote": "the export keeps the 24-hour wal'],
                                            n))          # a result cut short: JSON escapes still decoded
 
     def test_reach(self):
@@ -162,8 +162,9 @@ class TestPlan(_Case):
     def test_questions_are_the_agreed_ten(self):
         qs = G.questions(self.cfg)
         self.assertEqual(len(qs), 10)
-        self.assertEqual(qs[0].text, "Who's in the audience for the Purina agentic pilot demo?")
-        self.assertEqual(qs[7].text, "How does Kroger's use of AI Advantage differ from Nestlé's?")
+        listed = yaml.safe_load(G.config_file(self.g["questions"]).read_text(encoding="utf-8"))["questions"]
+        self.assertEqual([(q.id, q.text) for q in qs], [(str(r["id"]), str(r["text"]).strip()) for r in listed])
+        self.assertEqual([q.id for q in qs], [f"q{i:02d}" for i in range(1, 11)])
         self.assertLessEqual(self.g["pass_min"], len(qs))
 
     def test_session_args_are_read_only_and_from_config(self):
