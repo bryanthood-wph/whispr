@@ -99,6 +99,13 @@ $JobName               = 'whispr-nightly-ingest'   # used by the shared failure-
 # already in scope for every function it defines.
 . (Join-Path $PSScriptRoot 'sync-common.ps1')
 
+# P2b: this job's claude calls load the whispr plugin through your settings, so its
+# SessionStart hook would add the graph-first note to their context. Keep it off, so
+# the job behaves as before (config/defaults.yaml graph_first_note.switch_env and
+# off_value; tests/test_eval_graph_first.py checks the two agree). The child process
+# inherits it from this process only.
+$env:WHISPR_GRAPH_FIRST_NOTE = 'off'
+
 # ---------------------------------------------------------------------------
 # Watermark (premortem: only ever advance it AFTER a file's /ingest call has
 # fully succeeded — see step (h) in the per-file loop below. A crash or claude
