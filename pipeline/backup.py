@@ -43,6 +43,7 @@ import hashlib
 import json
 import shutil
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
@@ -132,6 +133,21 @@ def verify_database(path: Path) -> dict:
     return {"integrity": "ok", "schema_versions": versions}
 
 
+def _while_locked(cfg: dict, fn: Callable, *args) -> None:
+    """fn(*args), retried on PermissionError (Windows: a scanner or indexer briefly holds
+    a file just written) up to backup.locked_retries times, the waits doubling from
+    backup.locked_retry_s; the last error propagates."""
+    retries, wait = cfg["backup"]["locked_retries"], cfg["backup"]["locked_retry_s"]
+    for attempt in range(retries + 1):
+        try:
+            fn(*args)
+            return
+        except PermissionError:
+            if attempt == retries:
+                raise
+            time.sleep(wait * 2 ** attempt)
+
+
 def _copy(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     if src.is_dir():
@@ -174,7 +190,7 @@ def prune(cfg: dict) -> list[str]:
     doomed += [p for p in dest.iterdir() if p.is_dir() and p.name.endswith(PARTIAL)
                and stamp_of(cfg, p.name) is not None]
     for path in doomed:
-        shutil.rmtree(path)
+        _while_locked(cfg, shutil.rmtree, path)
     return [p.name for p in doomed]
 
 
@@ -191,7 +207,7 @@ def backup(cfg: dict, conn: sqlite3.Connection, *, now: Optional[datetime] = Non
     include = _include(cfg)
     sources = pipeline_run.transcripts(cfg) if cfg["backup"]["transcripts"] else []
     if work.exists():
-        shutil.rmtree(work)
+        _while_locked(cfg, shutil.rmtree, work)
     work.mkdir(parents=True)
     try:
         db_file = work / cfg["kg"]["database"]
@@ -217,7 +233,7 @@ def backup(cfg: dict, conn: sqlite3.Connection, *, now: Optional[datetime] = Non
         if missing:
             raise BackupError(f"include path(s) {missing} are missing from the copy")
         (work / MANIFEST).write_text(json.dumps(manifest, indent=1), encoding="utf-8")   # the rename below is the commit
-        work.rename(final)
+        _while_locked(cfg, work.rename, final)
     except BaseException:
         shutil.rmtree(work, ignore_errors=True)
         raise
@@ -249,14 +265,14 @@ def _live_damage(live_db: Path) -> Optional[str]:
     return None
 
 
-def _set_aside(live_db: Path, aside: Path) -> None:
+def _set_aside(cfg: dict, live_db: Path, aside: Path) -> None:
     """Move a damaged database and its side files to `aside` (+ the same suffixes). The
     main file goes first, so a failure (the file is in use) leaves everything in place."""
-    live_db.rename(aside)
+    _while_locked(cfg, live_db.rename, aside)
     for suffix in SIDECARS:
         side = live_db.with_name(live_db.name + suffix)
         if side.exists():
-            side.rename(aside.with_name(aside.name + suffix))
+            _while_locked(cfg, side.rename, aside.with_name(aside.name + suffix))
 
 
 def _plan_files(pairs: list[tuple[Path, Path]]) -> tuple[list[tuple[Path, Path]], int, list[str]]:
@@ -324,7 +340,7 @@ def restore(cfg: dict, source: Path, *, yes: bool = False, now: Optional[datetim
         else:
             if existed:
                 try:
-                    _set_aside(live_db, aside)
+                    _set_aside(cfg, live_db, aside)
                 except OSError as exc:
                     out(f"restore: the damaged {live_db} could not be moved aside ({exc}); is a reader holding it "
                         "open (the MCP server)? Nothing restored.")

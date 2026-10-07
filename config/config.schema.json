@@ -349,13 +349,15 @@
       }
     },
     "backup": {
-      "type": "object", "additionalProperties": false, "required": ["destination", "keep", "prefix", "include", "transcripts"],
+      "type": "object", "additionalProperties": false, "required": ["destination", "keep", "prefix", "include", "transcripts", "locked_retries", "locked_retry_s"],
       "properties": {
         "destination": {"type": ["string", "null"], "minLength": 1},
         "keep": {"type": "integer", "minimum": 1},
         "prefix": {"$ref": "#/$defs/str"},
         "include": {"type": "array", "items": {"$ref": "#/$defs/str"}},
-        "transcripts": {"type": "boolean"}
+        "transcripts": {"type": "boolean"},
+        "locked_retries": {"type": "integer", "minimum": 0},
+        "locked_retry_s": {"type": "number", "minimum": 0}
       }
     },
     "maintain": {
