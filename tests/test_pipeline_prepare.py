@@ -65,23 +65,23 @@ class TestEcho(_Base):
 class TestRedaction(_Base):
     def test_invite_artifacts_removed_spoken_word_kept(self):
         turns = [
-            ("00:00:01", "Others", "Join: https://teams.microsoft.com/meet/361646951846640?p=pBlBbv3Gy5g8XJ2FyY now"),
-            ("00:00:02", "Others", "Meeting ID: 361 646 951 846 640 Passcode: qJ7xK2"),
+            ("00:00:01", "Others", "Join: https://teams.microsoft.com/meet/111122223333444?p=FAKEpass0000000000 now"),
+            ("00:00:02", "Others", "Meeting ID: 111 122 223 333 444 Passcode: FAKE00"),
             ("00:00:03", "Others", "Dial in by phone +1 470-555-0100,,123456789# United States"),
             ("00:00:04", "Me", "I had to change passcode on my phone"),
         ]
         out = prepared(self.cfg, "2026-10-01T10:00:00-04:00", turns)
         text = out.render()
-        for leak in ("teams.microsoft.com", "pBlBbv3", "qJ7xK2", "361 646", "123456789"):
+        for leak in ("teams.microsoft.com", "FAKEpass", "FAKE00", "111 122", "123456789"):
             self.assertNotIn(leak, text)
         self.assertIn("change passcode on my phone", text)
         self.assertGreaterEqual(out.redactions, 4)
 
     def test_new_domain_upper_case_and_attendee_dial_in_redacted(self):
         out = prepared(self.cfg, "2026-10-01T10:00:00-04:00",
-                       [("00:00:01", "Others", "HTTPS://Teams.Cloud.Microsoft/meet/3616?p=pBlBbv3 ok")],
+                       [("00:00:01", "Others", "HTTPS://Teams.Cloud.Microsoft/meet/1111?p=FAKEpass ok")],
                        attendees=["Doe, Jane", "+1 470-555-0100,,123456789#"])
-        self.assertNotIn("pBlBbv3", out.render())
+        self.assertNotIn("FAKEpass", out.render())
         self.assertNotIn("123456789", str(out.meta["attendees"]))
         self.assertIn("Jane Doe", out.meta["attendees"])
 
