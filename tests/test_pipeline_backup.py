@@ -37,6 +37,25 @@ class BackupCase(PipelineCase):
         with self.db() as (store, _):
             return [r[0] for r in store.conn.execute("SELECT id FROM episode ORDER BY id")]
 
+    def locked(self, times: int) -> tuple[list, list]:
+        """Path.rename fails with WinError 5 (a scanner holding a file just written) the
+        first `times` calls, then works; the backoff sleeps are recorded, not waited.
+        Returns (the renames attempted, the sleeps)."""
+        calls, sleeps, real = [], [], Path.rename
+
+        def rename(path, target):
+            calls.append(path)
+            if len(calls) <= times:
+                raise PermissionError(13, "Access is denied", str(path), 5)
+            return real(path, target)
+        self.enterContext(mock.patch.object(Path, "rename", rename))
+        self.enterContext(mock.patch.object(B.time, "sleep", sleeps.append))
+        return calls, sleeps
+
+    def backoff(self, n: int) -> list[float]:
+        wait = self.cfg["backup"]["locked_retry_s"]
+        return [wait * 2 ** i for i in range(n)]
+
     def restore(self, source, yes: bool) -> tuple[int, str]:
         lines: list[str] = []
         code = B.restore(self.cfg, Path(source), yes=yes, now=T0 + timedelta(hours=1), out=lines.append)
@@ -132,6 +151,22 @@ class TestBackup(BackupCase):
                 self.make()
         self.assertEqual(list(self.dest.iterdir()), [])
 
+    def test_a_briefly_locked_commit_rename_is_retried(self):
+        calls, sleeps = self.locked(2)
+        made = self.make()
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sleeps, self.backoff(2))
+        self.assertEqual([p.name for p in B.backups(self.cfg)], [Path(made["path"]).name])
+
+    def test_a_rename_locked_past_the_retries_fails_and_leaves_nothing(self):
+        retries = self.cfg["backup"]["locked_retries"]
+        calls, sleeps = self.locked(retries + 1)
+        with self.assertRaises(PermissionError):
+            self.make()
+        self.assertEqual(len(calls), retries + 1)
+        self.assertEqual(sleeps, self.backoff(retries))
+        self.assertEqual(list(self.dest.iterdir()), [])
+
 
 class TestRestore(BackupCase):
     def test_round_trip(self):
@@ -179,6 +214,18 @@ class TestRestore(BackupCase):
         with contextlib.closing(db.connect(self.cfg)) as conn:
             self.assertEqual(conn.execute("PRAGMA integrity_check").fetchone()[0], "ok")
             self.assertEqual(conn.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+
+    def test_a_briefly_locked_damaged_database_is_still_moved_aside(self):
+        folder = Path(self.make()["path"])
+        live = Path(self.cfg["paths"]["data_dir"]) / self.cfg["kg"]["database"]
+        for side in ("-wal", "-shm"):
+            live.with_name(live.name + side).unlink(missing_ok=True)
+        live.write_bytes(b"garbage" * 1000)
+        calls, sleeps = self.locked(1)
+        code, out = self.restore(folder, yes=True)
+        self.assertEqual(code, runner.EXIT_OK, out)
+        self.assertEqual(sleeps, self.backoff(1))
+        self.assertEqual(self.episodes(), [self.a.stem])
 
     def test_a_damaged_backup_is_refused(self):
         folder = Path(self.make()["path"])

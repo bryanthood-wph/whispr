@@ -466,6 +466,12 @@ backup:
   # Nothing writes override data yet; list it here once something does.
   include: []
   transcripts: true             # copy paths.transcripts too (its *.md files)
+  # A rename or delete in the backup folder or of the live database that fails with
+  # PermissionError (Windows: a scanner, the indexer or OneDrive briefly holding a file
+  # just written) is retried this many times, waiting locked_retry_s, then double that,
+  # and so on (0.25 + 0.5 + 1 + 2 s). A file held for longer still fails.
+  locked_retries: 4
+  locked_retry_s: 0.25
 
 maintain:
   # The C.5 maintenance step of `daily`: entity resolution (kg/resolve.py), whose "same
