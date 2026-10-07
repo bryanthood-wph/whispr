@@ -1,0 +1,2 @@
+{"type": "system", "subtype": "init", "model": "claude-sonnet-5-5", "apiKeySource": "none", "mcp_servers": [{"name": "plugin:whispr:whispr-kg", "status": "failed"}]}
+{"type": "result", "subtype": "success", "is_error": false, "result": "I can't reach your notes.", "total_cost_usd": 0.1, "num_turns": 3, "permission_denials": []}

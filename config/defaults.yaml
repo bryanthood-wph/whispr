@@ -77,6 +77,9 @@ models:
   # C.6 entity-resolution suite picks the cheapest model that passes; effort pinned to
   # the model's documented default, as the escalations above.
   kg_resolve:       {model: claude-sonnet-5-5, effort: high, thinking_tokens: null}
+  # P2b (eval.graph_first): every live session asking one question, before and after the
+  # graph-first note. Sonnet 5.5 medium, as agreed for P2b (2026-10-06).
+  graph_first_session: {model: claude-sonnet-5-5, effort: medium, thinking_tokens: null}
 
 prompts:
   extract: prompts/extract.md
@@ -427,6 +430,23 @@ alerts:
     message_chars: 160          # each alert's message clipped to this
     timeout_s: 5                # the database read gives up after this; the hook's own timeout (hooks.json) must exceed it
 
+graph_first_note:
+  # P2b (docs/plan/task-intake-and-worker.md §7): the plugin's SessionStart hook adds this
+  # note to Claude's context (additionalContext; it is not shown to you), so questions
+  # about your work reach whispr-kg first. A session whose environment sets switch_env to
+  # on_value or off_value gets that; any other session gets default_on. The P2b harness sets
+  # the switch in both arms. default_on stays false until the before/after run passes, so
+  # nothing else (the nightly sync jobs included) sees the note before it is vetted. The
+  # /vault clause stays until /vault retires (D.8).
+  default_on: false
+  switch_env: WHISPR_GRAPH_FIRST_NOTE
+  off_value: "off"
+  on_value: "on"
+  text: |-
+    whispr: for questions about the user's work, people, projects, meetings or tasks, look in whispr-kg first (search, then get, neighbors or timeline; load its tools with ToolSearch if they are deferred).
+    Back each claim with its verbatim transcript quote from whispr-kg (the source tool) and cite it.
+    Use /vault or the vault tools only when whispr-kg has nothing on the question.
+
 backup:
   # The first step of `python -m pipeline daily` (D.6, L22). A backup is a folder
   # <prefix><UTC stamp> holding a consistent copy of the graph + state database (the
@@ -747,6 +767,83 @@ eval:
     # the 6 "failed" negatives).
     utterance_end_chars: ".?!…"
     utterance_closing_chars: "\"')]”’"
+  # P2b (docs/plan/task-intake-and-worker.md §7): is whispr's knowledge used first?
+  # `python -m eval graph-first` runs one fresh live `claude -p` session per question per
+  # arm, through pipeline/models.py, and scores each session's stream-json
+  # (eval/graph_first.py). The arms differ only in graph_first_note.switch_env.
+  graph_first:
+    role: graph_first_session         # models.<role>: every session's model and effort
+    questions: graph-first-questions.yaml   # under config/: the agreed question set (data)
+    # Arm -> whether the hook's graph-first note is on. Run in this order.
+    arms: {before: false, after: true}
+    scored_arm: after                 # the bar applies to this arm; the others are baselines
+    # A session passes when its first knowledge lookup is a graph tool and its answer
+    # quotes text a graph tool returned in that session. The scored arm passes with at
+    # least this many passing sessions (agreed 2026-10-06: 9 of the 10 questions).
+    pass_min: 9
+    quote_min_words: 4                # a quoted span shorter than this proves nothing ("we do")
+    working_dir: null                 # null: the owner's home directory, where a session usually starts
+    plugin_dir: null                  # null: this checkout's plugin/ folder
+    plugin_dirs_env: CLAUDE_CODE_PLUGIN_DIRS   # how the plugin is loaded live (user settings env)
+    max_budget_per_session_usd: 1.00  # each session's --max-budget-usd
+    cap_usd: 15                       # the run stops before a session that could take its spend past this
+    # The dry run's per-session estimate when the ledger holds no rows for this role and
+    # model (a guess: a live session's tool and skill context, a few turns, Sonnet 5.5).
+    cost_seed_usd: 0.40
+    # Every session's arguments before --tools/--allowedTools/--disallowedTools and the
+    # per-call --model/--effort/--max-budget-usd. Unlike cli.base_args they load your
+    # settings, plugins, hooks and MCP servers as a live session does. dontAsk denies
+    # every tool not in allowed_tools.
+    cli_args: ["-p", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--permission-mode", "dontAsk"]
+    builtin_tools: [Read, Grep, Glob, Skill, ToolSearch]   # --tools: the only built-ins a session has
+    allowed_tools:                    # --allowedTools: read-only only
+      - mcp__plugin_whispr_whispr-kg
+      - mcp__plugin_whispr_whispr-tasks__task_list
+      - mcp__plugin_whispr_whispr-tasks__task_get
+      - mcp__plugin_whispr_whispr-tasks__project_scope_get
+      - mcp__vault
+      - Read
+      - Grep
+      - Glob
+      - Skill
+      - ToolSearch
+    disallowed_tools: [Write, Edit, NotebookEdit, Bash, PowerShell, WebFetch, WebSearch, Agent, Task,
+                       mcp__plugin_whispr_whispr-tasks__task_update_status, mcp__plugin_whispr_whispr-tasks__project_scope_set]
+    # What counts as a knowledge lookup. Tool-name prefixes, both naming forms (the
+    # packaged plugin and a hand-registered server): graph tools, which count for "first
+    # lookup" and whose results count for the quote check (whispr-kg, and whispr-tasks'
+    # read tools, which serve the same graph: owner's decision 2026-10-06), then the other
+    # knowledge tools (checked after the graph tools). A Skill call naming one of
+    # `skills`, and every file_tools call (whatever its path: review 2026-10-06), count as
+    # other. A Read of the file the CLI saved a large graph result to adds that file's
+    # text to the graph text for the quote check.
+    knowledge:
+      graph_tools: [mcp__plugin_whispr_whispr-kg__, mcp__whispr-kg__,
+                    mcp__plugin_whispr_whispr-tasks__task_list, mcp__plugin_whispr_whispr-tasks__task_get,
+                    mcp__plugin_whispr_whispr-tasks__project_scope_get,
+                    mcp__whispr-tasks__task_list, mcp__whispr-tasks__task_get, mcp__whispr-tasks__project_scope_get]
+      other_tools: [mcp__plugin_whispr_whispr-tasks__, mcp__whispr-tasks__, mcp__vault__]
+      skill_tool: Skill
+      skill_input: skill
+      skills: [vault]
+      file_tools: [Read, Grep, Glob]
+      read_tool: Read                 # the file tool whose result can be a saved graph result
+      read_input: file_path
+    # Every session's init event must show the graph reachable, or the run stops after
+    # that session ("graph unreachable"): a server in graph_servers with status
+    # `connected`, and, when the init event lists plugins, `plugin_name` loaded from
+    # plugin_dir.
+    reach:
+      graph_servers: ["plugin:whispr:whispr-kg", whispr-kg]
+      connected: connected
+      plugin_name: whispr
+    # The live plugin, read-only: your Claude Code settings' `env` (plugin_dirs_env) and
+    # the plugin's `root_option` (pluginConfigs). A run refuses unless they name this
+    # checkout, so the hook checked is the hook the sessions load. null: ~/.claude/settings.json.
+    live_settings: null
+    root_option: whispr_root
+    hook_timeout_s: 60                # the hook check's own run of the SessionStart hook
+    error_chars: 120                  # a failed session's error, clipped to this in the progress line
 
 setup:
   # /whispr-setup (pipeline/setup.py, `python -m pipeline setup ...`; D.7). It derives what

@@ -5,9 +5,10 @@ badargs (rejects its arguments: stderr only, no events, exit 1) | hooksonly (one
 event, then exit 1 with no result) | silenthang (no events, then hangs) | junk (a bare JSON
 value on stdout before the normal events).
 --version prints FAKE_CLAUDE_VERSION (default FAKE_VERSION) and exits.
-FAKE_CLAUDE_ARGS_OUT, if set, receives {"argv", "stdin", "system_append", "env_keys", "env_max"}
-as JSON (system_append: the --append-system-prompt-file content, or null; env_max: the
-MAX_* variables and their values, such as the thinking budget).
+FAKE_CLAUDE_ARGS_OUT, if set, receives {"argv", "stdin", "system_append", "env_keys", "env_max",
+"env_whispr", "cwd"} as JSON (system_append: the --append-system-prompt-file content, or null;
+env_max: the MAX_* variables and their values, such as the thinking budget; env_whispr: the
+WHISPR_* and CLAUDE_CODE_PLUGIN_DIRS variables and their values; cwd: the working directory).
 FAKE_CLAUDE_STRUCTURED, if set, is the structured_output JSON to return.
 FAKE_CLAUDE_BY_PROPERTY, if set, is {property: structured_output}: the first entry whose
 property the --json-schema declares wins over FAKE_CLAUDE_STRUCTURED. An entry with
@@ -34,7 +35,10 @@ if os.environ.get("FAKE_CLAUDE_ARGS_OUT"):
     with open(os.environ["FAKE_CLAUDE_ARGS_OUT"], "w", encoding="utf-8") as fh:
         json.dump({"argv": sys.argv[1:], "stdin": stdin, "system_append": system_append,
                    "env_keys": sorted(os.environ),
-                   "env_max": {k: v for k, v in os.environ.items() if k.upper().startswith("MAX_")}}, fh)
+                   "env_max": {k: v for k, v in os.environ.items() if k.upper().startswith("MAX_")},
+                   "env_whispr": {k: v for k, v in os.environ.items()
+                                  if k.upper().startswith("WHISPR_") or k.upper() == "CLAUDE_CODE_PLUGIN_DIRS"},
+                   "cwd": os.getcwd()}, fh)
 
 if mode == "badargs":
     print("Error: --json-schema is not a valid JSON Schema (test)", file=sys.stderr)

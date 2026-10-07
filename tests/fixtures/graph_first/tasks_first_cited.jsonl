@@ -1,0 +1,6 @@
+{"type": "system", "subtype": "init", "model": "claude-sonnet-5-5", "apiKeySource": "none", "mcp_servers": [{"name": "plugin:whispr:whispr-kg", "status": "connected"}, {"name": "plugin:whispr:whispr-tasks", "status": "connected"}]}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "mcp__plugin_whispr_whispr-tasks__task_list", "input": {"status": "captured"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "{\"tasks\": [{\"id\": \"k1\", \"action\": \"Send the MAPE comparison\", \"quote\": \"I'll send the MAPE comparison to the pilot team by Friday.\", \"source\": {\"episode\": \"ep2\"}}]}"}]}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t2", "name": "mcp__vault__vault_search", "input": {"query": "MAPE"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "content": [{"type": "text", "text": "{}"}]}]}}
+{"type": "result", "subtype": "success", "is_error": false, "result": "You have one open task: send the MAPE comparison. The transcript: \"I'll send the MAPE comparison to the pilot team by Friday\" (episode ep2).", "total_cost_usd": 0.1, "num_turns": 3, "permission_denials": []}

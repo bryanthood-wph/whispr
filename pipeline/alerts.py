@@ -12,14 +12,19 @@
   alerts.session_start.timeout_s, and turns any failure (bad config, a missing or
   broken database, a slow disk) into a short message saying so, so a session start is
   never blocked or broken by whispr.
+- `session_start_context` is what the hook itself uses: that alert line plus the
+  graph-first note (graph_first_note.text, P2b), which goes to Claude's context only.
+  The session's environment turns it on or off (graph_first_note.switch_env set to
+  on_value or off_value); otherwise graph_first_note.default_on decides.
 """
 
 from __future__ import annotations
 
 import contextlib
+import os
 import threading
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
 
 from kg import db
 from kg.state import State
@@ -109,6 +114,34 @@ def session_start_text(overlay_path: Optional[Path] = None, *, cfg: Optional[dic
         return (f"{PRODUCT}: alerts could not be read ({_clip(box['error'], s['message_chars'])}); "
                 f"run `{DOCTOR_COMMAND}`.")
     return box.get("text", "")
+
+
+def graph_first_note(cfg: dict, environ: Mapping[str, str]) -> str:
+    """The graph-first note, or "". `environ`'s graph_first_note.switch_env picks on_value
+    or off_value (letter case and surrounding space ignored); unset or any other value
+    falls back to default_on. P2b's harness sets the switch in each session it starts."""
+    note = cfg["graph_first_note"]
+    value = (environ.get(note["switch_env"]) or "").strip().casefold()
+    fold = lambda key: note[key].strip().casefold()
+    on = True if value == fold("on_value") else False if value == fold("off_value") else note["default_on"]
+    return note["text"].strip() if on else ""
+
+
+def session_start_context(overlay_path: Optional[Path] = None, environ: Optional[Mapping[str, str]] = None, *,
+                          cfg: Optional[dict] = None,
+                          read: Callable[[dict], list[dict]] = open_alerts) -> tuple[str, str]:
+    """(the SessionStart alert line or "", the graph-first note or ""). Never raises: a
+    config that does not load gives session_start_text's message and no note."""
+    try:
+        cfg = cfg if cfg is not None else load_config(overlay_path=overlay_path)
+    except Exception:
+        return session_start_text(overlay_path, read=read), ""
+    alert = session_start_text(overlay_path, cfg=cfg, read=read)
+    try:
+        note = graph_first_note(cfg, os.environ if environ is None else environ)
+    except Exception:
+        note = ""
+    return alert, note
 
 
 def session_start(overlay_path: Optional[Path] = None, *, out: Callable[[str], None] = print) -> int:
