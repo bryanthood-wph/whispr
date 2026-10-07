@@ -1,0 +1,14 @@
+# P2b question set (docs/plan/task-intake-and-worker.md §7; eval.graph_first.questions).
+# Agreed with the owner 2026-10-06, verbatim: real questions from current work. Each is
+# asked once per arm, in a fresh live session, exactly as written here.
+questions:
+  - {id: q01, text: "Who's in the audience for the Purina agentic pilot demo?"}
+  - {id: q02, text: "Why are we using materialized views instead of Delta tables at Purina?"}
+  - {id: q03, text: "When is the full Purina pilot rollout?"}
+  - {id: q04, text: "Which MAPE will the pilot report, and why not weekly?"}
+  - {id: q05, text: "Who knows the Purina Databricks tables, and what's the fastest way to reach Arnab?"}
+  - {id: q06, text: "How many agents does AI Advantage have deployed, and how long does a typical deployment take?"}
+  - {id: q07, text: "What did Purina say about why they didn't pick Deloitte?"}
+  - {id: q08, text: "How does Kroger's use of AI Advantage differ from Nestlé's?"}
+  - {id: q09, text: "What tasks do I have open on the Purina Agentic Pilot?"}
+  - {id: q10, text: "What fiscal calendar does Purina use, and what calendar format do the exports keep?"}

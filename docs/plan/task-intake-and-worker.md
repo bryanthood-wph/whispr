@@ -385,9 +385,90 @@ longer applies, because no profile is used.
 | P0 | Review Admin v0.8.0's tools (notes in this plan) and run the chats spike | **done 2026-10-06**: review accepted; the spike was blocked by policy, so Teams is pasted at intake |
 | P1 | Brief answers as `task_note` rows, `entity_scope`, the MCP arguments, the ready gate with its config check, the intake rounds in `/whispr:create-tasks` | a captured task goes through intake to `ready`; `ready` with an open field is refused, and an empty or misspelt `required_fields` is a ConfigError (both tested); **done 2026-10-06** (merged 974ce35) |
 | P2 | `whispr-m365`: Outlook read and drafts, task binding, the read/draft split, the recipient check | read tests pass against your mailbox; a query outside scope, a call with no task id, and a draft to an unnamed recipient are refused; no send tool exists (all tested); **done 2026-10-06** (merged 8650a81): live read checks pass; a task may hold several drafts, one per source message; the one live draft test moves to P3 |
-| P2b | **whispr's knowledge is used first** (your item, 2026-10-06). Today, every Claude Code session has the graph tools and their instructions, but using them is the model's call. The tools start hidden, and the older `/vault` skill and server compete for the same questions. **Vet, then add the simplest mechanism that ships with the plugin**, so it reaches every machine without a hand-edited file. Candidates:<br>• a short note from the plugin's existing session-start hook: for meetings, people, projects and tasks, use whispr-kg first and cite the quote; `/vault` only for what the graph doesn't cover, until it retires (D.8)<br>• a rule in your user CLAUDE.md, which covers this machine only<br>Also check that intake and the worker reach for the graph when they need context on a task (the scope proposals, the researcher's tools). | **Vetted by measurement, before and after:** a set of real questions from your current work, asked in fresh sessions, scored on whether whispr-kg was used first and the answer cites a transcript quote. The question set and the pass bar are agreed with you at the start of P2b. The mechanism that passes is the one added |
+| P2b | **whispr's knowledge is used first** (your item, 2026-10-06). Today, every Claude Code session has the graph tools and their instructions, but using them is the model's call. The tools start hidden, and the older `/vault` skill and server compete for the same questions. **Vet, then add the simplest mechanism that ships with the plugin**, so it reaches every machine without a hand-edited file. Candidates:<br>• a short note from the plugin's existing session-start hook: for meetings, people, projects and tasks, use whispr-kg first and cite the quote; `/vault` only for what the graph doesn't cover, until it retires (D.8)<br>• a rule in your user CLAUDE.md, which covers this machine only<br>Also check that intake and the worker reach for the graph when they need context on a task (the scope proposals, the researcher's tools). | **Vetted by measurement, before and after:** a set of real questions from your current work, asked in fresh sessions, scored on whether whispr-kg was used first and the answer cites a transcript quote. The question set and the pass bar are agreed with you at the start of P2b. The mechanism that passes is the one added. **Built 2026-10-06, not yet run** (see "P2b: what was built" below): the session-start note, the 10 agreed questions, the bar (at least 9 of 10 "after" sessions), and `python -m eval graph-first` |
 | P3 | `task run`: roster, permission rules, preflight, output header, `progress.md`, budget stop-and-propose, ledger, backup of `tasks\` and `good\` | three real tasks of different types run end to end, each in its own folder. A read outside scope is refused. A closed source is listed as skipped. A run stopped at a deliberately low cap proposes an amount and resumes on yes. **The measured costs become the budget seeds per work type in config** |
 | P4 | The `good\` library growing from approvals | an approved deliverable lands in `examples\`; the next task of that type doesn't ask for what good looks like |
+
+### P2b: what was built (2026-10-06) and how to run it
+
+**Mechanism (the "after" arm).** The plugin's SessionStart hook (`plugin/hooks/session_start.py`)
+now adds a three-line note to Claude's context (`additionalContext`, not shown to you), after
+any alert line. Its text is `graph_first_note.text` in `config/defaults.yaml`: use whispr-kg
+first for the user's work, people, projects, meetings and tasks (loading its tools with
+ToolSearch if deferred), back each claim with the transcript quote from `source` and cite it,
+and use `/vault` only when the graph has nothing. It is on in every session unless the
+environment sets `graph_first_note.switch_env` (`WHISPR_GRAPH_FIRST_NOTE`) to `off_value`
+(`off`). Only the harness sets it: `off` for the before arm, `on` for the after arm. The
+note ships with the plugin. It was chosen over a CLAUDE.md rule, which covers one machine.
+
+**Harness.** `python -m eval graph-first [--dry-run | --rescore RUN_ID]` (`eval/graph_first.py`,
+settings in `eval.graph_first`):
+- For each arm and each question in `config/graph-first-questions.yaml` (the 10 agreed,
+  verbatim), it runs one fresh `claude -p` session through `pipeline/models.py`. That module
+  supplies the model and effort (`models.graph_first_session`: Sonnet 5.5 medium), the
+  per-session `--max-budget-usd` (`max_budget_per_session_usd`), the CLAUDECODE refusal, the
+  auth check and the ledger row.
+- `models.call` gained `cli_base`, `cwd`, `env` and `on_event`, so the harness reuses it with
+  no second launcher.
+- Each session runs as a live one would: stream-json output, your settings, plugins, hooks and
+  MCP servers, in `working_dir` (your home folder), with the plugin passed as
+  `CLAUDE_CODE_PLUGIN_DIRS`.
+- Its tools are read-only. `--tools` allows Read, Grep, Glob, Skill and ToolSearch only;
+  `--allowedTools` adds whispr-kg, the whispr-tasks read tools and vault; `--disallowedTools`
+  lists the write, shell and web tools; and `--permission-mode dontAsk` denies anything else.
+- It stops before a session that could take the run's spend past `cap_usd` ($15).
+- Before spending, it runs the real hook for each arm and refuses if the before arm gets the
+  note or the after arm doesn't.
+- Output goes under `%LOCALAPPDATA%\whispr\eval\graph-first\`: `ledger.jsonl`, plus per run
+  `results\<run>\`, holding `run.json`, `raw\<arm>-<q>.jsonl`, `scored.jsonl` and `summary.json`.
+- `--dry-run` makes no model call. It prints the plan, the hook check per arm, and the cost
+  estimate with its basis: the mean of earlier sessions in the ledger, else `cost_seed_usd`
+  ($0.40 a session, $8.00 for 20; worst case $20.00 at the per-session cap).
+
+**Scorer.** `score_session` is a pure function over a session's stream-json. It reports:
+- the first knowledge lookup: a graph tool, another MCP knowledge tool (whispr-tasks, vault),
+  the vault skill, or Read/Grep/Glob over notes or transcripts;
+- whether whispr-kg was used;
+- the answer's quoted span that matches whispr-kg output from that session, compared word by
+  word and at least `quote_min_words` words;
+- pass or fail.
+
+The arm summary gives n pass out of 10 against `pass_min` (9). Tests:
+`tests/test_eval_graph_first.py` and `tests/test_pipeline_alerts.py` (`TestGraphFirstNote`).
+
+**Gaps found in what else should use the graph:**
+- `/whispr:create-tasks` already sends context and scope lookups to whispr-kg (`source`,
+  `search`, `get`). Its `allowed-tools` grant no `neighbors`, `paths` or `timeline`, though,
+  so round 1 can't walk from the project to the systems or repos it uses. This is left as is.
+- The §6 worker grants the researcher whispr-kg read tools. No step tells it to start from the
+  task's source episode in the graph before searching the scope. P3 should write that into
+  the researcher's brief.
+
+**Runbook (one-shot scheduled task; register by hand, never from a Claude session).** Run
+it once P2b is merged into `rebuild`. The live plugin (`CLAUDE_CODE_PLUGIN_DIRS` in your
+settings) and its `whispr_root` option both name `C:\github\whispr-rebuild`, so the hook
+under test is the merged one. First run the dry run in a terminal and check that both
+hook checks pass. Then:
+
+```powershell
+$repo = 'C:\github\whispr-rebuild'
+$py   = 'C:\github\whispr\.venv\Scripts\python.exe'
+$log  = Join-Path $env:LOCALAPPDATA 'whispr\eval\graph-first\task.log'
+& $py -m eval graph-first --dry-run      # from $repo: plan, hook check per arm, estimate
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -WorkingDirectory $repo `
+  -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$repo\eval\graph_first_task.ps1`" -Repo `"$repo`" -Python `"$py`" -Log `"$log`""
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 6) -MultipleInstances IgnoreNew
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+Register-ScheduledTask -TaskName whispr-eval-graph-first -Action $action -Settings $settings -Principal $principal
+Start-ScheduledTask -TaskName whispr-eval-graph-first
+# when task.log ends with "=== exit": read it, and results\<run>\summary.json, then
+Unregister-ScheduledTask -TaskName whispr-eval-graph-first -Confirm:$false
+```
+
+The task has no trigger, so it runs only when started. The default settings set leaves it on
+AC power only (B.9). Exit codes: 0 PASS, 1 FAIL, 2 refused or stopped. If the scorer needs a
+fix, run `python -m eval graph-first --rescore <run>`, which re-scores the raw transcripts at
+no cost.
 
 ## 8. Risks and what's left out
 

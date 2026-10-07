@@ -1,9 +1,14 @@
-"""Claude Code SessionStart hook: show whispr's open alerts when a session starts.
+"""Claude Code SessionStart hook: show whispr's open alerts when a session starts, and
+tell Claude to use whispr's knowledge first.
 
-Prints nothing when no alert is open. Otherwise prints one JSON object: `systemMessage`
-(shown to you) and `hookSpecificOutput.additionalContext` (the same line, so Claude knows
-too). The message comes from pipeline/alerts.py (`python -m pipeline alerts
---session-start`), which reads the database read-only on a bounded thread.
+Prints one JSON object, or nothing when there is neither an open alert nor a note:
+- `systemMessage` (shown to you): the alert line, only when an alert is open;
+- `hookSpecificOutput.additionalContext` (Claude's context): the alert line, then the
+  graph-first note (config graph_first_note, P2b) unless the session's environment turns
+  it off (graph_first_note.switch_env set to its off_value).
+Both come from pipeline/alerts.py (`session_start_context`; the alert line is also
+`python -m pipeline alerts --session-start`), which reads the database read-only on a
+bounded thread.
 
 Where whispr is. hooks.json runs this file with the plugin's pinned interpreter (its
 `python` option, exec form, `-s`: never the python on PATH, never a per-user
@@ -18,7 +23,8 @@ the failure it exists to prevent (lesson L2).
 Hook security (user rules, all five):
 1. stdin is parsed inside try/except, and every field read is null-checked; malformed
    or missing input is ignored and the hook still exits 0.
-2. No shell and no subprocess: nothing is interpolated into a command.
+2. No shell and no subprocess: nothing is interpolated into a command. The note's
+   switch is one environment value, only compared with a config string.
 3. The two paths it takes from its environment (the whispr folder, the overlay) are
    refused if any segment is `..`, then resolved; the folder must hold
    pipeline/__main__.py, and the module imported must resolve under that folder (prefix
@@ -70,14 +76,15 @@ def overlay_path(paths, environ) -> Optional[Path]:
     return path
 
 
-def message(environ=None) -> str:
-    """The alert line, "" when none is open, or one line saying why alerts can't be read."""
+def message(environ=None) -> tuple[str, str]:
+    """(the alert line, "" when none is open, or one line saying why alerts can't be read;
+    the graph-first note, or "" when it is off or the config can't be read)."""
     environ = os.environ if environ is None else environ
     try:
         sys.path.insert(0, str(LIB))
         import whispr_paths as paths
     except Exception as exc:                        # the plugin folder is incomplete
-        return f"{PRODUCT}: alerts unavailable: the plugin's lib/whispr_paths.py does not load ({exc})."
+        return f"{PRODUCT}: alerts unavailable: the plugin's lib/whispr_paths.py does not load ({exc}).", ""
     try:
         root = paths.whispr_root(environ.get(ROOT_ENV), "the plugin's whispr folder option")
         overlay = overlay_path(paths, environ)
@@ -85,11 +92,14 @@ def message(environ=None) -> str:
         from pipeline import alerts
         paths.loaded_from(root, alerts)
     except paths.Refused as exc:
-        return f"{PRODUCT}: alerts unavailable: {exc}; {SETUP_HINT}."
+        return f"{PRODUCT}: alerts unavailable: {exc}; {SETUP_HINT}.", ""
     except Exception as exc:                        # e.g. this interpreter lacks whispr's dependencies
         return (f"{PRODUCT}: alerts unavailable: {type(exc).__name__} importing pipeline ({exc}); "
-                f"is the plugin's Python option whispr's own python.exe? {SETUP_HINT}.")
-    return alerts.session_start_text(overlay)
+                f"is the plugin's Python option whispr's own python.exe? {SETUP_HINT}."), ""
+    context = getattr(alerts, "session_start_context", None)
+    if context is None:                             # a whispr folder older than this plugin: alerts only
+        return alerts.session_start_text(overlay), ""
+    return context(overlay, environ)
 
 
 def main() -> int:
@@ -98,10 +108,13 @@ def main() -> int:
         name = event.get("hook_event_name")
         if name is not None and name != EVENT:      # wired to another event by mistake: do nothing
             return 0
-        text = message()
-        if text:
-            print(json.dumps({"systemMessage": text,
-                              "hookSpecificOutput": {"hookEventName": EVENT, "additionalContext": text}}))
+        alert, note = message()
+        context = "\n\n".join(part for part in (alert, note) if part)
+        if context:
+            out = {"hookSpecificOutput": {"hookEventName": EVENT, "additionalContext": context}}
+            if alert:
+                out["systemMessage"] = alert
+            print(json.dumps(out))
     except Exception:
         pass                                        # never break a session start
     return 0

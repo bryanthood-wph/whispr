@@ -7,6 +7,12 @@
                                (pilot: probe, every step, then report.json/.md in results/<run>/;
                                dev: one prompt revision on the tuning set, my-task measures)
   resolve RUN_ID --note TEXT   acknowledge a failed run
+  graph-first [--dry-run | --rescore RUN_ID]
+                               P2b (eval/graph_first.py): the agreed questions in fresh live
+                               sessions, before and after the graph-first note, scored on
+                               whispr-kg first + a cited graph quote; --dry-run prints the plan
+                               and cost estimate with zero model calls; --rescore re-scores a
+                               run's raw transcripts. Exit 0 PASS, 1 FAIL, 2 refused/stopped
 
 Scored runs start only from a one-shot scheduled task (B.9), never a Claude session.
 """
@@ -21,7 +27,7 @@ from pathlib import Path
 
 from eval import frame as F
 from eval import ledger as L
-from eval import dev, pilot, preflight, stages
+from eval import dev, graph_first, pilot, preflight, stages
 from pipeline import calls
 from pipeline.config import load_config
 from whispr.fileio import atomic_write_text
@@ -128,6 +134,12 @@ def cmd_resolve(cfg: dict, args) -> int:
     return 0
 
 
+def cmd_graph_first(cfg: dict, args) -> int:
+    if args.rescore:
+        return graph_first.rescore(cfg, args.rescore)
+    return graph_first.run(cfg, dry_run=args.dry_run)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m eval")
     ap.add_argument("--overlay", type=Path, help="per-user config overlay (default %%APPDATA%%\\whispr\\config.yaml)")
@@ -141,9 +153,14 @@ def main(argv: list[str] | None = None) -> int:
     v = sub.add_parser("resolve")
     v.add_argument("run_id")
     v.add_argument("--note", required=True)
+    gf = sub.add_parser("graph-first")
+    mode = gf.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--rescore", metavar="RUN_ID")
     args = ap.parse_args(argv)
     cfg = load_config(overlay_path=args.overlay)
-    return {"status": cmd_status, "sample": cmd_sample, "run": cmd_run, "resolve": cmd_resolve}[args.cmd](cfg, args)
+    return {"status": cmd_status, "sample": cmd_sample, "run": cmd_run, "resolve": cmd_resolve,
+            "graph-first": cmd_graph_first}[args.cmd](cfg, args)
 
 
 if __name__ == "__main__":

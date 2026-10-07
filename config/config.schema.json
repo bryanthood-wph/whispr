@@ -3,7 +3,7 @@
   "title": "whispr pipeline config (defaults.yaml merged with the user overlay)",
   "type": "object",
   "additionalProperties": false,
-  "required": ["config_version", "owner", "paths", "auth", "cli", "models", "prompts", "schemas", "ontology", "prepare", "extract", "pipeline", "kg", "tasks", "alerts", "backup", "maintain", "reconcile", "liveness", "doctor", "schedules", "eval", "setup"],
+  "required": ["config_version", "owner", "paths", "auth", "cli", "models", "prompts", "schemas", "ontology", "prepare", "extract", "pipeline", "kg", "tasks", "alerts", "graph_first_note", "backup", "maintain", "reconcile", "liveness", "doctor", "schedules", "eval", "setup"],
   "$defs": {
     "str": {"type": "string", "minLength": 1},
     "folder_hint": {
@@ -337,6 +337,15 @@
         }
       }
     },
+    "graph_first_note": {
+      "type": "object", "additionalProperties": false, "required": ["switch_env", "off_value", "on_value", "text"],
+      "properties": {
+        "switch_env": {"$ref": "#/$defs/str"},
+        "off_value": {"$ref": "#/$defs/str"},
+        "on_value": {"$ref": "#/$defs/str"},
+        "text": {"$ref": "#/$defs/str"}
+      }
+    },
     "backup": {
       "type": "object", "additionalProperties": false, "required": ["destination", "keep", "prefix", "include", "transcripts"],
       "properties": {
@@ -415,7 +424,7 @@
     },
     "eval": {
       "type": "object", "additionalProperties": false,
-      "required": ["budget_usd", "stop_margin_usd", "max_budget_per_call_usd", "cost_overrun_factor", "min_effective_tasks", "stability_n", "stability_min_jaccard", "seed", "workers", "bootstrap_replicates", "alpha", "judge", "calibration_min_sensitivity", "bar", "sample", "run_tag", "stages", "scoring", "regress", "reference"],
+      "required": ["budget_usd", "stop_margin_usd", "max_budget_per_call_usd", "cost_overrun_factor", "min_effective_tasks", "stability_n", "stability_min_jaccard", "seed", "workers", "bootstrap_replicates", "alpha", "judge", "calibration_min_sensitivity", "bar", "sample", "run_tag", "stages", "scoring", "regress", "reference", "graph_first"],
       "properties": {
         "budget_usd": {"$ref": "#/$defs/money"},
         "stop_margin_usd": {"$ref": "#/$defs/money"},
@@ -495,6 +504,42 @@
             "overlap_min_tokens": {"type": "integer", "minimum": 1},
             "utterance_end_chars": {"type": "string", "minLength": 1},
             "utterance_closing_chars": {"type": "string"}
+          }
+        },
+        "graph_first": {
+          "type": "object", "additionalProperties": false,
+          "required": ["role", "questions", "arms", "scored_arm", "pass_min", "quote_min_words", "working_dir", "plugin_dir", "plugin_dirs_env", "max_budget_per_session_usd", "cap_usd", "cost_seed_usd", "cli_args", "builtin_tools", "allowed_tools", "disallowed_tools", "knowledge"],
+          "properties": {
+            "role": {"$ref": "#/$defs/str"},
+            "questions": {"$ref": "#/$defs/str"},
+            "arms": {"type": "object", "additionalProperties": {"type": "boolean"}},
+            "scored_arm": {"$ref": "#/$defs/str"},
+            "pass_min": {"type": "integer", "minimum": 1},
+            "quote_min_words": {"type": "integer", "minimum": 1},
+            "working_dir": {"type": ["string", "null"], "minLength": 1},
+            "plugin_dir": {"type": ["string", "null"], "minLength": 1},
+            "plugin_dirs_env": {"$ref": "#/$defs/str"},
+            "max_budget_per_session_usd": {"$ref": "#/$defs/money"},
+            "cap_usd": {"$ref": "#/$defs/money"},
+            "cost_seed_usd": {"$ref": "#/$defs/money"},
+            "cli_args": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+            "builtin_tools": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+            "allowed_tools": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+            "disallowed_tools": {"$ref": "#/$defs/strs"},
+            "knowledge": {
+              "type": "object", "additionalProperties": false,
+              "required": ["graph_tools", "other_tools", "skill_tool", "skill_input", "skills", "file_tools", "file_inputs", "file_patterns"],
+              "properties": {
+                "graph_tools": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+                "other_tools": {"$ref": "#/$defs/strs"},
+                "skill_tool": {"$ref": "#/$defs/str"},
+                "skill_input": {"$ref": "#/$defs/str"},
+                "skills": {"$ref": "#/$defs/strs"},
+                "file_tools": {"$ref": "#/$defs/strs"},
+                "file_inputs": {"$ref": "#/$defs/strs"},
+                "file_patterns": {"$ref": "#/$defs/strs"}
+              }
+            }
           }
         }
       }

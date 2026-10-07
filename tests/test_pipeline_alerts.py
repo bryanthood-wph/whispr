@@ -120,7 +120,7 @@ class TestSessionStart(AlertsCase):
         self.assertEqual(lines, [])
 
 
-class TestHook(AlertsCase):
+class HookCase(AlertsCase):
     """The hook as Claude Code runs it: a subprocess, stdin JSON, stdout JSON, exit 0."""
 
     def setUp(self):
@@ -130,6 +130,10 @@ class TestHook(AlertsCase):
         (appdata / "whispr" / "config.yaml").write_text(yaml.safe_dump(overlay(self.root)), encoding="utf-8")
         self.env = {k: v for k, v in os.environ.items() if k not in (ROOT_OPTION, CONFIG_OPTION)}
         self.env["APPDATA"] = str(appdata)
+        # The alert tests run with the graph-first note off; TestGraphFirstNote turns it on.
+        note = self.cfg["graph_first_note"]
+        self.switch = note["switch_env"]
+        self.env[self.switch] = note["off_value"]
 
     def hook(self, stdin: str = "{}", **options: str) -> subprocess.CompletedProcess:
         """Run the hook as hooks.json does (`-s`), with plugin options as Claude Code exports them."""
@@ -142,6 +146,8 @@ class TestHook(AlertsCase):
         self.assertNotIn("\n", text)
         return text
 
+
+class TestHook(HookCase):
     def test_malformed_stdin_still_exits_0(self):
         for stdin in ("", "not json{", "[1, 2]", '{"hook_event_name": null}'):
             with self.subTest(stdin=stdin):
@@ -209,3 +215,51 @@ class TestHook(AlertsCase):
         bad = self.root / "bad.yaml"
         bad.write_text("owner: {unknown_key: 1}\n", encoding="utf-8")
         self.assertIn("config does not load", self.only_line(self.hook(**{CONFIG_OPTION: str(bad)})))
+
+
+class TestGraphFirstNote(HookCase):
+    """P2b: the hook's graph-first note, in Claude's context only, on unless switched off."""
+
+    def note(self) -> str:
+        return self.cfg["graph_first_note"]["text"].strip()
+
+    def test_the_note_is_context_only_and_on_by_default(self):
+        with self.db():
+            pass
+        del self.env[self.switch]
+        out = json.loads(self.hook('{"hook_event_name": "SessionStart", "source": "startup"}').stdout)
+        self.assertNotIn("systemMessage", out)                       # nothing shown to you
+        self.assertEqual(out["hookSpecificOutput"], {"hookEventName": "SessionStart", "additionalContext": self.note()})
+        on = self.cfg["graph_first_note"]["on_value"]
+        out = json.loads(self.hook("{}", **{self.switch: on}).stdout)
+        self.assertEqual(out["hookSpecificOutput"]["additionalContext"], self.note())
+
+    def test_the_switch_turns_it_off(self):
+        with self.db():
+            pass
+        off = self.cfg["graph_first_note"]["off_value"]
+        for value in (off, f" {off.upper()} "):
+            with self.subTest(value=value):
+                self.assertEqual(self.hook("{}", **{self.switch: value}).stdout, "")
+
+    def test_alerts_come_first_and_only_they_are_shown(self):
+        self.raise_alerts(1)
+        del self.env[self.switch]
+        out = json.loads(self.hook("{}").stdout)
+        self.assertIn("test:0", out["systemMessage"])
+        self.assertNotIn(self.note(), out["systemMessage"])
+        self.assertEqual(out["hookSpecificOutput"]["additionalContext"], out["systemMessage"] + "\n\n" + self.note())
+
+    def test_no_note_when_the_config_does_not_load(self):
+        bad = self.root / "bad.yaml"
+        bad.write_text("owner: {unknown_key: 1}\n", encoding="utf-8")
+        del self.env[self.switch]
+        out = json.loads(self.hook(**{CONFIG_OPTION: str(bad)}).stdout)
+        self.assertEqual(out["hookSpecificOutput"]["additionalContext"], out["systemMessage"])
+
+    def test_context_function(self):
+        with self.db():
+            pass
+        off = self.cfg["graph_first_note"]["off_value"]
+        self.assertEqual(A.session_start_context(cfg=self.cfg, environ={}), ("", self.note()))
+        self.assertEqual(A.session_start_context(cfg=self.cfg, environ={self.switch: off}), ("", ""))

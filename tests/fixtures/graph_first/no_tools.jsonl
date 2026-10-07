@@ -1,0 +1,2 @@
+{"type": "system", "subtype": "init", "model": "claude-sonnet-5-5", "apiKeySource": "none", "tools": ["Read", "Grep", "Glob", "Skill", "ToolSearch"]}
+{"type": "result", "subtype": "success", "is_error": false, "result": "I don't have information about that demo's audience.", "total_cost_usd": 0.21, "num_turns": 4, "permission_denials": []}

@@ -20,6 +20,11 @@ and the event stream on stdout. Before and during each call this module:
   system prompt, which the CLI caches, and only the per-call rest over stdin
   (`split_prompt`)
 
+A caller that measures a live session rather than a tool-less call (P2b's
+eval/graph_first.py) passes `cli_base` in place of cli.base_args + cli.isolation_args,
+its own `cwd`, `env` variables set in the child after the stripping, and `on_event`,
+which sees every stream event (its tool calls and results). Every check above still holds.
+
 The API path is deferred (README §3) and would sit behind this same `call` function.
 """
 
@@ -147,9 +152,13 @@ def cli_args(cfg: dict) -> list[str]:
 
 
 def build_args(cfg: dict, role: str, json_schema: Optional[dict], system_prompt: Optional[str],
-               max_budget_usd: float, system_append: Optional[Path] = None) -> list[str]:
+               max_budget_usd: float, system_append: Optional[Path] = None,
+               cli_base: Optional[list[str]] = None) -> list[str]:
+    """The CLI command: `cli_base` (default `cli_args(cfg)`), then the role's model and
+    effort, the schema, system prompt and budget."""
     spec = cfg["models"][role]
-    args = [resolve_executable(cfg["cli"]["executable"]), *cli_args(cfg), "--model", spec["model"]]
+    base = cli_args(cfg) if cli_base is None else cli_base
+    args = [resolve_executable(cfg["cli"]["executable"]), *base, "--model", spec["model"]]
     if spec["effort"]:
         args += ["--effort", spec["effort"]]
     if json_schema is not None:
@@ -209,16 +218,23 @@ def refused_env(cfg: dict) -> list[str]:
 def call(cfg: dict, role: str, prompt: str, *, max_budget_usd: float,
          ledger: Path, json_schema: Optional[dict] = None, system_prompt: Optional[str] = None,
          request_key: Optional[str] = None,
-         before_launch: Optional[Callable[[], None]] = None) -> CallResult:
+         before_launch: Optional[Callable[[], None]] = None,
+         cli_base: Optional[list[str]] = None, cwd: Optional[Path] = None,
+         env: Optional[dict[str, str]] = None,
+         on_event: Optional[Callable[[dict], None]] = None) -> CallResult:
     """Run one model call for `role`. Raises AuthError / ModelCallError on failure.
     `ledger` is required: no paid call may go unrecorded. `before_launch` runs after
     every pre-launch check, immediately before the CLI starts (the eval's budget guard
     reserves there, so a call refused before launch never leaves a reservation); once
-    it has run, a ledger row is always written, even if the CLI fails to start."""
+    it has run, a ledger row is always written, even if the CLI fails to start.
+    `cli_base` replaces cli_args(cfg); `cwd` replaces the data dir's work/ folder; `env`
+    is set in the child after child_env's stripping; `on_event` gets every stream event
+    (an exception it raises fails the call after its ledger row is written)."""
     if refused := refused_env(cfg):
         raise ModelCallError(f"refusing to call the model: {refused[0]} is set (nested Claude session)")
     launch = dict(max_budget_usd=max_budget_usd, ledger=ledger, json_schema=json_schema,
-                  system_prompt=system_prompt, request_key=request_key, before_launch=before_launch)
+                  system_prompt=system_prompt, request_key=request_key, before_launch=before_launch,
+                  cli_base=cli_base, cwd=cwd, env=env, on_event=on_event)
     prefix, prompt = split_prompt(cfg, prompt)
     if prefix is None:
         return _launch(cfg, role, prompt, None, **launch)
@@ -235,9 +251,11 @@ def call(cfg: dict, role: str, prompt: str, *, max_budget_usd: float,
 
 def _launch(cfg: dict, role: str, prompt: str, system_append: Optional[Path], *, max_budget_usd: float,
             ledger: Path, json_schema: Optional[dict], system_prompt: Optional[str],
-            request_key: Optional[str], before_launch: Optional[Callable[[], None]]) -> CallResult:
+            request_key: Optional[str], before_launch: Optional[Callable[[], None]],
+            cli_base: Optional[list[str]], cwd: Optional[Path], env: Optional[dict[str, str]],
+            on_event: Optional[Callable[[dict], None]]) -> CallResult:
     """`call` once the prompt is split: `prompt` is the part sent over stdin."""
-    args = build_args(cfg, role, json_schema, system_prompt, max_budget_usd, system_append)
+    args = build_args(cfg, role, json_schema, system_prompt, max_budget_usd, system_append, cli_base)
     spec = cfg["models"][role]
     approved = set(cfg["auth"]["approved_sources"])
     if before_launch:
@@ -246,7 +264,8 @@ def _launch(cfg: dict, role: str, prompt: str, system_append: Optional[Path], *,
     try:
         proc = subprocess.Popen(
             args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            cwd=data_dir(cfg, "work"), env=child_env(cfg, role), text=True, encoding="utf-8", errors="replace",
+            cwd=cwd if cwd is not None else data_dir(cfg, "work"), env={**child_env(cfg, role), **(env or {})},
+            text=True, encoding="utf-8", errors="replace",
         )
     except OSError as exc:            # nothing ran, so nothing was spent; the row settles any reservation
         append_jsonl(ledger, {"role": role, "model": spec["model"], "request_key": request_key, "cost_usd": 0.0,
@@ -269,6 +288,7 @@ def _launch(cfg: dict, role: str, prompt: str, system_append: Optional[Path], *,
     model = spec["model"]
     result: dict[str, Any] = {}
     failure: Optional[ModelCallError] = None
+    trace_error: Optional[Exception] = None   # from on_event: raised once the ledger row is written
     try:
         send_error: Optional[OSError] = None
         try:
@@ -284,6 +304,11 @@ def _launch(cfg: dict, role: str, prompt: str, system_append: Optional[Path], *,
             if not isinstance(event, dict):
                 continue
             streamed = True
+            if on_event is not None and trace_error is None:
+                try:
+                    on_event(event)
+                except Exception as exc:
+                    trace_error = exc
             if event.get("type") == "system" and event.get("subtype") == "init":
                 auth_source = event.get("apiKeySource")
                 model = event.get("model") or model
@@ -304,6 +329,8 @@ def _launch(cfg: dict, role: str, prompt: str, system_append: Optional[Path], *,
         proc.stderr.close()
 
     tail = "".join(stderr_chunks)[-500:]
+    if failure is None and trace_error is not None:
+        failure = ModelCallError(f"{role} call: on_event failed ({type(trace_error).__name__}: {trace_error})")
     if failure is None and send_error is not None:
         failure = ModelCallError(f"{role} call: could not send the prompt ({send_error}) {tail!r}")
     if failure is None and timed_out.is_set():
