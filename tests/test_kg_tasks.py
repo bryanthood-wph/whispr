@@ -716,7 +716,8 @@ class TestIntakeMigration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cfg = load_config(overlay=overlay(root))
-            new = max(m.version for m in db.migrations())
+            # The task-intake migration (0007), which rebuilds task_note; later ones run after it.
+            new = next(m.version for m in db.migrations() if m.name.startswith("0007_task_intake"))
             old_dir = root / "old_migrations"
             old_dir.mkdir()
             for m in db.migrations():
@@ -741,7 +742,7 @@ class TestIntakeMigration(unittest.TestCase):
                     conn.execute("INSERT INTO task_note (id, task_id, kind, text, actor, at) VALUES (?, ?, ?, ?, ?, ?)",
                                  (f"n{i}", tid, kind, text, WHO, db.utc_now(T0)))    # rows as 0006 wrote them
                 before = [tuple(r) for r in conn.execute("SELECT * FROM task_note ORDER BY rowid")]
-                self.assertEqual(db.migrate(conn), [new])
+                self.assertEqual(db.migrate(conn), [m.version for m in db.migrations() if m.version >= new])
                 self.assertEqual(db.migrate(conn), [])                  # idempotent
                 after = [tuple(r) for r in conn.execute(
                     "SELECT id, task_id, kind, text, actor, at FROM task_note ORDER BY rowid")]

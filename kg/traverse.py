@@ -8,7 +8,8 @@ like every MCP read it never writes.
 
 - **What counts.** The same filters as Store's reads: an edge counts only if its
   episode is live (not tombstoned) and both endpoints are live (not merged away).
-  With no time filter, only active (unsuperseded) edges count. With `as_of`, the
+  A retracted edge (Store.retract_unwritten) never counts: its transcript no longer
+  supports it. With no time filter, only active (unsuperseded) edges count. With `as_of`, the
   edges valid at that moment count, superseded ones included (valid_from <= as_of <
   valid_to), so the answer shows the graph as it stood then; with `since` / `until`,
   the edges whose validity overlaps that window. Times are stored, and asked-for
@@ -42,7 +43,8 @@ from contextlib import contextmanager
 from typing import Iterable, Iterator, Optional, Sequence
 
 from kg.db import fetch_all, utc_time
-from kg.store import EDGE_SELECT, FACT_SELECT, LIVE_EPISODE, PERSON, Store, StoreError, keyed_id, name_key
+from kg.store import (EDGE_SELECT, FACT_SELECT, LIVE_EPISODE, PERSON, Store, StoreError, keyed_id, name_key, row_state,
+                      unretracted)
 
 # Separates entity ids in a walk's trail (",a,b,c,"); hex ids never contain it.
 _TRAIL_SEP = ","
@@ -51,11 +53,10 @@ _TRAIL_SEP = ","
 _PROGRESS_STEPS = 1000
 # A cut quote ends with this, so a reader knows to open `source` for the whole one.
 _CUT_MARK = "…"
-ACTIVE, SUPERSEDED = "active", "superseded"
 # A task as a timeline shows it, joined to its episode and entity links; `at` as in
 # kg/store.py's selects (a task has no validity, so its meeting, else when recorded).
 _TASK_SELECT = ("SELECT t.id, t.action, t.owner, t.owner_basis, t.due, t.status, t.quote, t.source_start,"
-                " t.episode_id, COALESCE(ep.meeting_start, t.created_at) AS at"
+                " t.episode_id, t.retracted_at, t.retract_reason, COALESCE(ep.meeting_start, t.created_at) AS at"
                 " FROM task t JOIN episode ep ON ep.id = t.episode_id JOIN task_entity te ON te.task_id = t.id")
 
 
@@ -106,7 +107,7 @@ class Traverser:
         """The WHERE text (over EDGE_SELECT's aliases) and parameters for the edges a
         walk may use."""
         since, until, as_of = utc_time(since), utc_time(until), utc_time(as_of)
-        clauses = [LIVE_EPISODE, "s.merged_into IS NULL", "d.merged_into IS NULL"]
+        clauses = [LIVE_EPISODE, unretracted("g"), "s.merged_into IS NULL", "d.merged_into IS NULL"]
         params: list = []
         if relations is not None:
             relations = sorted(set(relations))
@@ -184,8 +185,7 @@ class Traverser:
                 "dst_id": row["dst_entity_id"], "dst_name": row["dst_name"],
                 "quote": self._cut(row["quote"]), "quote_start": row["quote_start"],
                 "provenance": row["provenance"], "confidence": row["confidence"], "episode_id": row["episode_id"],
-                "valid_from": row["valid_from"], "valid_to": row["valid_to"],
-                "state": SUPERSEDED if row["superseded_by"] else ACTIVE,
+                "valid_from": row["valid_from"], "valid_to": row["valid_to"], **row_state(row),
                 "superseded_by": row["superseded_by"], "supersede_reason": row["supersede_reason"],
                 "parallel": parallel}
 
@@ -315,8 +315,8 @@ class Traverser:
     # ---- timeline -------------------------------------------------------------------
 
     def timeline(self, entity_id: str, *, since: Optional[str] = None, until: Optional[str] = None) -> dict:
-        """The entity's facts, edges and tasks in time order, superseded ones included
-        and marked, so a change shows as the old row, its reason and the new row. Each
+        """The entity's facts, edges and tasks in time order, superseded and retracted
+        ones included and marked, so a change shows as the old row, its reason and the new row. Each
         item's time is when it became valid (else its meeting). When there are more
         than kg.traverse.max_results, the latest are kept."""
         start = self._start(entity_id)
@@ -353,8 +353,7 @@ class Traverser:
         return {"kind": "fact", "at": row["at"], "id": row["id"], "type": row["type"], "text": row["text"],
                 "quote": self._cut(row["quote"]), "quote_start": row["quote_start"], "provenance": row["provenance"],
                 "confidence": row["confidence"], "episode_id": row["episode_id"],
-                "valid_from": row["valid_from"], "valid_to": row["valid_to"],
-                "state": SUPERSEDED if row["superseded_by"] else ACTIVE,
+                "valid_from": row["valid_from"], "valid_to": row["valid_to"], **row_state(row),
                 "superseded_by": row["superseded_by"], "supersede_reason": row["supersede_reason"]}
 
     def _edge_item(self, row: dict) -> dict:
@@ -365,4 +364,5 @@ class Traverser:
     def _task_item(self, row: dict) -> dict:
         return {"kind": "task", "at": row["at"], "id": row["id"], "action": row["action"], "owner": row["owner"],
                 "owner_basis": row["owner_basis"], "due": row["due"], "status": row["status"],
-                "quote": self._cut(row["quote"]), "quote_start": row["source_start"], "episode_id": row["episode_id"]}
+                "quote": self._cut(row["quote"]), "quote_start": row["source_start"],
+                "episode_id": row["episode_id"], **row_state(row)}

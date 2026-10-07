@@ -97,8 +97,10 @@ def tool_definitions(cfg: dict, relations: list[str], entity_types: list[str]) -
         {"name": "get",
          "description": "Step 2: the full record for one id from any card. An entity comes with its aliases, its "
                         "active facts (verbatim quotes, episode ids) and its active edges; a fact, edge or task id "
-                        "returns that record (superseded ones too, with superseded_by). Read an entity here before "
-                        "walking from it, and to see every edge a neighbors/paths hop folded into `parallel`.",
+                        "returns that record (superseded ones too, with superseded_by; retracted ones, which a "
+                        "re-written transcript no longer supports, with retracted_at and retract_reason). Read an "
+                        "entity here before walking from it, and to see every edge a neighbors/paths hop folded into "
+                        "`parallel`.",
          "inputSchema": {"type": "object", "additionalProperties": False, "required": ["id"],
                          "properties": {"id": {"type": "string", "minLength": 1,
                                                "description": "An entity, fact, edge or task id"}}}},
@@ -150,9 +152,10 @@ def tool_definitions(cfg: dict, relations: list[str], entity_types: list[str]) -
          "description": "How one entity changed, and its tasks: its facts, edges and tasks in time order (latest "
                         f"{caps['max_results']} if there are more), superseded facts and edges included and marked "
                         "state=superseded with supersede_reason and superseded_by, so an old value, why it changed "
-                        "and its replacement all show. Tasks carry owner, due and status. Use for 'what changed', "
-                        "'what did we decide before', 'who owns the task on X', after search or neighbors found "
-                        "the entity.",
+                        "and its replacement all show; rows a re-written transcript no longer supports are marked "
+                        "state=retracted with retract_reason. Tasks carry owner, due and status. Use for "
+                        "'what changed', 'what did we decide before', 'who owns the task on X', after search or "
+                        "neighbors found the entity.",
          "inputSchema": {"type": "object", "additionalProperties": False, "required": ["entity_id"],
                          "properties": {"entity_id": entity, **_time_props()}}},
     ]

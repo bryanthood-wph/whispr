@@ -7,8 +7,10 @@ text search behind `search`, can move to Postgres in one place. The rules it enf
   substring of the episode's transcript text the caller passes in; anything else,
   an empty quote included, is stored as `AMBIGUOUS`. Nothing is rejected for it.
 - **Nothing is deleted.** An episode is tombstoned; a fact or edge is superseded by
-  a newer one, with a reason, and stops being active. Reads show only active rows of
-  live episodes.
+  a newer one, with a reason, and stops being active. A fact, edge or task that an
+  episode's latest write no longer produces is retracted (`retract_unwritten`): kept,
+  with a reason, but never valid, and revived if a later write produces it again.
+  Reads show only active rows of live episodes.
 - **People.** A person is keyed by email (Outlook attendees). Every name an entity
   goes by is an alias row; a mention is matched against aliases. A first-name-only
   mention that matches no single person stays an unresolved alias and never becomes
@@ -71,8 +73,10 @@ _WORD = re.compile(r"\w+")
 _ENTITY_KIND = "entity"
 _ALIAS_KIND = "alias"
 _FACT_KIND = "fact"
-# Tables `_supersede` may touch: a fixed map, never caller text, so it is safe in SQL.
+# Tables `_supersede` and `retract_unwritten` may touch: fixed maps, never caller text,
+# so they are safe in SQL.
 _SUPERSEDABLE = {"fact": "fact", "edge": "edge"}
+RETRACTABLE = {**_SUPERSEDABLE, "task": "task"}
 # task_note kinds (kg/migrations/0006_task_review.sql).
 NOTE_CLARIFICATION = "clarification"
 NOTE_INPUT = "input"
@@ -83,8 +87,29 @@ _MERGE_GROUP = ("WITH RECURSIVE grp(id) AS (SELECT ? UNION SELECT e.id FROM enti
                 " JOIN grp ON e.merged_into = grp.id)")
 
 LIVE_EPISODE = "ep.deleted_at IS NULL"     # a tombstoned call's facts, edges and tasks are gone
-ACTIVE_FACT = f"f.superseded_by IS NULL AND {LIVE_EPISODE}"
-ACTIVE_EDGE = f"g.superseded_by IS NULL AND {LIVE_EPISODE}"
+# A row's lifecycle states, as cards show them (`row_state`).
+ACTIVE, SUPERSEDED, RETRACTED = "active", "superseded", "retracted"
+
+
+def unretracted(alias: str) -> str:
+    """The rows of table alias `alias` that no retraction hides (`retract_unwritten`)."""
+    return f"{alias}.retracted_at IS NULL"
+
+
+def active(alias: str) -> str:
+    """The fact or edge rows of table alias `alias` that reads show: not superseded, not
+    retracted, from a live episode (joined as `ep`)."""
+    return f"{alias}.superseded_by IS NULL AND {unretracted(alias)} AND {LIVE_EPISODE}"
+
+
+def row_state(row: dict) -> dict:
+    """A fact, edge or task row's state for a card, with why it is no longer active."""
+    state = RETRACTED if row["retracted_at"] else SUPERSEDED if row.get("superseded_by") else ACTIVE
+    return {"state": state, "retract_reason": row["retract_reason"]}
+
+
+ACTIVE_FACT, ACTIVE_EDGE = active("f"), active("g")
+ACTIVE_TASK = f"{unretracted('t')} AND {LIVE_EPISODE}"
 
 # The one shape a fact and an edge are read in (get here, the traversals in
 # kg/traverse.py), joined to the episode as `ep` (and an edge's endpoints as `s`, `d`)
@@ -92,11 +117,12 @@ ACTIVE_EDGE = f"g.superseded_by IS NULL AND {LIVE_EPISODE}"
 # else when it was recorded: the time a timeline orders by. Callers add WHERE / ORDER BY.
 FACT_SELECT = ("SELECT f.id, f.type, f.text, f.quote, f.quote_start, f.provenance, f.confidence, f.episode_id,"
                " f.subject_entity_id, f.valid_from, f.valid_to, f.superseded_by, f.supersede_reason,"
+               " f.retracted_at, f.retract_reason,"
                " COALESCE(f.valid_from, ep.meeting_start, f.recorded_at) AS at"
                " FROM fact f JOIN episode ep ON ep.id = f.episode_id")
 EDGE_SELECT = ("SELECT g.id, g.relation, g.src_entity_id, s.canonical_name AS src_name, g.dst_entity_id,"
                " d.canonical_name AS dst_name, g.quote, g.quote_start, g.provenance, g.confidence, g.episode_id,"
-               " g.valid_from, g.valid_to, g.superseded_by, g.supersede_reason,"
+               " g.valid_from, g.valid_to, g.superseded_by, g.supersede_reason, g.retracted_at, g.retract_reason,"
                " COALESCE(g.valid_from, ep.meeting_start, g.recorded_at) AS at"
                " FROM edge g JOIN episode ep ON ep.id = g.episode_id"
                " JOIN entity s ON s.id = g.src_entity_id JOIN entity d ON d.id = g.dst_entity_id")
@@ -483,6 +509,24 @@ class Store:
                 f" valid_to = COALESCE(valid_to, ?) WHERE id = ?",
                 (new_id, reason, utc_time(new["valid_from"]) or utc_now(now), old_id))
 
+    def retract_unwritten(self, episode_id: str, kind: str, written: Iterable[str], *, reason: str,
+                          now: Optional[datetime] = None) -> int:
+        """After a write of the episode: retract its `kind` rows (fact, edge, task) that
+        are not in `written`, the ids that write produced, and clear the retraction of
+        any that are (a later write produced them again). A task keeps its status: the
+        review stops listing it, and its record shows why. Returns the rows newly retracted."""
+        table = RETRACTABLE[kind]
+        if not reason.strip():
+            raise StoreError("retracting needs a reason")
+        clause, params = _in("id", written)
+        with transaction(self.conn):
+            self.conn.execute(f"UPDATE {table} SET retracted_at = NULL, retract_reason = NULL"
+                              f" WHERE episode_id = ? AND retracted_at IS NOT NULL AND {clause}",
+                              (episode_id, *params))
+            return self.conn.execute(f"UPDATE {table} SET retracted_at = ?, retract_reason = ?"
+                                     f" WHERE episode_id = ? AND retracted_at IS NULL AND NOT ({clause})",
+                                     (utc_now(now), reason, episode_id, *params)).rowcount
+
     # ---- tasks ----------------------------------------------------------------------
 
     def add_task(self, task: dict, *, entity_ids: Iterable[str] = (), now: Optional[datetime] = None) -> str:
@@ -866,16 +910,17 @@ class Store:
     def _review_card(self, row: dict) -> dict:
         task = self._contract(row)
         return {"task": task, "confirm": self.needs_confirm(task), "meeting_start": row["meeting_start"],
-                "transcript_path": row["transcript_path"], "created_at": row["created_at"]}
+                "transcript_path": row["transcript_path"], "created_at": row["created_at"],
+                "retracted_at": row["retracted_at"], "retract_reason": row["retract_reason"]}
 
     def review_tasks(self, *, status: str, mine: bool = True, confirm_only: bool = False, limit: int,
                      offset: int = 0) -> dict:
-        """Tasks in `status` for the review, "confirm?" ones first, then newest meeting
-        first: the owner's own (kg.tasks.mine_owner_basis) unless `mine` is False. At
-        most `limit` cards from `offset`, with the total and whether more remain."""
+        """Tasks in `status` for the review (retracted ones left out), "confirm?" ones first,
+        then newest meeting first: the owner's own (kg.tasks.mine_owner_basis) unless `mine`
+        is False. At most `limit` cards from `offset`, with the total and whether more remain."""
         if status not in self.task_schema["properties"]["status"]["enum"]:
             raise StoreError(f"no task status {status!r}")
-        where, params = ["t.status = ?", LIVE_EPISODE], [status]
+        where, params = ["t.status = ?", ACTIVE_TASK], [status]
         if mine:
             clause, values = _in("t.owner_basis", self.task_cfg["mine_owner_basis"])
             where.append(clause)
@@ -947,7 +992,7 @@ class Store:
         however old: the review's backlog."""
         clause, values = _in("t.owner_basis", self.task_cfg["confirm_owner_basis"])
         return self.conn.execute("SELECT COUNT(*) FROM task t JOIN episode ep ON ep.id = t.episode_id"
-                                 f" WHERE t.status = ? AND {LIVE_EPISODE} AND {clause}",
+                                 f" WHERE t.status = ? AND {ACTIVE_TASK} AND {clause}",
                                  (self.funnel_stages()[0], *values)).fetchone()[0]
 
     # ---- reads for MCP: search -> get -> source (progressive disclosure) -------------

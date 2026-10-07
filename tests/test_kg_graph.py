@@ -21,8 +21,8 @@ from kg import db
 from kg.mcp_server import INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND, PARSE_ERROR, Server
 from kg.resolve import SAME, Candidate, Resolver, edit_distance
 from kg.state import State
-from kg.store import Store, StoreError, task_id
-from kg.traverse import SUPERSEDED, Traverser
+from kg.store import RETRACTED, SUPERSEDED, Store, StoreError, task_id
+from kg.traverse import Traverser
 from pipeline.config import load_config
 from pipeline_helpers import overlay
 
@@ -381,6 +381,18 @@ class TestTimeline(GraphCase):
         self.assertEqual(kinds, {"edge", "fact", "task"})
         task = next(i for i in items if i["kind"] == "task")
         self.assertEqual((task["owner"], task["episode_id"]), ("Sam Ortiz", "ep-2026-09-01-1500"))
+
+    def test_retracted_edge_is_marked_and_never_valid(self):
+        quote = "Atlas runs on Snowflake for now"
+        gone, episode = self.conn.execute("SELECT id, episode_id FROM edge WHERE quote = ?", (quote,)).fetchone()
+        rest = [r[0] for r in self.conn.execute("SELECT id FROM edge WHERE episode_id = ? AND id != ?",
+                                                (episode, gone))]
+        self.store.retract_unwritten(episode, "edge", rest, reason="not in the new extraction")
+        item = next(i for i in self.t.timeline(self.ids["Project Atlas"])["items"] if i.get("quote") == quote)
+        self.assertEqual((item["state"], item["retract_reason"]), (RETRACTED, "not in the new extraction"))
+        then = self.t.neighbors(self.ids["Project Atlas"], hops=1, relations=["uses"],
+                                as_of="2026-09-10T00:00:00+00:00")
+        self.assertEqual(self.names(then), [])
 
     def test_window(self):
         items = self.t.timeline(self.ids["Project Atlas"], since="2026-09-08T00:00:00+00:00",

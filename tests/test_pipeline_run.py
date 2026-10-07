@@ -131,6 +131,46 @@ class TestWriteStage(PipelineCase):
         with self.db() as (store, _):
             self.assertEqual(store.get_task(mine["id"])["status"], "confirmed")
 
+    def test_rewrite_retracts_what_the_new_extraction_no_longer_has(self):
+        path = self.transcript("2026-10-05T10:00:00-04:00")
+        self.summary(path)
+        with self.db() as (store, _):
+            mine = next(t for t in store.tasks() if t["quote"] == MY_QUOTE)
+            store.set_task_status(mine["id"], "confirmed")
+            old_fact, old_edge = (store.conn.execute(f"SELECT id FROM {t}").fetchone()[0] for t in ("fact", "edge"))
+        doc = sample_doc()
+        doc["my_actions"], doc["edges"] = [], []
+        doc["facts"][0].update(text="Ship Monday", quote="ship it Monday")
+        path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")       # the transcript changed
+        out = self.summary(path, doc)
+        self.assertEqual(out.retracted, 3)                       # the old fact, the edge, my task
+        sha = prepare.file_sha256(path)
+        with self.db() as (store, _):
+            for item in (old_fact, old_edge):
+                self.assertIn(sha, store.get(item)["retract_reason"])
+            self.assertEqual(store.get_task(mine["id"])["status"], "confirmed")     # its status is the user's
+            self.assertEqual(store.review_tasks(status="confirmed", limit=10)["total"], 0)
+            self.assertIn(sha, store.task_record(mine["id"])["retract_reason"])
+            self.assertEqual([c["kind"] for c in store.search("ship Monday Friday")].count("fact"), 1)
+        self.assertEqual(self.summary(path).retracted, 1)        # the original again: revived, Monday fact retracted
+        with self.db() as (store, _):
+            self.assertEqual(store.review_tasks(status="confirmed", limit=10)["total"], 1)
+            self.assertIsNone(store.get(old_edge)["retracted_at"])
+
+    def test_a_stub_retracts_the_earlier_extraction_and_a_quarantine_does_not(self):
+        path = self.transcript("2026-10-05T09:00:00-04:00")
+        self.summary(path)
+        with self.db() as (store, _):
+            write.write_unavailable(store, self.cfg, path)
+            active = store.review_tasks(status=write.CAPTURED, mine=False, limit=10)["total"]
+            self.assertEqual(active, 2)
+        path.write_text(transcript("2026-10-05T09:00:00-04:00", STUB_TURNS), encoding="utf-8")
+        t = prepare.parse(path)
+        with self.db() as (store, _):
+            out = write.write_stub(store, self.cfg, t, prepare.prepare([t], self.cfg))
+            self.assertEqual(out.retracted, 4)                   # two tasks, the fact, the edge
+            self.assertEqual(store.review_tasks(status=write.CAPTURED, mine=False, limit=10)["total"], 0)
+
     def test_quote_not_in_the_transcript_is_ambiguous(self):
         doc = sample_doc()
         doc["facts"].append({"type": "risk", "text": "Budget slips", "subject": "Deck",

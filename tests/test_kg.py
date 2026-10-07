@@ -382,6 +382,41 @@ class TestSupersede(StoreCase):
         self.assertEqual([e["id"] for e in self.store.get(jamie)["edges"]], [new])
 
 
+class TestRetract(StoreCase):
+    def test_unwritten_rows_are_retracted_kept_and_revived(self):
+        kept, gone = self.fact(), self.fact(quote="ship it Monday", text="Ship Monday")
+        task = self.store.add_task(self.task())
+        self.store.set_task_status(task, "confirmed", actor="tester")
+        self.assertEqual(self.store.retract_unwritten(EPISODE, "fact", [kept], reason="sha256 cd", now=T0), 1)
+        self.assertEqual(self.store.retract_unwritten(EPISODE, "task", [], reason="sha256 cd", now=T0), 1)
+        row = self.store.get(gone)
+        self.assertEqual((row["retracted_at"], row["retract_reason"]), (db.utc_now(T0), "sha256 cd"))
+        self.assertIsNone(self.store.get(kept)["retracted_at"])
+        self.assertEqual([c["id"] for c in self.store.search("ship") if c["kind"] == "fact"], [kept])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM fact").fetchone()[0], 2)    # nothing deleted
+        # A retracted task keeps its status, leaves the review, and its record says why.
+        self.assertEqual(self.store.get_task(task)["status"], "confirmed")
+        self.assertEqual(self.store.review_tasks(status="confirmed", limit=10)["total"], 0)
+        self.assertEqual(self.store.task_record(task)["retract_reason"], "sha256 cd")
+        # Already retracted: not counted again. Written again: active again.
+        self.assertEqual(self.store.retract_unwritten(EPISODE, "fact", [kept], reason="sha256 ef"), 0)
+        self.assertEqual(self.store.retract_unwritten(EPISODE, "fact", [kept, gone], reason="sha256 ab"), 0)
+        self.assertIsNone(self.store.get(gone)["retract_reason"])
+        self.store.retract_unwritten(EPISODE, "task", [task], reason="sha256 ab")
+        self.assertEqual(self.store.review_tasks(status="confirmed", limit=10)["total"], 1)
+
+    def test_retract_touches_only_its_episode_and_needs_a_reason(self):
+        other = "2026-10-02-0900-t"
+        self.store.upsert_episode(other, transcript_path="t2.md", sha256="cd" * 32, now=T0)
+        theirs = self.fact(episode_id=other)
+        self.assertEqual(self.store.retract_unwritten(EPISODE, "fact", [], reason="x"), 0)
+        self.assertIsNone(self.store.get(theirs)["retracted_at"])
+        with self.assertRaises(StoreError):
+            self.store.retract_unwritten(other, "fact", [], reason=" ")
+        with self.assertRaises(KeyError):
+            self.store.retract_unwritten(other, "entity", [], reason="x")
+
+
 class TestPeople(StoreCase):
     def test_people_keyed_by_email_case_insensitively(self):
         a = self.store.upsert_person("Jane.Doe@Example.com", "Doe, Jane", source="outlook")

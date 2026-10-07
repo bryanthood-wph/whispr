@@ -6,6 +6,11 @@
   therefore updates the same episode (new sha256), and a task whose quote is unchanged
   keeps its id, so its lifecycle survives (L19). Every write is idempotent: rows are
   keyed by content (kg/store.py), so writing the same document twice adds nothing.
+- **Retraction.** A summary or stub write is the episode's whole extraction: its facts,
+  edges and tasks that the write did not produce (an earlier extraction's, before the
+  transcript changed) are retracted, in the same transaction, with the transcript's
+  sha256 as the reason (Store.retract_unwritten). A task keeps its status and leaves
+  the review. A quarantine retracts nothing: a failed extraction is no evidence.
 - **People.** The recording owner is a person keyed by `owner.email`; Outlook attendees
   and the organizer, and the document's person entities, are mentions resolved by
   alias (a lone first name with no single match stays an unresolved alias, L12).
@@ -36,7 +41,7 @@ from typing import Any, Iterator, Optional
 import yaml
 
 from kg.db import transaction
-from kg.store import EXTRACTED, PERSON, Store, StoreError, name_key, provenance, task_id
+from kg.store import EXTRACTED, PERSON, RETRACTABLE, Store, StoreError, name_key, provenance, task_id
 from pipeline import render
 from pipeline.config import data_dir
 from pipeline.prepare import (Prepared, PrepareError, Transcript, check_encoding, file_sha256, owner_name, parse,
@@ -69,6 +74,7 @@ class Written:
     edges_skipped: int = 0
     tasks: int = 0
     confirm: int = 0
+    retracted: int = 0          # rows of an earlier extraction this write no longer produced
     low_mic: bool = False
 
 
@@ -171,29 +177,41 @@ def task_rows(cfg: dict, episode: str, doc: dict, prep: Prepared, names: dict[st
     return list(rows.values())
 
 
-def _graph(store: Store, cfg: dict, episode: str, doc: dict, prep: Prepared, out: Written) -> None:
+def _graph(store: Store, cfg: dict, episode: str, doc: dict, prep: Prepared, out: Written) -> dict[str, set[str]]:
+    """Store the document's rows; return the ids written, by kind (kg.store.RETRACTABLE)."""
     text = prep.render()
+    written: dict[str, set[str]] = {kind: set() for kind in RETRACTABLE}
     names = _people(store, cfg, episode, prep.meta)
     owner_id = names[name_key(owner_name(cfg))]
     out.entities = _entities(store, doc, episode, names)
     for f in doc["facts"]:
-        store.add_fact(type_=f["type"], text=f["text"], quote=f["quote"], episode_id=episode, transcript_text=text,
-                       subject_entity_id=names.get(name_key(f["subject"] or "")), quote_start=f["start"])
+        written["fact"].add(store.add_fact(
+            type_=f["type"], text=f["text"], quote=f["quote"], episode_id=episode, transcript_text=text,
+            subject_entity_id=names.get(name_key(f["subject"] or "")), quote_start=f["start"]))
         out.facts += 1
     for g in doc["edges"]:
         src, dst = names.get(name_key(g["src"])), names.get(name_key(g["dst"]))
         try:
             if not (src and dst):
                 raise StoreError("endpoint is not a known entity")
-            store.add_edge(src_entity_id=src, dst_entity_id=dst, relation=g["relation"], quote=g["quote"],
-                           episode_id=episode, transcript_text=text, quote_start=g["start"])
+            written["edge"].add(store.add_edge(src_entity_id=src, dst_entity_id=dst, relation=g["relation"],
+                                               quote=g["quote"], episode_id=episode, transcript_text=text,
+                                               quote_start=g["start"]))
             out.edges += 1
         except StoreError:                      # raised before the store writes anything
             out.edges_skipped += 1
     for row, linked in task_rows(cfg, episode, doc, prep, names, owner_id):
-        store.add_task(row, entity_ids=linked)
+        written["task"].add(store.add_task(row, entity_ids=linked))
         out.tasks += 1
         out.confirm += int(row["owner_basis"] in cfg["kg"]["tasks"]["confirm_owner_basis"])   # as the review counts "confirm?"
+    return written
+
+
+def _retract(store: Store, t: Transcript, out: Written, written: dict[str, set[str]]) -> None:
+    """Retract the episode's rows this write did not produce (see the module docstring)."""
+    reason = f"not in the extraction of transcript sha256 {t.sha256}"
+    out.retracted = sum(store.retract_unwritten(out.episode_id, kind, written.get(kind, ()), reason=reason)
+                        for kind in RETRACTABLE)
 
 
 def _episode(store: Store, t: Transcript, meta: dict, extractor_version: Optional[str]) -> str:
@@ -242,16 +260,19 @@ def write_summary(store: Store, cfg: dict, t: Transcript, prep: Prepared, doc: d
     check_encoding(list(_strings(doc)), cfg["prepare"]["mojibake_markers"])    # L9: before any row commits
     with transaction(store.conn):
         _episode(store, t, prep.meta, extractor_version)
-        _graph(store, cfg, out.episode_id, doc, prep, out)
+        _retract(store, t, out, _graph(store, cfg, out.episode_id, doc, prep, out))
     mine = {id(item) for item in doc["my_actions"]}
     _note(cfg, out, t, prep.meta, render.note(doc, confirm=lambda item: needs_confirm(item, prep, mine=id(item) in mine)))
     return out
 
 
 def write_stub(store: Store, cfg: dict, t: Transcript, prep: Prepared) -> Written:
-    """A stub (L25): its episode, no model output, a "no content" note."""
+    """A stub (L25): its episode, no model output (an earlier extraction's rows are
+    retracted), a "no content" note."""
     out = _written(cfg, t, NO_CONTENT)
-    _episode(store, t, prep.meta, None)
+    with transaction(store.conn):
+        _episode(store, t, prep.meta, None)
+        _retract(store, t, out, {})
     _note(cfg, out, t, prep.meta, "\n\n".join([render.my_actions_block([]), NO_CONTENT_LINE]))
     return out
 

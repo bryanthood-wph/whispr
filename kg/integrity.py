@@ -26,7 +26,7 @@ from typing import Optional
 
 from kg.db import fetch_all, transaction
 from kg.state import State
-from kg.store import AMBIGUOUS, LIVE_EPISODE, Store
+from kg.store import AMBIGUOUS, Store, active
 
 CHECK = "integrity"
 # (table, column) pairs that name an entity by id, repointed off a merged-away one.
@@ -68,7 +68,7 @@ def _ambiguous_share(store: Store) -> float:
     for table in ("fact", "edge"):
         for row in store.conn.execute(
                 f"SELECT x.provenance, COUNT(*) FROM {table} x JOIN episode ep ON ep.id = x.episode_id"
-                f" WHERE x.superseded_by IS NULL AND {LIVE_EPISODE} GROUP BY x.provenance"):
+                f" WHERE {active('x')} GROUP BY x.provenance"):
             counts["all"] += row[1]
             if row[0] == AMBIGUOUS:
                 counts[AMBIGUOUS] += row[1]
