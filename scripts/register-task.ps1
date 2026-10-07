@@ -134,6 +134,28 @@ if ($HostExe -match 'WindowsApps\\Microsoft\.PowerShell_\d') {
     Write-Host "         the MSI, or re-run once the WindowsApps alias is available." -ForegroundColor Red
 }
 
+# Every action starts its script with NO console window (2026-10-06). Task Scheduler
+# gives a console program its own window, so pwsh.exe flashed a black box on every run
+# (every 15 minutes for the recorder). The action runs pythonw.exe (no console) on
+# scripts\run-hidden.py, which starts the host with CREATE_NO_WINDOW and exits with the
+# host's exit code, so the task's Last Run Result still shows failures. Not
+# `conhost.exe --headless`: it hides the window but always exits 0. Not
+# `-WindowStyle Hidden`: the window still flashes before pwsh hides it.
+$HiddenPython = Join-Path $RepoRoot '.venv\Scripts\pythonw.exe'
+$HiddenRunner = Join-Path $RepoRoot 'scripts\run-hidden.py'
+$RunHidden = (Test-Path -LiteralPath $HiddenPython) -and (Test-Path -LiteralPath $HiddenRunner)
+if (-not $RunHidden) {
+    Write-Host "WARNING: '$HiddenPython' or '$HiddenRunner' is missing; tasks will open a console window on every run." -ForegroundColor Yellow
+}
+
+function New-ScriptAction([string]$ScriptPath) {
+    $hostArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`""
+    if ($RunHidden) {
+        return New-ScheduledTaskAction -Execute $HiddenPython -Argument "-s `"$HiddenRunner`" `"$HostExe`" $hostArgs" -WorkingDirectory $RepoRoot
+    }
+    return New-ScheduledTaskAction -Execute $HostExe -Argument $hostArgs -WorkingDirectory $RepoRoot
+}
+
 # ---------------------------------------------------------------------------
 # Task 1: whispr-nightly-ingest
 # ---------------------------------------------------------------------------
@@ -144,8 +166,7 @@ if (-not (Test-Path -LiteralPath $NightlyScriptPath)) {
     throw "Cannot find '$NightlyScriptPath' — register-task.ps1 must live alongside nightly-ingest.ps1."
 }
 
-$nightlyActionArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$NightlyScriptPath`"")
-$nightlyAction    = New-ScheduledTaskAction -Execute $HostExe -Argument ($nightlyActionArgs -join ' ') -WorkingDirectory $RepoRoot
+$nightlyAction    = New-ScriptAction $NightlyScriptPath
 $nightlyTrigger   = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At 22:00
 $nightlyPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 # Scheduler-level backstop time limit, independent of nightly-ingest.ps1's own
@@ -176,8 +197,7 @@ if (-not (Test-Path -LiteralPath $WeeklyScriptPath)) {
     throw "Cannot find '$WeeklyScriptPath' — register-task.ps1 must live alongside weekly-lint-compile.ps1."
 }
 
-$weeklyActionArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$WeeklyScriptPath`"")
-$weeklyAction    = New-ScheduledTaskAction -Execute $HostExe -Argument ($weeklyActionArgs -join ' ') -WorkingDirectory $RepoRoot
+$weeklyAction    = New-ScriptAction $WeeklyScriptPath
 $weeklyTrigger   = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At 22:00
 $weeklyPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 # /lint alone measured at ~19 min; 2 hours leaves headroom for -MaxCompiles
@@ -203,8 +223,7 @@ if (-not (Test-Path -LiteralPath $FreshnessScriptPath)) {
     throw "Cannot find '$FreshnessScriptPath' — register-task.ps1 must live alongside check-nightly-freshness.ps1."
 }
 
-$freshnessActionArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$FreshnessScriptPath`"")
-$freshnessAction     = New-ScheduledTaskAction -Execute $HostExe -Argument ($freshnessActionArgs -join ' ') -WorkingDirectory $RepoRoot
+$freshnessAction     = New-ScriptAction $FreshnessScriptPath
 # Two fixed daily fire times, one task — Register-ScheduledTask's -Trigger takes an array.
 $freshnessTrigger09 = New-ScheduledTaskTrigger -Daily -At 09:00
 $freshnessTrigger20 = New-ScheduledTaskTrigger -Daily -At 20:00
@@ -236,8 +255,7 @@ if (-not (Test-Path -LiteralPath $RecorderScriptPath)) {
     throw "Cannot find '$RecorderScriptPath' — register-task.ps1 must live alongside watch-recorder.ps1."
 }
 
-$recorderActionArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$RecorderScriptPath`"")
-$recorderAction     = New-ScheduledTaskAction -Execute $HostExe -Argument ($recorderActionArgs -join ' ') -WorkingDirectory $RepoRoot
+$recorderAction     = New-ScriptAction $RecorderScriptPath
 
 # TWO triggers, and the split is load-bearing (2026-08-27 finding).
 #
@@ -315,7 +333,7 @@ Write-Host ''
 Write-Host "=== whispr-nightly-ingest task registration ===" -ForegroundColor Cyan
 Write-Host "Task name       : $NightlyTaskName"
 Write-Host "Host executable : $HostExe"
-Write-Host "Action          : $HostExe $($nightlyActionArgs -join ' ')"
+Write-Host "Action          : $($nightlyAction.Execute) $($nightlyAction.Arguments)"
 Write-Host "Working dir     : $RepoRoot"
 Write-Host "Trigger         : Weekly, Mon-Tue-Wed-Thu-Fri at 22:00"
 Write-Host "Principal       : user '$env:USERNAME', LogonType=Interactive (runs only when logged on), RunLevel=Limited"
@@ -324,7 +342,7 @@ Write-Host ''
 Write-Host "=== whispr-weekly-lint-compile task registration ===" -ForegroundColor Cyan
 Write-Host "Task name       : $WeeklyTaskName"
 Write-Host "Host executable : $HostExe"
-Write-Host "Action          : $HostExe $($weeklyActionArgs -join ' ')"
+Write-Host "Action          : $($weeklyAction.Execute) $($weeklyAction.Arguments)"
 Write-Host "Working dir     : $RepoRoot"
 Write-Host "Trigger         : Weekly, Sunday at 22:00"
 Write-Host "Principal       : user '$env:USERNAME', LogonType=Interactive (runs only when logged on), RunLevel=Limited"
@@ -333,7 +351,7 @@ Write-Host ''
 Write-Host "=== whispr-nightly-freshness-check task registration ===" -ForegroundColor Cyan
 Write-Host "Task name       : $FreshnessTaskName"
 Write-Host "Host executable : $HostExe"
-Write-Host "Action          : $HostExe $($freshnessActionArgs -join ' ')"
+Write-Host "Action          : $($freshnessAction.Execute) $($freshnessAction.Arguments)"
 Write-Host "Working dir     : $RepoRoot"
 Write-Host "Trigger         : Daily at 09:00 and 20:00"
 Write-Host "Principal       : user '$env:USERNAME', LogonType=Interactive (toast delivery only, no CLI auth need), RunLevel=Limited"
@@ -342,7 +360,7 @@ Write-Host ''
 Write-Host "=== whispr-recorder task registration ===" -ForegroundColor Cyan
 Write-Host "Task name       : $RecorderTaskName"
 Write-Host "Host executable : $HostExe"
-Write-Host "Action          : $HostExe $($recorderActionArgs -join ' ')"
+Write-Host "Action          : $($recorderAction.Execute) $($recorderAction.Arguments)"
 Write-Host "Working dir     : $RepoRoot"
 Write-Host "Trigger         : (1) at logon  +  (2) every $RecorderIntervalMin minutes indefinitely from midnight"
 Write-Host "                  two separate triggers on purpose — a repetition hung off the logon"
