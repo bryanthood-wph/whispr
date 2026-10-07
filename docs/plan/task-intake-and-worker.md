@@ -386,7 +386,7 @@ longer applies, because no profile is used.
 | P1 | Brief answers as `task_note` rows, `entity_scope`, the MCP arguments, the ready gate with its config check, the intake rounds in `/whispr:create-tasks` | a captured task goes through intake to `ready`; `ready` with an open field is refused, and an empty or misspelt `required_fields` is a ConfigError (both tested); **done 2026-10-06** (merged 974ce35) |
 | P2 | `whispr-m365`: Outlook read and drafts, task binding, the read/draft split, the recipient check | read tests pass against your mailbox; a query outside scope, a call with no task id, and a draft to an unnamed recipient are refused; no send tool exists (all tested); **done 2026-10-06** (merged 8650a81): live read checks pass; a task may hold several drafts, one per source message; the one live draft test moves to P3 |
 | P2b | **whispr's knowledge is used first** (your item, 2026-10-06). Today, every Claude Code session has the graph tools and their instructions, but using them is the model's call. The tools start hidden, and the older `/vault` skill and server compete for the same questions. **Vet, then add the simplest mechanism that ships with the plugin**, so it reaches every machine without a hand-edited file. Candidates:<br>• a short note from the plugin's existing session-start hook: for meetings, people, projects and tasks, use whispr-kg first and cite the quote; `/vault` only for what the graph doesn't cover, until it retires (D.8)<br>• a rule in your user CLAUDE.md, which covers this machine only<br>Also check that intake and the worker reach for the graph when they need context on a task (the scope proposals, the researcher's tools). | **Vetted by measurement, before and after:** a set of real questions from your current work, asked in fresh sessions, scored on whether whispr-kg was used first and the answer cites a transcript quote. The question set and the pass bar are agreed with you at the start of P2b. The mechanism that passes is the one added. **Built 2026-10-06, not yet run** (see "P2b: what was built" below): the session-start note, the 10 agreed questions, the bar (at least 9 of 10 "after" sessions), and `python -m eval graph-first` |
-| P3 | `task run`: roster, permission rules, preflight, output header, `progress.md`, budget stop-and-propose, ledger, backup of `tasks\` and `good\` | three real tasks of different types run end to end, each in its own folder. A read outside scope is refused. A closed source is listed as skipped. A run stopped at a deliberately low cap proposes an amount and resumes on yes. **The measured costs become the budget seeds per work type in config** |
+| P3 | `task run`: roster, permission rules, preflight, output header, `progress.md`, budget stop-and-propose, ledger, backup of `tasks\` and `good\`. **The researcher starts from the task's source episode in whispr-kg** (`source`/`get` on the episode, then `neighbors` or `timeline` from its entities) before any M365 or file search (P2b gap; your decision, 2026-10-06) | three real tasks of different types run end to end, each in its own folder. A read outside scope is refused. A closed source is listed as skipped. A run stopped at a deliberately low cap proposes an amount and resumes on yes. **The measured costs become the budget seeds per work type in config** |
 | P4 | The `good\` library growing from approvals | an approved deliverable lands in `examples\`; the next task of that type doesn't ask for what good looks like |
 
 ### P2b: what was built (2026-10-06) and how to run it
@@ -437,12 +437,16 @@ The arm summary gives n pass out of 10 against `pass_min` (9). Tests:
 `tests/test_eval_graph_first.py` and `tests/test_pipeline_alerts.py` (`TestGraphFirstNote`).
 
 **Gaps found in what else should use the graph:**
-- `/whispr:create-tasks` already sends context and scope lookups to whispr-kg (`source`,
-  `search`, `get`). Its `allowed-tools` grant no `neighbors`, `paths` or `timeline`, though,
-  so round 1 can't walk from the project to the systems or repos it uses. This is left as is.
-- The §6 worker grants the researcher whispr-kg read tools. No step tells it to start from the
-  task's source episode in the graph before searching the scope. P3 should write that into
-  the researcher's brief.
+- `/whispr:create-tasks` already sent context and scope lookups to whispr-kg (`source`,
+  `search`, `get`), but its `allowed-tools` granted no `neighbors`, `paths` or `timeline`, so
+  round 1 couldn't walk from the project to the systems or repos it uses. Added, in both
+  naming forms.
+- The §6 worker grants the researcher whispr-kg read tools, but no step told it to start from
+  the task's source episode in the graph. That step is now in the P3 row.
+
+**Your decisions (2026-10-06):** whispr-tasks' read tools count as graph tools, both for the
+first lookup and for the quote check (`knowledge.graph_tools`). The shipped
+`knowledge.file_patterns` is generic, and your vault folder's pattern goes in your overlay.
 
 **Runbook (one-shot scheduled task; register by hand, never from a Claude session).** Run
 it once P2b is merged into `rebuild`. The live plugin (`CLAUDE_CODE_PLUGIN_DIRS` in your

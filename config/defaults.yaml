@@ -806,19 +806,27 @@ eval:
       - ToolSearch
     disallowed_tools: [Write, Edit, NotebookEdit, Bash, PowerShell, WebFetch, WebSearch, Agent, Task,
                        mcp__plugin_whispr_whispr-tasks__task_update_status, mcp__plugin_whispr_whispr-tasks__project_scope_set]
-    # What counts as a knowledge lookup. Tool-name prefixes: graph tools (both naming
-    # forms: the packaged plugin and a hand-registered server), and the other knowledge
-    # tools. A Skill call naming one of `skills`, and a file tool whose path-like input
-    # matches one of file_patterns or lies under paths.transcripts, count as other.
+    # What counts as a knowledge lookup. Tool-name prefixes, both naming forms (the
+    # packaged plugin and a hand-registered server): graph tools, which count for "first
+    # lookup" and whose results count for the quote check (whispr-kg, and whispr-tasks'
+    # read tools, which serve the same graph: owner's decision 2026-10-06), then the other
+    # knowledge tools (checked after the graph tools). A Skill call naming one of
+    # `skills`, and a file tool whose path-like input matches one of file_patterns or lies
+    # under paths.transcripts, count as other. A list in the overlay replaces the default
+    # list (pipeline/config.py _merge), so an overlay repeats the entries it keeps.
     knowledge:
-      graph_tools: [mcp__plugin_whispr_whispr-kg__, mcp__whispr-kg__]
+      graph_tools: [mcp__plugin_whispr_whispr-kg__, mcp__whispr-kg__,
+                    mcp__plugin_whispr_whispr-tasks__task_list, mcp__plugin_whispr_whispr-tasks__task_get,
+                    mcp__plugin_whispr_whispr-tasks__project_scope_get,
+                    mcp__whispr-tasks__task_list, mcp__whispr-tasks__task_get, mcp__whispr-tasks__project_scope_get]
       other_tools: [mcp__plugin_whispr_whispr-tasks__, mcp__whispr-tasks__, mcp__vault__]
       skill_tool: Skill
       skill_input: skill
       skills: [vault]
       file_tools: [Read, Grep, Glob]
       file_inputs: [file_path, path, pattern, glob]
-      file_patterns: ['(?i)cohoodOBS', '(?i)transcript']
+      # Generic only: a notes folder of your own (a vault) goes in your overlay.
+      file_patterns: ['(?i)transcript']
 
 setup:
   # /whispr-setup (pipeline/setup.py, `python -m pipeline setup ...`; D.7). It derives what

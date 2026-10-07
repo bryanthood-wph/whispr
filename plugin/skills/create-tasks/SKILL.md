@@ -14,6 +14,9 @@ allowed-tools:
   - mcp__whispr-kg__search
   - mcp__whispr-kg__get
   - mcp__whispr-kg__source
+  - mcp__whispr-kg__neighbors
+  - mcp__whispr-kg__paths
+  - mcp__whispr-kg__timeline
   - mcp__plugin_whispr_whispr-tasks__task_list
   - mcp__plugin_whispr_whispr-tasks__task_get
   - mcp__plugin_whispr_whispr-tasks__task_update_status
@@ -22,6 +25,9 @@ allowed-tools:
   - mcp__plugin_whispr_whispr-kg__search
   - mcp__plugin_whispr_whispr-kg__get
   - mcp__plugin_whispr_whispr-kg__source
+  - mcp__plugin_whispr_whispr-kg__neighbors
+  - mcp__plugin_whispr_whispr-kg__paths
+  - mcp__plugin_whispr_whispr-kg__timeline
   - AskUserQuestion
 ---
 

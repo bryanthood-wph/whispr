@@ -67,6 +67,20 @@ class TestScoreSession(_Case):
         s = self.score("no_tools")
         self.assertEqual((s["first_knowledge_tool"], s["graph_used"], s["passed"]), (None, False, False))
 
+    def test_whispr_tasks_first_with_its_quote_passes(self):
+        s = self.score("tasks_first_cited")
+        self.assertEqual(s["first_knowledge_tool"], "mcp__plugin_whispr_whispr-tasks__task_list")
+        self.assertTrue(s["first_is_graph"] and s["passed"])
+        self.assertIn("send the MAPE", s["cited_quote"])
+        write = G.ToolCall("1", "mcp__plugin_whispr_whispr-tasks__task_update_status", {})
+        self.assertEqual(G.lookup_kind(write, self.rules), G.OTHER)   # only its read tools are graph tools
+
+    def test_an_overlay_list_replaces_the_default_list(self):
+        ov = overlay(self.root)
+        ov["eval"] = {"graph_first": {"knowledge": {"file_patterns": ["(?i)mynotes", "(?i)transcript"]}}}
+        self.assertEqual(load_config(overlay=ov)["eval"]["graph_first"]["knowledge"]["file_patterns"],
+                         ["(?i)mynotes", "(?i)transcript"])
+
     def test_a_quote_only_another_tool_returned_does_not_count(self):
         events = fixture("graph_first_cited")
         for e in events:                                     # the graph's results lose the quote
@@ -79,7 +93,10 @@ class TestScoreSession(_Case):
         self.assertEqual(G.lookup_kind(G.ToolCall("1", "Skill", {"skill": "vault"}), r), G.OTHER)
         self.assertEqual(G.lookup_kind(G.ToolCall("1", "Skill", {"skill": "plugin:vault"}), r), G.OTHER)
         self.assertIsNone(G.lookup_kind(G.ToolCall("1", "Skill", {"skill": "clarify"}), r))
-        self.assertEqual(G.lookup_kind(G.ToolCall("1", "Read", {"file_path": r"C:\github\cohoodOBS\index.md"}), r), G.OTHER)
+        vault = G.ToolCall("1", "Read", {"file_path": r"C:\notes\vault\index.md"})
+        self.assertIsNone(G.lookup_kind(vault, r))                  # no owner folder in the defaults
+        self.g["knowledge"]["file_patterns"].append(r"(?i)notes\\vault")   # as an overlay adds one
+        self.assertEqual(G.lookup_kind(vault, G.rules(self.cfg)), G.OTHER)
         transcripts = str(Path(self.cfg["paths"]["transcripts"]) / "2026-10-01.md")
         self.assertEqual(G.lookup_kind(G.ToolCall("1", "Grep", {"path": transcripts, "pattern": "x"}), r), G.OTHER)
         self.assertIsNone(G.lookup_kind(G.ToolCall("1", "Read", {"file_path": r"C:\code\app.py"}), r))
