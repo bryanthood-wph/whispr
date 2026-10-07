@@ -72,7 +72,8 @@ class DailyCase(PipelineCase):
 
     def daily(self, **kw) -> int:
         kw.setdefault("resolve_call", self.fake)
-        return daily.daily(self.cfg, now=NOW, out=self.out.append, **kw)
+        kw.setdefault("now", NOW)
+        return daily.daily(self.cfg, out=self.out.append, **kw)
 
     def log(self) -> list[dict]:
         return [r for r in models.read_jsonl(runner.files(self.cfg, "log")) if r.get("job") == daily.JOB]
@@ -255,6 +256,9 @@ class TestDaily(DailyCase):
         self.assertIn(f"{runner.KIND_UNAVAILABLE}:{daily.JOB}", self.alerts())
         with self.db() as (_, state):
             self.assertIsNone(state.conn.execute("SELECT decision FROM er_decision").fetchone())   # retried next run
+        self.fake.error = None                                    # back online: the next run closes both alerts
+        self.assertEqual(self.daily(now=NOW + timedelta(days=1)), runner.EXIT_OK, self.out)
+        self.assertEqual(self.alerts(), {})
 
     def test_a_second_run_holding_the_lock_exits_ok(self):
         with runner.single_instance(runner.files(self.cfg, "daily_lock")) as held:

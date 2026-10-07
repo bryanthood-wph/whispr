@@ -82,8 +82,9 @@ NOTE_BRIEF = "brief"
 _MERGE_GROUP = ("WITH RECURSIVE grp(id) AS (SELECT ? UNION SELECT e.id FROM entity e"
                 " JOIN grp ON e.merged_into = grp.id)")
 
-ACTIVE_FACT = "f.superseded_by IS NULL AND ep.deleted_at IS NULL"
-ACTIVE_EDGE = "g.superseded_by IS NULL AND ep.deleted_at IS NULL"
+LIVE_EPISODE = "ep.deleted_at IS NULL"     # a tombstoned call's facts, edges and tasks are gone
+ACTIVE_FACT = f"f.superseded_by IS NULL AND {LIVE_EPISODE}"
+ACTIVE_EDGE = f"g.superseded_by IS NULL AND {LIVE_EPISODE}"
 
 # The one shape a fact and an edge are read in (get here, the traversals in
 # kg/traverse.py), joined to the episode as `ep` (and an edge's endpoints as `s`, `d`)
@@ -874,7 +875,7 @@ class Store:
         most `limit` cards from `offset`, with the total and whether more remain."""
         if status not in self.task_schema["properties"]["status"]["enum"]:
             raise StoreError(f"no task status {status!r}")
-        where, params = ["t.status = ?"], [status]
+        where, params = ["t.status = ?", LIVE_EPISODE], [status]
         if mine:
             clause, values = _in("t.owner_basis", self.task_cfg["mine_owner_basis"])
             where.append(clause)
@@ -945,7 +946,8 @@ class Store:
         """Tasks still waiting at the funnel's first stage with a "confirm?" owner_basis,
         however old: the review's backlog."""
         clause, values = _in("t.owner_basis", self.task_cfg["confirm_owner_basis"])
-        return self.conn.execute(f"SELECT COUNT(*) FROM task t WHERE t.status = ? AND {clause}",
+        return self.conn.execute("SELECT COUNT(*) FROM task t JOIN episode ep ON ep.id = t.episode_id"
+                                 f" WHERE t.status = ? AND {LIVE_EPISODE} AND {clause}",
                                  (self.funnel_stages()[0], *values)).fetchone()[0]
 
     # ---- reads for MCP: search -> get -> source (progressive disclosure) -------------

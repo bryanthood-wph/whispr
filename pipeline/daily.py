@@ -183,6 +183,7 @@ def _backup(ctx: _Context) -> Step:
 def _maintain(ctx: _Context) -> Step:
     cfg, state, step = ctx.cfg, ctx.state, Step(MAINTENANCE)
     ctx.budget = budget = _Budget(cfg, ctx.resolve_call, ctx.now, ctx.clock, ctx.started)
+    model_alerted = False
     try:
         summary = Resolver(ctx.store, state).run(ctx.run_id, budget.ask, now=ctx.now, pair_error=budget.pair_error)
         step.found, step.repaired = summary["candidates"], len(summary["merged"])
@@ -192,11 +193,14 @@ def _maintain(ctx: _Context) -> Step:
         step.stopped = stop.args[0]
         step.details["resolve"] = {"stopped": step.stopped}
     except models.ModelCallError as exc:
+        model_alerted = True
         why = pipeline_run.model_alert(cfg, state, JOB, ctx.run_id, exc, now=ctx.now,
                                        resumes="the next daily run resumes entity resolution where this one stopped.")
         step.error = f"entity resolution stopped ({why}): {pipeline_run._error(exc)}"
     except Exception as exc:
         step.error = f"entity resolution failed: {pipeline_run._error(exc)}"
+    if budget.answered and not model_alerted:
+        step.details["cleared"] = pipeline_run.clear_model_alerts(state, JOB, now=ctx.now)
     step.details["calls"], step.details["spent_usd"] = budget.calls, round(budget.spent, 6)
     try:                                         # whatever resolution did
         checked = integrity.check(ctx.store, state, ctx.run_id, listed=cfg["maintain"]["listed"], now=ctx.now)

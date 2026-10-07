@@ -266,6 +266,7 @@ class RunCase(PipelineCase):
 
     def go(self, ask=None, **kw) -> int:
         kw.setdefault("now", T0)
+        kw.setdefault("clock", Clock())     # frozen: real elapsed time must not move retry_at
         return runner.run(self.cfg, ask=ask, out=self.out.append, **kw)
 
     def log(self) -> list[dict]:
@@ -335,6 +336,16 @@ class TestNewTranscript(RunCase):
 
 
 class TestFailures(RunCase):
+    def test_a_backoff_counts_from_when_the_item_failed_not_from_the_runs_start(self):
+        bad = self.transcript("2026-10-05T09:00:00-04:00")
+        clock, slow = Clock(), timedelta(hours=2)
+        ask = FakeAsk(fail={bad.stem: runner.extract.ExtractError("extractor output failed its schema")},
+                      clock=clock, seconds=slow.total_seconds())
+        self.go(ask, now=T0, clock=clock)
+        with self.db() as (_, state):
+            backoff = timedelta(minutes=self.cfg["pipeline"]["run"]["retry_backoff_min"][0])
+            self.assertEqual(state.find(runner.STAGE, bad.stem)["next_attempt_at"], db.utc_now(T0 + slow + backoff))
+
     def test_failing_extract_backs_off_then_quarantines_and_the_queue_moves_on(self):
         bad = self.transcript("2026-10-05T09:00:00-04:00")
         good = self.transcript("2026-10-05T10:00:00-04:00")
@@ -408,6 +419,15 @@ class TestFailures(RunCase):
         ask.fail = {}                                            # back online: the queue resumes
         self.assertEqual(self.go(ask, now=T0 + timedelta(hours=3)), runner.EXIT_OK)
         self.assertEqual(self.runs()[-1]["summarized"], 2)
+        with self.db() as (_, state):                            # and the outage's alerts close
+            self.assertEqual(state.open_alerts(), [])
+
+    def test_an_auth_failure_after_the_model_answered_keeps_its_alert(self):
+        bad = self.transcript("2026-10-05T09:00:00-04:00")
+        self.transcript("2026-10-05T10:00:00-04:00")             # newer: worked first, and answered
+        self.go(FakeAsk(fail={bad.stem: models.AuthError("auth source 'ANTHROPIC_API_KEY' is not approved")}))
+        with self.db() as (_, state):
+            self.assertIn(f"{runner.KIND_AUTH}:{runner.JOB}", {a["dedupe_key"] for a in state.open_alerts()})
 
     def test_a_call_failure_after_the_model_answered_counts_against_the_item(self):
         bad = self.transcript("2026-10-05T09:00:00-04:00")
@@ -474,6 +494,9 @@ class TestFailures(RunCase):
             self.assertIn("CLAUDECODE", alert["message"])
             self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM run").fetchone()[0], 0)
             self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM item").fetchone()[0], 0)
+        self.assertEqual(self.go(ask), runner.EXIT_OK)                         # outside Claude Code: it closes
+        with self.db() as (_, state):
+            self.assertEqual(state.open_alerts(), [])
 
 
 class TestDiscoveryWindow(RunCase):
@@ -492,6 +515,10 @@ class TestDiscoveryWindow(RunCase):
             self.assertIn("process_since", alert["message"])
             self.assertIn("process_since", alert["fix"])
             self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM item").fetchone()[0], 0)
+        self.cfg["pipeline"]["run"]["process_since"] = "2026-10-01"           # set up: the next run closes it
+        self.assertEqual(self.go(ask), runner.EXIT_OK)
+        with self.db() as (_, state):
+            self.assertEqual(state.open_alerts(), [])
 
     def test_only_transcripts_dated_on_or_after_process_since_are_discovered(self):
         old = self.transcript("2026-09-30T09:00:00-04:00")

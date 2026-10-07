@@ -206,6 +206,15 @@ class TestReviewList(TaskCase):
         with self.assertRaises(StoreError):
             self.store.review_tasks(status="parked", limit=1)
 
+    def test_a_tombstoned_calls_tasks_leave_the_review_until_it_comes_back(self):
+        old = self.add("maybe I'll look at it", episode=OLD_EP, owner_basis="unclear")
+        new = self.add("I'll send the deck to Jamie by Friday")
+        self.store.tombstone_episode(OLD_EP)
+        listed = self.store.review_tasks(status="captured", limit=10)
+        self.assertEqual(([c["task"]["id"] for c in listed["tasks"]], listed["total"]), ([new], 1))
+        self.assertEqual(self.store.confirm_open(), 0)
+        self.assertIsNotNone(self.store.get_task(old))                         # kept, only hidden
+
     def test_confirm_flag_ends_when_the_task_moves_on(self):
         tid = self.add(owner_basis="unclear")
         self.assertTrue(self.store.task_record(tid)["confirm"])

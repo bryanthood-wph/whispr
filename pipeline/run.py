@@ -52,7 +52,7 @@ from pathlib import Path
 from typing import BinaryIO, Callable, Iterator, Optional
 
 from kg import db
-from kg.state import KIND_QUARANTINE, QUARANTINED, QUEUED, State, item_key
+from kg.state import KIND_QUARANTINE, QUARANTINED, QUEUED, State, alert_key, item_key
 from kg.store import Store
 from pipeline import calls, extract, models, prepare, write
 from pipeline.config import ConfigError, data_dir
@@ -314,16 +314,11 @@ def task_name(cfg: dict, command: str) -> str:
     return name or f"<the task running `-m pipeline {command}`>"
 
 
-def alert_key(kind: str, subject: str) -> str:
-    """An alert's dedupe key: `<kind>:<subject>` (the job, or what the alert is about)."""
-    return f"{kind}:{subject}"
-
-
 def clear_alerts(state: State, keys: list[str], *, now: datetime) -> list[str]:
     """The cause behind these alerts is gone (the check that raised one has passed):
     acknowledge each that is open. Returns the keys closed. A recurrence reopens one
     (State.raise_alert), so closing never hides a problem that comes back."""
-    return [key for key in keys if state.acknowledge(key, now=now)]
+    return state.acknowledge_open(keys, now=now)
 
 
 def refuse(state: State, job: str, kind: str, message: str, fix: str, *, now: datetime,
@@ -339,9 +334,11 @@ def refuse_nested(cfg: dict, state: State, job: str, command: str, *, now: datet
                   log: Callable[[dict], None], out: Callable[[str], None]) -> Optional[int]:
     """While an auth.refuse_if_set variable is set (a nested Claude Code session, where
     a model call dies at once with zero tokens: lesson L3), refuse() the run of `job`
-    (the subcommand `command`) and return EXIT_REFUSED; else None."""
+    (the subcommand `command`) and return EXIT_REFUSED; else close the job's
+    refused-env alert (this run is not nested) and return None."""
     refused = models.refused_env(cfg)
     if not refused:
+        clear_alerts(state, [alert_key(KIND_REFUSED, job)], now=now)
         return None
     return refuse(state, job, KIND_REFUSED, f"{job} run refused: {refused[0]} is set, so this is a nested Claude "
                                             "Code session, where a model call dies at once with zero tokens.",
@@ -365,6 +362,12 @@ def model_alert(cfg: dict, state: State, job: str, run_id: str, exc: models.Mode
     state.raise_alert(kind, alert_key(kind, job), f"{job} run {run_id} stopped: {_error(exc)}", f"{fix}; {resumes}",
                       now=now)
     return why
+
+
+def clear_model_alerts(state: State, job: str, *, now: datetime) -> list[str]:
+    """A model call answered in a run of `job` that raised no model_alert: the machine
+    can reach the model again, so close its auth and model-unavailable alerts."""
+    return clear_alerts(state, [alert_key(KIND_AUTH, job), alert_key(KIND_UNAVAILABLE, job)], now=now)
 
 
 # ---- a run --------------------------------------------------------------------------
@@ -394,7 +397,7 @@ class _Run:
             return MAX_ITEMS
         if self.clock() - self.started + self.longest >= r["time_budget_s"]:
             return TIME_BUDGET
-        return spend_stop(self.cfg, spent=self.spent, day_spent=spent_since(self.cfg, self.now - timedelta(days=1)),
+        return spend_stop(self.cfg, spent=self.spent, day_spent=spent_since(self.cfg, self.at() - timedelta(days=1)),
                           per_call=self.cfg["pipeline"]["max_budget_per_call_usd"], cap=r["cap_usd"])
 
     def work(self, items: list[dict]) -> tuple[Optional[str], Optional[str]]:
@@ -409,9 +412,14 @@ class _Run:
                 return exc.args
         return None, None
 
+    def at(self) -> datetime:
+        """The time now, as the run's clock tells it: `now` (the run's start) plus the time
+        elapsed, so a backoff or the daily window is not measured from a start hours ago."""
+        return self.now + timedelta(seconds=self.clock() - self.started)
+
     def retry_at(self, attempts: int) -> datetime:
         schedule = self.cfg["pipeline"]["run"]["retry_backoff_min"]
-        return self.now + timedelta(minutes=schedule[min(attempts, len(schedule)) - 1])
+        return self.at() + timedelta(minutes=schedule[min(attempts, len(schedule)) - 1])
 
     def one(self, item: dict) -> None:
         t0 = self.clock()
@@ -500,6 +508,8 @@ class _Run:
                             ("partial", float(stop is not None)), ("quarantined", self.counts[QUARANTINE]),
                             ("retried", self.counts[RETRY])):
             self.state.record_metric(self.run_id, name, value)
+        if self.model_answered and stop not in (AUTH, UNAVAILABLE):      # those stops raised a model alert
+            clear_model_alerts(self.state, JOB, now=self.now)
         backlog = self.state.backlog(STAGE)
         ok = self.state.finish_run(self.run_id, processed=processed, eligible=eligible, backlog=backlog,
                                    error=error, now=self.now)
@@ -520,6 +530,7 @@ def _locked_run(cfg: dict, conn, *, once: Optional[Path], ask: Optional[Ask], no
             since = process_since(cfg)
         except ValueError as exc:
             return refuse(state, JOB, KIND_SETUP, f"{JOB} run refused: {exc}.", SETUP_FIX, now=now, log=log, out=out)
+        clear_alerts(state, [alert_key(KIND_SETUP, JOB)], now=now)      # process_since is set now
     r = _Run(cfg, conn, ask=ask or default_ask(cfg), now=now, clock=clock, log=log)
     r.run_id = state.begin_run(JOB, now)
     eligible, stop, error = 0, None, None

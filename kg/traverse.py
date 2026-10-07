@@ -42,7 +42,7 @@ from contextlib import contextmanager
 from typing import Iterable, Iterator, Optional, Sequence
 
 from kg.db import fetch_all, utc_time
-from kg.store import EDGE_SELECT, FACT_SELECT, PERSON, Store, StoreError, keyed_id, name_key
+from kg.store import EDGE_SELECT, FACT_SELECT, LIVE_EPISODE, PERSON, Store, StoreError, keyed_id, name_key
 
 # Separates entity ids in a walk's trail (",a,b,c,"); hex ids never contain it.
 _TRAIL_SEP = ","
@@ -106,7 +106,7 @@ class Traverser:
         """The WHERE text (over EDGE_SELECT's aliases) and parameters for the edges a
         walk may use."""
         since, until, as_of = utc_time(since), utc_time(until), utc_time(as_of)
-        clauses = ["ep.deleted_at IS NULL", "s.merged_into IS NULL", "d.merged_into IS NULL"]
+        clauses = [LIVE_EPISODE, "s.merged_into IS NULL", "d.merged_into IS NULL"]
         params: list = []
         if relations is not None:
             relations = sorted(set(relations))
@@ -324,10 +324,10 @@ class Traverser:
         me = start["id"]
         since, until = utc_time(since), utc_time(until)
         kinds = (
-            (f"{FACT_SELECT} WHERE f.subject_entity_id = ? AND ep.deleted_at IS NULL", (me,), self._fact_item),
-            (f"{EDGE_SELECT} WHERE (g.src_entity_id = ? OR g.dst_entity_id = ?) AND ep.deleted_at IS NULL",
+            (f"{FACT_SELECT} WHERE f.subject_entity_id = ? AND {LIVE_EPISODE}", (me,), self._fact_item),
+            (f"{EDGE_SELECT} WHERE (g.src_entity_id = ? OR g.dst_entity_id = ?) AND {LIVE_EPISODE}",
              (me, me), self._edge_item),
-            (f"{_TASK_SELECT} WHERE te.entity_id = ? AND ep.deleted_at IS NULL", (me,), self._task_item),
+            (f"{_TASK_SELECT} WHERE te.entity_id = ? AND {LIVE_EPISODE}", (me,), self._task_item),
         )
         window, window_params = [], []
         if since is not None:

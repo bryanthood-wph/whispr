@@ -4,7 +4,8 @@
   it processed >= 1 item or proved zero items were eligible (eligible == 0; None means
   it never counted, which proves nothing), and raised no error. Every run records
   its backlog. A run that fails raises a `run-failed` alert for its job; so does a
-  run still marked running when its job starts again (it never finished, D.6).
+  run still marked running when its job starts again (it never finished, D.6). The
+  job's next successful run closes that alert.
 - **One bad item never blocks the queue** (lesson L7). Each transcript/episode has one
   item row per stage. `begin_item` counts an attempt *before* the work, so an item
   that kills the process still uses up its attempts; once attempts reach
@@ -52,6 +53,11 @@ def item_key(kind: str, item: dict) -> str:
     return f"{kind}:{item['stage']}:{item['ref']}"
 
 
+def alert_key(kind: str, subject: str) -> str:
+    """An alert's dedupe key: `<kind>:<subject>` (the job, or what the alert is about)."""
+    return f"{kind}:{subject}"
+
+
 class State:
     def __init__(self, conn: sqlite3.Connection, cfg: dict):
         self.conn = conn
@@ -92,8 +98,9 @@ class State:
     def finish_run(self, run_id: str, *, processed: int, eligible: Optional[int], backlog: int,
                    error: Optional[str] = None, now: Optional[datetime] = None) -> bool:
         """Close a run; True if it succeeded (made progress or proved there was none
-        to make). A failed run raises its job's run-failed alert. Impossible counts
-        are a caller bug and raise ValueError rather than record a false success."""
+        to make). A failed run raises its job's run-failed alert; a successful one
+        closes it (the next failure reopens it). Impossible counts are a caller bug
+        and raise ValueError rather than record a false success."""
         if min(processed, backlog, 0 if eligible is None else eligible) < 0:
             raise ValueError(f"negative count: processed={processed}, eligible={eligible}, backlog={backlog}")
         if eligible is not None and processed > eligible:
@@ -109,11 +116,13 @@ class State:
                 why = error or ("processed nothing while eligible items were never counted" if eligible is None
                                 else f"processed nothing of {eligible} eligible")
                 self._alert_run_failed(run, why, backlog, now)
+            else:
+                self.acknowledge(alert_key(KIND_RUN_FAILED, run["job"]), now)
         return succeeded
 
     def _alert_run_failed(self, run: dict, why: str, backlog: Optional[int], now: Optional[datetime]) -> None:
         shown = "not recorded" if backlog is None else backlog
-        self.raise_alert(KIND_RUN_FAILED, f"{KIND_RUN_FAILED}:{run['job']}",
+        self.raise_alert(KIND_RUN_FAILED, alert_key(KIND_RUN_FAILED, run["job"]),
                          f"{run['job']} run {run['id']} failed: {why} (backlog {shown}).",
                          "Read this run's log for the cause; run doctor to see the backlog.", now=now)
 
@@ -277,6 +286,23 @@ class State:
                 " AND acknowledged_at IS NULL AND expired_at IS NULL",
                 (utc_now(now), alert_id_or_key, alert_id_or_key))
         return cur.rowcount > 0
+
+    def acknowledge_open(self, keys: list[str], now: Optional[datetime] = None) -> list[str]:
+        """Acknowledge whichever of these dedupe keys has an open alert; returns those
+        keys. Looks first, so the usual case (none open) takes no write lock."""
+        if not keys:
+            return []
+        marks = ", ".join("?" * len(keys))
+        open_keys = [row[0] for row in self.conn.execute(
+            f"SELECT dedupe_key FROM alert WHERE dedupe_key IN ({marks})"
+            " AND acknowledged_at IS NULL AND expired_at IS NULL", keys)]
+        if open_keys:
+            with transaction(self.conn):
+                self.conn.executemany(
+                    "UPDATE alert SET acknowledged_at = ? WHERE dedupe_key = ?"
+                    " AND acknowledged_at IS NULL AND expired_at IS NULL",
+                    [(utc_now(now), key) for key in open_keys])
+        return [key for key in keys if key in open_keys]
 
     def open_alerts(self) -> list[dict]:
         """Alerts neither acknowledged nor expired, most recent first."""

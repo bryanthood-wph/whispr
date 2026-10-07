@@ -623,6 +623,14 @@ class TestRuns(StateCase):
         with self.assertRaises(StateError):
             self.state.finish_run(dead, processed=1, eligible=1, backlog=0)
         self.assertTrue(self.state.finish_run(live, processed=1, eligible=1, backlog=0))
+        self.assertIsNotNone(self.state.alert(f"{KIND_RUN_FAILED}:ingest")["acknowledged_at"])  # recovered
+
+    def test_a_successful_run_closes_its_jobs_run_failed_alert_until_the_next_failure(self):
+        self.assertFalse(self.finish(processed=0, eligible=5, backlog=5)[1])
+        self.assertTrue(self.finish(processed=1, eligible=5, backlog=4)[1])
+        self.assertEqual(self.state.open_alerts(), [])
+        self.assertFalse(self.finish(processed=0, eligible=4, backlog=4)[1])     # a recurrence reopens it
+        self.assertEqual([(a["kind"], a["count"]) for a in self.state.open_alerts()], [(KIND_RUN_FAILED, 2)])
 
     def test_backlog_and_last_success(self):
         run, _ = self.finish(processed=2, eligible=7, backlog=5)
