@@ -31,6 +31,7 @@ The API path is deferred (README §3) and would sit behind this same `call` func
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import os
 import shutil
@@ -41,7 +42,7 @@ import time
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from pipeline.config import data_dir
 
@@ -196,25 +197,72 @@ def read_jsonl_counted(path: Path) -> tuple[list[dict], int]:
     line is skipped and counted, never fatal."""
     if not path.exists():
         return [], 0
-    rows, bad = [], 0
     with open(path, encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except ValueError:
-                row = None
-            if isinstance(row, dict):
-                rows.append(row)
-            else:
-                bad += 1
+        return _jsonl_rows(fh)
+
+
+def _jsonl_rows(lines: Iterable[str]) -> tuple[list[dict], int]:
+    rows, bad = [], 0
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            row = None
+        if isinstance(row, dict):
+            rows.append(row)
+        else:
+            bad += 1
     return rows, bad
 
 
 def read_jsonl(path: Path) -> list[dict]:
     """The readable rows of a JSONL `append_jsonl` wrote (see read_jsonl_counted)."""
     return read_jsonl_counted(path)[0]
+
+
+class _JsonlTail:
+    """One JSONL file's rows, kept between reads: each read parses only the whole lines
+    appended since the last (a last line still missing its newline waits for it). If the
+    last line read is no longer where it was (the file shrank or was replaced, as a
+    restore does), the file is read again from the top."""
+
+    def __init__(self, path: Path):
+        self.path, self.offset, self.mark, self.rows = path, 0, b"", []
+
+    def read(self) -> list[dict]:
+        try:
+            fh = open(self.path, "rb")
+        except FileNotFoundError:
+            self.offset, self.mark, self.rows = 0, b"", []
+            return self.rows
+        with fh:
+            if self.offset:
+                fh.seek(self.offset - len(self.mark))
+                if fh.read(len(self.mark)) != self.mark:
+                    self.offset, self.mark, self.rows = 0, b"", []
+            fh.seek(self.offset)
+            data = fh.read()
+        whole = data[:data.rfind(b"\n") + 1]
+        if whole:
+            # Decoded and split exactly as read_jsonl_counted's text-mode file is.
+            self.rows += _jsonl_rows(io.TextIOWrapper(io.BytesIO(whole), encoding="utf-8", errors="replace"))[0]
+            self.offset += len(whole)
+            self.mark = whole[whole.rfind(b"\n", 0, len(whole) - 1) + 1:]
+        return self.rows
+
+
+_tails: dict[Path, _JsonlTail] = {}
+
+
+def read_jsonl_appended(path: Path) -> list[dict]:
+    """read_jsonl for a file only ever appended to (the pipeline ledger), read again
+    many times by one process: after the first read, each parses only what was appended
+    since this process last read it. The list returned is shared: do not change it."""
+    with JSONL_LOCK:
+        tail = _tails.setdefault(Path(path), _JsonlTail(Path(path)))
+        return tail.read()
 
 
 def refused_env(cfg: dict) -> list[str]:

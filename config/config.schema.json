@@ -128,10 +128,11 @@
         "max_attempts": {"type": "integer", "minimum": 1},
         "max_budget_per_call_usd": {"$ref": "#/$defs/money"},
         "files": {
-          "type": "object", "additionalProperties": false, "required": ["notes", "log", "ledger", "cache", "lock", "daily_lock", "resolve_cache"],
+          "type": "object", "additionalProperties": false, "required": ["notes", "log", "ledger", "cache", "lock", "daily_lock", "resolve_cache", "hashes"],
           "properties": {"notes": {"$ref": "#/$defs/str"}, "log": {"$ref": "#/$defs/str"}, "ledger": {"$ref": "#/$defs/str"},
                          "cache": {"$ref": "#/$defs/str"}, "lock": {"$ref": "#/$defs/str"},
-                         "daily_lock": {"$ref": "#/$defs/str"}, "resolve_cache": {"$ref": "#/$defs/str"}}
+                         "daily_lock": {"$ref": "#/$defs/str"}, "resolve_cache": {"$ref": "#/$defs/str"},
+                         "hashes": {"$ref": "#/$defs/str"}}
         },
         "run": {
           "type": "object", "additionalProperties": false,

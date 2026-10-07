@@ -158,9 +158,10 @@ def load_schema(cfg: dict, key: str) -> dict:
         return json.load(fh)
 
 
-def data_dir(cfg: dict, *parts: str) -> Path:
-    """A folder under the per-user data dir, created on first use."""
+def data_dir(cfg: dict, *parts: str, create: bool = True) -> Path:
+    """A folder under the per-user data dir, created on first use (unless `create` is False)."""
     path = Path(cfg["paths"]["data_dir"]).joinpath(*parts)
-    path.mkdir(parents=True, exist_ok=True)
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
     return path
 

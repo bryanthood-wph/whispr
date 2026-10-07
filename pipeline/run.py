@@ -16,7 +16,8 @@ The `pipeline` scheduled task starts it at logon and every 15 minutes. A run:
    backfill`, which quotes their count and cost and queues nothing without --yes. A
    transcript with no episode is enqueued; one whose sha256 differs from its episode's
    (edited, re-transcribed, or fixed after quarantine) is requeued with fresh attempts.
-   An unchanged one costs a hash and nothing else.
+   An unchanged one costs a stat: its hash is re-read only when its size or mtime
+   changed (Hashes, pipeline.files.hashes).
 4. Works the due queue newest call first, one item per transcript: prepare -> extract (one
    model call, skipped for a stub) -> write (pipeline/write.py). A failed item is
    retried after pipeline.run.retry_backoff_min and quarantined at pipeline.max_attempts
@@ -44,6 +45,7 @@ whatever its queue state (troubleshooting).
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import time
 from collections import Counter
@@ -56,7 +58,10 @@ from kg.state import KIND_QUARANTINE, QUARANTINED, QUEUED, State, alert_key, ite
 from kg.store import Store
 from pipeline import calls, extract, models, prepare, write
 from pipeline.config import ConfigError, data_dir
+from pipeline.exits import EXIT_FAILED, EXIT_OK, EXIT_PARTIAL, EXIT_REFUSED, EXIT_USAGE   # re-exported
+from pipeline.exits import error_text as _error     # re-exported: the other commands use run._error
 from pipeline.jsonschema_lite import validate
+from whispr.fileio import atomic_write_text
 
 if os.name == "nt":
     import msvcrt
@@ -67,7 +72,6 @@ JOB = "pipeline"                # the kg.state job
 COMMAND = "run"                 # its `python -m pipeline` subcommand
 STAGE = "transcript"            # one queue item per transcript; its ref is the episode id
 
-EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_PARTIAL, EXIT_REFUSED = 0, 1, 2, 3, 4
 # Run outcomes, as logged.
 OK, PARTIAL, FAILED, LOCKED, REFUSED = "ok", "partial", "failed", "locked", "refused"
 # Item outcomes, as logged.
@@ -97,21 +101,24 @@ class _Systemic(Exception):
     args: (why the run stopped, the error)."""
 
 
-def files(cfg: dict, key: str) -> Path:
-    """A pipeline.files path under paths.data_dir, its folder created."""
-    path = data_dir(cfg) / cfg["pipeline"]["files"][key]
-    path.parent.mkdir(parents=True, exist_ok=True)
+def files(cfg: dict, key: str, *, create: bool = True) -> Path:
+    """A pipeline.files path under paths.data_dir, its folder created unless `create`
+    is False (a caller that only reads, such as a dry run)."""
+    path = data_dir(cfg, create=create) / cfg["pipeline"]["files"][key]
+    if create:
+        path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def default_ask(cfg: dict) -> Ask:
+def default_ask(cfg: dict, fixed: Optional[extract.Template] = None) -> Ask:
+    """`fixed`: the run's extract.Template, so its files are read and hashed once."""
     p = cfg["pipeline"]
     ledger, cache = files(cfg, "ledger"), files(cfg, "cache")
 
     def reserve(key: str, per_call: float) -> None:
         reserve_call(cfg, job=JOB, key=key, per_call=per_call)     # stop_reason checked the caps just before
     return lambda prep: extract.extract(prep, cfg, role=extract.ROLE, max_budget_usd=p["max_budget_per_call_usd"],
-                                        ledger=ledger, cache_dir=cache, before_call=reserve)
+                                        ledger=ledger, cache_dir=cache, before_call=reserve, fixed=fixed)
 
 
 # ---- the single-instance lock -------------------------------------------------------
@@ -199,11 +206,61 @@ def transcript_path(cfg: dict, ref: str) -> Path:
     return Path(cfg["paths"]["transcripts"]) / f"{ref}.md"
 
 
-def classify(store: Store, state: State, path: Path) -> tuple[str, Optional[dict]]:
+class Hashes:
+    """Transcripts' sha256s, kept in the pipeline.files.hashes file by file name with
+    the size and mtime each was taken at, so a file is re-read only when its size or
+    mtime changed. An entry whose mtime is not older than the file's last save is
+    re-read too: the transcript may have changed again within the same timestamp tick
+    (as git treats a "racy" index entry). A caller that writes nothing (a dry run,
+    backfill without --yes) reads the file and never calls save()."""
+
+    def __init__(self, path: Path):
+        self.path, self.changed = path, False
+        try:
+            self.saved_ns = path.stat().st_mtime_ns
+            self.entries = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):       # none yet, or unreadable: every file is hashed
+            self.saved_ns, self.entries = None, {}
+        if not isinstance(self.entries, dict):
+            self.entries = {}
+
+    def sha256(self, path: Path) -> str:
+        st = path.stat()                    # before the read: a change during it is caught next time
+        seen = {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
+        entry = self.entries.get(path.name)
+        if (isinstance(entry, dict) and self.saved_ns is not None and st.st_mtime_ns < self.saved_ns
+                and {k: entry.get(k) for k in seen} == seen and isinstance(entry.get("sha256"), str)):
+            return entry["sha256"]
+        self.entries[path.name] = {**seen, "sha256": prepare.file_sha256(path)}
+        self.changed = True
+        return self.entries[path.name]["sha256"]
+
+    def save(self) -> None:
+        """Write the file if a hash was taken since it was read."""
+        if self.changed:
+            atomic_write_text(self.path, json.dumps(self.entries, indent=1, sort_keys=True))
+            self.saved_ns, self.changed = self.path.stat().st_mtime_ns, False
+
+
+class Known:
+    """What discovery compares transcripts with, each read once: every episode, every
+    queue item of STAGE, and the transcripts' sha256s (`hashes`)."""
+
+    def __init__(self, store: Store, state: State, hashes: Hashes):
+        self.state, self.hashes = state, hashes
+        self.episodes, self.items = store.episodes(), state.by_ref(STAGE)
+
+
+def read_known(cfg: dict, store: Store, state: State, *, writes: bool) -> Known:
+    """Known for this database and pipeline.files.hashes; `writes` False: create nothing."""
+    return Known(store, state, Hashes(files(cfg, "hashes", create=writes)))
+
+
+def classify(known: Known, path: Path) -> tuple[str, Optional[dict]]:
     """(what discovery found, the transcript's queue item or None)."""
     ref = write.episode_id(path)
-    ep, item = store.episode(ref), state.find(STAGE, ref)
-    if ep is not None and ep["deleted_at"] is None and ep["sha256"] == prepare.file_sha256(path):
+    ep, item = known.episodes.get(ref), known.items.get(ref)
+    if ep is not None and ep["deleted_at"] is None and ep["sha256"] == known.hashes.sha256(path):
         return (PENDING if item and item["status"] == QUEUED else UNCHANGED), item
     if item is None:
         return NEW, None
@@ -223,16 +280,18 @@ def resolve_once(cfg: dict, value: str) -> Optional[Path]:
     return None
 
 
-def discover(store: Store, state: State, paths: list[Path], now: datetime) -> Counter:
-    """Enqueue each new transcript and requeue each changed one; what was found, counted."""
+def discover(known: Known, paths: list[Path], now: datetime) -> Counter:
+    """Enqueue each new transcript and requeue each changed one, then save the hashes
+    taken; what was found, counted."""
     found: Counter = Counter()
     for path in paths:
-        kind, item = classify(store, state, path)
+        kind, item = classify(known, path)
         if kind == NEW:
-            state.enqueue(STAGE, write.episode_id(path), now)
+            known.state.enqueue(STAGE, write.episode_id(path), now)
         elif kind == CHANGED:
-            state.requeue(item["id"], now)
+            known.state.requeue(item["id"], now)
         found[kind] += 1
+    known.hashes.save()
     return found
 
 
@@ -242,7 +301,7 @@ def spent_since(cfg: dict, since: datetime) -> float:
     before its row was written) that no call row with its request key has settled yet,
     at its full cap. So spend errs high, never low."""
     total, pending = 0.0, {}
-    for row in models.read_jsonl(files(cfg, "ledger")):
+    for row in models.read_jsonl_appended(files(cfg, "ledger")):
         ts = prepare.parse_iso(row.get("ts"))
         if ts is None or ts.tzinfo is None or ts < since:
             continue
@@ -288,10 +347,6 @@ def reserve_call(cfg: dict, *, job: str, key: str, per_call: float, now: Optiona
         models.append_jsonl(files(cfg, "ledger"), {"event": RESERVE, "ts": db.utc_now(now), "job": job,
                                                    "request_key": key, "reserve_usd": per_call})
     return None
-
-
-def _error(exc: BaseException) -> str:
-    return f"{type(exc).__name__}: {exc}"
 
 
 # ---- shared by every job's runner (run, daily, liveness) ----------------------------
@@ -373,21 +428,22 @@ def clear_model_alerts(state: State, job: str, *, now: datetime) -> list[str]:
 # ---- a run --------------------------------------------------------------------------
 
 class _Run:
-    def __init__(self, cfg: dict, conn, *, ask: Ask, now: datetime, clock: Callable[[], float],
+    def __init__(self, cfg: dict, conn, *, ask: Optional[Ask], now: datetime, clock: Callable[[], float],
                  log: Callable[[dict], None]):
-        self.cfg, self.ask, self.now, self.clock, self.log = cfg, ask, now, clock, log
+        fixed = extract.template(cfg)       # the prompt and schema files, read and hashed once per run
+        self.cfg, self.ask, self.now, self.clock, self.log = cfg, ask or default_ask(cfg, fixed), now, clock, log
         self.store, self.state = Store(conn, cfg), State(conn, cfg)
         self.started = clock()
         self.counts: Counter = Counter()
         self.spent = 0.0
         self.longest = 0.0          # the slowest item so far, the time budget's estimate of the next
         self.model_answered = False  # a model call returned in this run: a later call failure is the item's
-        self.version = extract.version(cfg)
-        self.schema = extract.load_schema(cfg)
+        self.version = extract.version(cfg, fixed=fixed)
+        self.schema = fixed.schema
         self.run_id = ""
 
     def discover(self, paths: list[Path]) -> None:
-        self.counts.update(discover(self.store, self.state, paths, self.now))
+        self.counts.update(discover(read_known(self.cfg, self.store, self.state, writes=True), paths, self.now))
 
     def stop_reason(self, started_items: int) -> Optional[str]:
         """Why the next item must not start, or None. Spend is checked as if the next
@@ -531,7 +587,7 @@ def _locked_run(cfg: dict, conn, *, once: Optional[Path], ask: Optional[Ask], no
         except ValueError as exc:
             return refuse(state, JOB, KIND_SETUP, f"{JOB} run refused: {exc}.", SETUP_FIX, now=now, log=log, out=out)
         clear_alerts(state, [alert_key(KIND_SETUP, JOB)], now=now)      # process_since is set now
-    r = _Run(cfg, conn, ask=ask or default_ask(cfg), now=now, clock=clock, log=log)
+    r = _Run(cfg, conn, ask=ask, now=now, clock=clock, log=log)
     r.run_id = state.begin_run(JOB, now)
     eligible, stop, error = 0, None, None
     try:
@@ -560,11 +616,11 @@ def _locked_run(cfg: dict, conn, *, once: Optional[Path], ask: Optional[Ask], no
 def plan(cfg: dict, conn, now: datetime, paths: list[Path]) -> list[dict]:
     """What a run would do with each transcript (action None: nothing), without a model
     call or a queue write."""
-    store, state = Store(conn, cfg), State(conn, cfg)
-    due = {i["ref"] for i in state.eligible(STAGE, now)}
+    k = read_known(cfg, Store(conn, cfg), State(conn, cfg), writes=False)
+    due = {i["ref"] for i in k.state.eligible(STAGE, now)}
     rows, started = [], 0
     for path in paths:
-        kind, item = classify(store, state, path)
+        kind, item = classify(k, path)
         row = {"ref": write.episode_id(path), "found": kind, "action": None, "call": False}
         if kind in (NEW, CHANGED) or (kind == PENDING and row["ref"] in due):
             if started >= cfg["pipeline"]["run"]["max_items"]:
@@ -613,8 +669,8 @@ def backfill(cfg: dict, *, since: Optional[date] = None, until: Optional[date] =
         until = process_since(cfg) - timedelta(days=1)
     paths = [p for p in transcripts(cfg) if in_window(p, since, until)]
     with contextlib.closing(db.connect(cfg) if yes else db.snapshot(cfg)) as conn:
-        store, state = Store(conn, cfg), State(conn, cfg)
-        todo = [p for p in paths if classify(store, state, p)[0] in (NEW, CHANGED)]
+        k = read_known(cfg, Store(conn, cfg), State(conn, cfg), writes=yes)
+        todo = [p for p in paths if classify(k, p)[0] in (NEW, CHANGED)]
         est, cap = cfg["pipeline"]["run"]["est_cost_per_call_usd"], cfg["pipeline"]["max_budget_per_call_usd"]
         out(f"backfill {since or 'earliest'}..{until or 'latest'}: {len(todo)} transcript(s) not yet processed, "
             f"about ${len(todo) * est:.2f} at ${est:.2f} per call (pipeline.run.est_cost_per_call_usd), "
@@ -622,7 +678,7 @@ def backfill(cfg: dict, *, since: Optional[date] = None, until: Optional[date] =
         if not yes:
             out("nothing queued: add --yes to queue them")
             return EXIT_OK
-        discover(store, state, todo, now or datetime.now(timezone.utc))
+        discover(k, todo, now or datetime.now(timezone.utc))
     out(f"queued {len(todo)}; the scheduled {JOB} run works them newest first, within its spend caps")
     return EXIT_OK
 

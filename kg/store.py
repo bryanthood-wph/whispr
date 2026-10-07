@@ -276,6 +276,10 @@ class Store:
     def episode(self, episode_id: str) -> Optional[dict]:
         return fetch_one(self.conn, "SELECT * FROM episode WHERE id = ?", (episode_id,))
 
+    def episodes(self) -> dict[str, dict]:
+        """Every episode by id, tombstoned ones included, in one read (episode, for many ids at once)."""
+        return {ep["id"]: ep for ep in fetch_all(self.conn, "SELECT * FROM episode")}
+
     def _live_episode(self, episode_id: str) -> dict:
         ep = self.episode(episode_id)
         if ep is None:
@@ -807,10 +811,12 @@ class Store:
         return [r[0] for r in self.conn.execute(
             "SELECT entity_id FROM task_entity WHERE task_id = ? ORDER BY entity_id", (task_id_,))]
 
-    def needs_confirm(self, task: dict) -> bool:
+    def needs_confirm(self, task: dict, first_stage: Optional[str] = None) -> bool:
         """Whether a task is shown as "confirm?" (D.5): still at the funnel's first stage
-        with an owner_basis in kg.tasks.confirm_owner_basis."""
-        return task["status"] == self.funnel_stages()[0] and task["owner_basis"] in self.task_cfg["confirm_owner_basis"]
+        with an owner_basis in kg.tasks.confirm_owner_basis. `first_stage` is
+        funnel_stages()[0] when the caller already read it (one read for many tasks)."""
+        first = self.funnel_stages()[0] if first_stage is None else first_stage
+        return task["status"] == first and task["owner_basis"] in self.task_cfg["confirm_owner_basis"]
 
     def task_record(self, task_id_: str) -> Optional[dict]:
         """A task for review: its contract, whether it needs "confirm?", the meeting it
@@ -907,9 +913,9 @@ class Store:
                                   (ent["id"], type_, value, stamp))
         return self.entity_scope(ent["id"])
 
-    def _review_card(self, row: dict) -> dict:
+    def _review_card(self, row: dict, first_stage: Optional[str] = None) -> dict:
         task = self._contract(row)
-        return {"task": task, "confirm": self.needs_confirm(task), "meeting_start": row["meeting_start"],
+        return {"task": task, "confirm": self.needs_confirm(task, first_stage), "meeting_start": row["meeting_start"],
                 "transcript_path": row["transcript_path"], "created_at": row["created_at"],
                 "retracted_at": row["retracted_at"], "retract_reason": row["retract_reason"]}
 
@@ -935,8 +941,9 @@ class Store:
             f"SELECT t.*, ep.meeting_start, ep.transcript_path{sql}"
             f" ORDER BY CASE WHEN {confirm} THEN 0 ELSE 1 END, COALESCE(ep.meeting_start, t.created_at) DESC,"
             " t.source_start, t.id LIMIT ? OFFSET ?", (*params, *confirm_params, limit, offset))
+        first = self.funnel_stages()[0] if rows else None       # read once for every card
         return {"status": status, "total": total, "offset": offset, "truncated": offset + len(rows) < total,
-                "tasks": [self._review_card(r) for r in rows]}
+                "tasks": [self._review_card(r, first) for r in rows]}
 
     # ---- the funnel (D.5, lesson L20) -------------------------------------------------
 

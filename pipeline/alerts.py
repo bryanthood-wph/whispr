@@ -28,9 +28,8 @@ from typing import Callable, Mapping, Optional
 
 from kg import db
 from kg.state import State
-from pipeline import run as pipeline_run
 from pipeline.config import load_config
-from pipeline.run import EXIT_FAILED, EXIT_OK, EXIT_USAGE
+from pipeline.exits import EXIT_FAILED, EXIT_OK, EXIT_USAGE, error_text
 
 PRODUCT = "whispr"
 LIST_COMMAND = "python -m pipeline alerts"
@@ -51,7 +50,7 @@ def list_alerts(cfg: dict, *, out: Callable[[str], None] = print) -> int:
     try:
         alerts = open_alerts(cfg)
     except Exception as exc:
-        out(f"alerts could not be read: {pipeline_run._error(exc)}")
+        out(f"alerts could not be read: {error_text(exc)}")
         return EXIT_FAILED
     if not alerts:
         out("no open alerts")
@@ -100,14 +99,14 @@ def session_start_text(overlay_path: Optional[Path] = None, *, cfg: Optional[dic
         try:
             box["text"] = summary(cfg, read(cfg))
         except Exception as exc:
-            box["error"] = pipeline_run._error(exc)
+            box["error"] = error_text(exc)
 
     worker = threading.Thread(target=work, name="whispr-session-start", daemon=True)
     try:
         worker.start()
         worker.join(s["timeout_s"])
     except Exception as exc:
-        return f"{PRODUCT}: alerts unavailable ({_clip(pipeline_run._error(exc), s['message_chars'])})."
+        return f"{PRODUCT}: alerts unavailable ({_clip(error_text(exc), s['message_chars'])})."
     if worker.is_alive():
         return f"{PRODUCT}: alerts not read within {s['timeout_s']} s; run `{DOCTOR_COMMAND}`."
     if "error" in box:

@@ -156,6 +156,10 @@ class State:
         """The item for (stage, ref), or None if it was never enqueued."""
         return fetch_one(self.conn, "SELECT * FROM item WHERE stage = ? AND ref = ?", (stage, ref))
 
+    def by_ref(self, stage: str) -> dict[str, dict]:
+        """Every item of a stage by ref, in one read (find, for many refs at once)."""
+        return {item["ref"]: item for item in fetch_all(self.conn, "SELECT * FROM item WHERE stage = ?", (stage,))}
+
     def _item(self, item_id: str) -> dict:
         item = self.item(item_id)
         if item is None:

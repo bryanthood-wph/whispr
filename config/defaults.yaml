@@ -151,6 +151,9 @@ pipeline:
     lock: pipeline.lock
     daily_lock: daily.lock      # the same kind of lock for `python -m pipeline daily`; restore takes both
     resolve_cache: cache/resolve   # the daily job's "same entity?" decisions by request key (as cache is for extract)
+    # Each in-window transcript's sha256 with the size and mtime it was taken at, so a run
+    # re-reads only a transcript whose size or mtime changed (pipeline/run.py Hashes).
+    hashes: cache/transcript-hashes.json
   run:
     # No new item starts once the elapsed time plus the longest item so far would pass
     # this; the run exits PARTIAL and the rest stay queued. The task's time limit must

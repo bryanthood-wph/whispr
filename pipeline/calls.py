@@ -68,10 +68,11 @@ def config_file_sha(relative: str) -> str:
 
 
 def request_key(cfg: dict, role: str, prompt: str, schema: dict, system_prompt: Optional[str],
-                replicate: int = 0) -> str:
+                replicate: int = 0, *, schema_sha256: Optional[str] = None) -> str:
+    """`schema_sha256`: schema_sha(schema), when the caller already has it."""
     spec = cfg["models"][role]
     request = {"base_args": models.cli_args(cfg), "model": spec["model"], "effort": spec["effort"],
-               "system_prompt": system_prompt, "schema": schema_sha(schema), "prompt": prompt}
+               "system_prompt": system_prompt, "schema": schema_sha256 or schema_sha(schema), "prompt": prompt}
     if replicate:
         request["replicate"] = replicate
     if spec["thinking_tokens"] is not None:     # keyed only when set: a null budget keeps its key
@@ -114,10 +115,11 @@ def _one_call_per_key(key: str):
 def cached_call(cfg: dict, role: str, prompt: str, *, schema: dict, max_budget_usd: float, ledger: Path,
                 cache_dir: Optional[Path] = None, system_prompt: Optional[str] = None,
                 before_call: Optional[Callable[[str, float], None]] = None,
-                provenance: Optional[dict] = None, replicate: int = 0) -> Cached:
+                provenance: Optional[dict] = None, replicate: int = 0,
+                schema_sha256: Optional[str] = None) -> Cached:
     """One structured call, served from the cache when possible. Raises OutputError for
     schema-invalid output; models.AuthError / ModelCallError propagate."""
-    key = request_key(cfg, role, prompt, schema, system_prompt, replicate)
+    key = request_key(cfg, role, prompt, schema, system_prompt, replicate, schema_sha256=schema_sha256)
     with _one_call_per_key(key):
         return _cached_call(cfg, role, prompt, key, schema=schema, max_budget_usd=max_budget_usd, ledger=ledger,
                             cache_dir=cache_dir, system_prompt=system_prompt, before_call=before_call,
