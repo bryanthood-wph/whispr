@@ -78,6 +78,7 @@ Every job raises its alerts into one table (`kg.state`, deduplicated by key `<ki
 ## The write stage (`write.py`)
 
 - One episode per transcript, id = the file stem. A changed transcript rewrites the same episode, and a task whose quote is unchanged keeps its id and its lifecycle (L19). Writes are idempotent: the same document twice adds no rows.
+- A summary or stub write is the episode's whole extraction. Its facts, edges and tasks that the write did not produce (an earlier extraction's, before the transcript changed) are retracted in the same transaction (`kg.store.Store.retract_unwritten`, migration 0008), with the transcript's sha256 as the reason. A retracted row is kept but never valid; it is revived if a later write produces it again. A retracted task keeps its status and leaves the review. A quarantine retracts nothing. The count is `Written.retracted`.
 - Facts and edges are `EXTRACTED` only when their quote is verbatim in the prepared transcript the model saw, else `AMBIGUOUS`. An edge whose endpoint is no known entity, or whose relation doesn't allow the endpoints' types, is skipped and counted (`edges_skipped` in the log).
 - Tasks are stored `captured`. A my-task is "confirm?" (stored as owner_basis `unclear`) when the model says ownership is unclear, when its quote matches a Me line removed as echo, or when it has no quote. A task's id is sha1(episode + quote) while its quote is unique among the document's tasks; tasks sharing a quote (two dues in one sentence, a my-task and someone else's) each add their normalized action to it (`kg.store.task_id`), so each keeps its own row and owner. Confidence comes from `pipeline.write.task_confidence` (verbatim quote or not).
 - Every string of the extract document is checked for mojibake (`prepare.mojibake_markers`, L9) before the graph transaction, so a bad document commits nothing.
@@ -145,7 +146,8 @@ Rules the generator enforces:
 
 ## Known gaps
 
-- A changed transcript's facts and edges that the new extract doesn't reproduce stay active next to the new ones; C.5 maintenance (the daily job) owns superseding them.
+- Retraction matches items by their existing ids, so a corrected task quote (or one that stops being shared with another task) retracts the reviewed task and captures a fresh one; your confirmation and brief stay on the retracted row. There is no review step yet to approve or undo a retraction.
+- `funnel` and the task status counts still count retracted tasks (as they count a tombstoned episode's), so they can exceed what the review lists.
 - Split recordings are not merged (`prepare.group_episodes`, L13): each transcript is its own episode, because a 15-minute poll can process the first part before the second exists.
 - The alias table (`prepare.load_aliases`) is not loaded yet: no file exists until C.5 entity resolution grows one.
 - The recorder does not write `mic_coverage` yet (D.6), so the low-mic warning is dormant until it does.

@@ -148,6 +148,10 @@ Deterministic and versioned, and it gets its own checks (Appendix B.8):
     added only if the eval winner alone misses the 90% precision bar.
 - **Lifecycle state lives only in the database**, never copied into files
   (lesson L19).
+- **A re-written transcript retracts the tasks it no longer produces.** The
+  task keeps its status, leaves the review, and records the transcript's
+  sha256 as the reason; it returns if a later write produces it again.
+  Approving or undoing a retraction in review is not built yet.
 - **Funnel metric:** captured → confirmed → ready → done. It is reported
   weekly. Today 0 of 1,262 vault items ever reached the task system
   (lesson L20).

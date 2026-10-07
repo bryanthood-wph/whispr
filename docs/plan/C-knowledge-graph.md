@@ -133,7 +133,7 @@ the report says **"not run"**, never "lost".
 | Must do | Minimal form |
 |---|---|
 | Provenance root | one **episode** per transcript (path, sha256, meeting time, extractor version). The graph is rebuildable from episodes. |
-| Facts change over time | each fact and edge has `valid_from` / `valid_to` plus `superseded_by`. Supersede, never delete. |
+| Facts change over time | each fact and edge has `valid_from` / `valid_to` plus `superseded_by`. Supersede, never delete. An item a re-written transcript no longer supports is retracted (`retracted_at` + `retract_reason`, no replacement), kept and never valid. |
 | Trustworthy edges | `EXTRACTED` only if the verbatim quote passes a substring check; otherwise `AMBIGUOUS` |
 | Typed, versioned ontology | types live in `config/ontology.yaml` and change by PR, with a version bump |
 | People resolved | people keyed by email from Outlook attendees; aliases table; merges by typed decision with an undo record |
@@ -151,10 +151,11 @@ episode   (id, transcript_path, sha256, meeting_start, call_type, extractor_vers
 entity    (id, type, canonical_name, canonical_key, created_at)      -- people keyed by email
 alias     (entity_id, alias, source)
 fact      (id, type, text, quote, episode_id, subject_entity_id, provenance, confidence,
-           valid_from, valid_to, superseded_by, recorded_at)
+           valid_from, valid_to, superseded_by, retracted_at, recorded_at)
 edge      (id, src_entity_id, dst_entity_id, relation, episode_id, provenance, confidence,
-           valid_from, valid_to, superseded_by, recorded_at)
-task      (Appendix D.5 contract + entity links)
+           valid_from, valid_to, superseded_by, retracted_at, recorded_at)
+task      (Appendix D.5 contract + entity links + retracted_at)  -- retracted_at: no longer in
+                                                                 -- the episode's latest write
 maintenance_log (run_id, check, found, repaired, escalated, details)
 ```
 
