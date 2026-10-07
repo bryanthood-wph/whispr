@@ -135,6 +135,10 @@ def cmd_resolve(cfg: dict, args) -> int:
 
 
 def cmd_graph_first(cfg: dict, args) -> int:
+    # Model text and questions are not ASCII; a console or log in another code page must
+    # not crash the run.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if args.rescore:
         return graph_first.rescore(cfg, args.rescore)
     return graph_first.run(cfg, dry_run=args.dry_run)

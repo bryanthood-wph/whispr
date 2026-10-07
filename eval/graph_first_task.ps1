@@ -2,7 +2,8 @@
 # sessions. Runs only under Task Scheduler, so the claude CLI gets a clean environment
 # (no CLAUDECODE / ANTHROPIC_BASE_URL from a parent Claude session). The task is
 # registered by hand, once, with the runbook in docs/plan/task-intake-and-worker.md §7
-# (P2b), and started with Start-ScheduledTask whispr-eval-graph-first.
+# (P2b), run hidden by pwsh -WindowStyle Hidden, and started with
+# Start-ScheduledTask whispr-eval-graph-first.
 #
 # -Repo is the checkout to run (the rebuild worktree, with P2b merged: the live plugin,
 # CLAUDE_CODE_PLUGIN_DIRS in your settings, and the plugin's whispr_root option all name
@@ -21,6 +22,7 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Log) | Out-Null
 Add-Type -Namespace Whispr -Name Power -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint esFlags);'
 [void][Whispr.Power]::SetThreadExecutionState([uint32]'0x80000001')   # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
 Set-Location -LiteralPath $Repo
+$env:PYTHONUTF8 = '1'                 # model text is not ASCII: never let an encoding stop the run
 "=== start $(Get-Date -Format o) HEAD $(git rev-parse --short HEAD)" | Out-File -LiteralPath $Log -Append -Encoding utf8
 & $Python -m eval graph-first 2>&1 | Out-File -LiteralPath $Log -Append -Encoding utf8
 $code = $LASTEXITCODE

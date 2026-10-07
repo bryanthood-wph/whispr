@@ -13,10 +13,16 @@ tools are read-only: --tools builtin_tools, --allowedTools allowed_tools,
 outside the allowlist runs.
 
 A session passes when its first knowledge lookup (the first graph tool, other knowledge
-tool, knowledge skill or file read over notes or transcripts) is a graph tool, and its
-answer quotes text that a graph tool returned in that session (`score_session`, a pure
-function). The scored arm passes when at least pass_min of its sessions pass; the other
-arms are baselines.
+tool, knowledge skill, or any Read/Grep/Glob) is a graph tool, and its answer quotes text
+that a graph tool returned in that session (`score_session`, a pure function). The scored
+arm passes when at least pass_min of its sessions pass; the other arms are baselines.
+Sessions run question by question, each arm in turn, so a spend stop never leaves one
+arm with fewer questions than the other by more than one.
+
+Fail fast: each session's init event must show the graph reachable (`reach_problems`),
+or the run stops after that session. Before any session, the run refuses unless your
+live Claude Code settings load this checkout's plugin and whispr folder
+(`live_problems`), so the hook checked is the hook the sessions load.
 
 Writes, under <data_dir>/eval/graph-first/: ledger.jsonl (models.py's row for every
 session; spend is checked against cap_usd before each one) and results/<run id>/ with
@@ -58,9 +64,16 @@ HOOK_EVENT = {"hook_event_name": "SessionStart", "source": "startup"}
 EXIT_PASS, EXIT_FAIL, EXIT_REFUSED = 0, 1, 2
 
 GRAPH, OTHER = "graph", "other"                     # knowledge-lookup kinds
-_ELLIPSIS = re.compile(r"\.\.\.|…|\[\.\.\.\]")
+# A gap inside a quoted span: an ellipsis or a bracketed insertion ("[the team]").
+_GAP = re.compile(r"\.\.\.|…|\[[^\]]*\]")
 # Quoted spans in an answer: straight or curly double quotes, and blockquote lines.
 _QUOTED = (re.compile(r'"([^"\n]+)"'), re.compile(r"“([^”]+)”"), re.compile(r"^\s*>\s?(.+)$", re.MULTILINE))
+_FOLD = str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"'})
+_JSON_ESCAPE = re.compile(r'\\(u[0-9a-fA-F]{4}|["\\/bfnrt])')
+_ESCAPED = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+# A Read result's line numbers ("    12\t" or "    12→"), and an absolute path in a result.
+_LINE_NO = re.compile(r"(?m)^\s*\d+(?:\t|→)")
+_PATH = re.compile(r"[A-Za-z]:[\\/][^\s\"'<>|*?]+|/(?:[^\s\"'<>|*?/]+/)+[^\s\"'<>|*?]+")
 
 
 # --- config ------------------------------------------------------------------------
@@ -93,19 +106,16 @@ class Rules:
     skill_input: str
     skills: tuple[str, ...]
     file_tools: tuple[str, ...]
-    file_inputs: tuple[str, ...]
-    file_patterns: tuple[str, ...]
+    read_tool: str
+    read_input: str
     quote_min_words: int
 
 
 def rules(cfg: dict) -> Rules:
     g, k = settings(cfg), settings(cfg)["knowledge"]
-    patterns = list(k["file_patterns"])
-    if cfg["paths"]["transcripts"]:                  # the transcripts folder always counts
-        patterns.append("(?i)" + re.escape(str(Path(cfg["paths"]["transcripts"]))))
     return Rules(tuple(k["graph_tools"]), tuple(k["other_tools"]), k["skill_tool"], k["skill_input"],
-                 tuple(s.casefold() for s in k["skills"]), tuple(k["file_tools"]), tuple(k["file_inputs"]),
-                 tuple(patterns), g["quote_min_words"])
+                 tuple(s.casefold() for s in k["skills"]), tuple(k["file_tools"]), k["read_tool"], k["read_input"],
+                 g["quote_min_words"])
 
 
 # --- scoring (pure) -------------------------------------------------------------------
@@ -170,13 +180,22 @@ def lookup_kind(call: ToolCall, r: Rules) -> Optional[str]:
         skill = str(call.input.get(r.skill_input) or "").casefold()
         return OTHER if skill.rsplit(":", 1)[-1] in r.skills else None
     if call.name in r.file_tools:
-        values = [str(call.input[k]) for k in r.file_inputs if call.input.get(k)]
-        return OTHER if any(re.search(p, v) for p in r.file_patterns for v in values) else None
+        return OTHER
     return None
 
 
+def _unescape(text: str) -> str:
+    """JSON string escapes decoded, for a result that is not valid JSON (cut short, say)."""
+    def one(m: re.Match) -> str:
+        e = m.group(1)
+        return chr(int(e[1:], 16)) if e[0] == "u" else _ESCAPED.get(e, e)
+    return _JSON_ESCAPE.sub(one, text)
+
+
 def _words(text: str) -> str:
-    return " ".join(re.findall(r"\w+", text.casefold().replace("’", "'").replace("‘", "'")))
+    """Words only: curly and straight quotes folded, case and punctuation ignored, and
+    whitespace collapsed."""
+    return " ".join(re.findall(r"\w+", text.translate(_FOLD).casefold()))
 
 
 def _strings(value: Any) -> Iterable[str]:
@@ -191,11 +210,21 @@ def _strings(value: Any) -> Iterable[str]:
 
 
 def _result_strings(text: str) -> list[str]:
-    """A tool result's strings: every string value of a JSON result, else the text."""
+    """A tool result's strings: every string value of a JSON result, else the text with
+    its JSON escapes decoded and any Read line numbers dropped."""
     try:
         return list(_strings(json.loads(text)))
     except ValueError:
-        return [text]
+        return [_LINE_NO.sub("", _unescape(text))]
+
+
+def _path_key(path: str) -> str:
+    return os.path.normcase(os.path.normpath(path.rstrip(".,;:)]}'\"")))
+
+
+def saved_paths(texts: Iterable[str]) -> set[str]:
+    """Absolute paths named in graph results: where the CLI saved a result too large to return."""
+    return {_path_key(m.group(0)) for t in texts for s in (t, _unescape(t)) for m in _PATH.finditer(s)}
 
 
 def quoted_spans(answer: str) -> list[str]:
@@ -210,7 +239,7 @@ def cited_quote(answer: str, graph_texts: list[str], min_words: int) -> Optional
     shorter than that are ignored; a span with no such fragment proves nothing."""
     hay = " " + " | ".join(_words(s) for t in graph_texts for s in _result_strings(t)) + " "
     for span in quoted_spans(answer):
-        parts = [_words(p) for p in _ELLIPSIS.split(span)]
+        parts = [_words(p) for p in _GAP.split(span.translate(_FOLD))]
         parts = [p for p in parts if len(p.split()) >= min_words]
         if parts and all(f" {p} " in hay for p in parts):
             return span
@@ -224,6 +253,9 @@ def score_session(events: Iterable[dict], r: Rules) -> dict:
     lookups = [(c, kind) for c in s.calls if (kind := lookup_kind(c, r))]
     graph_ids = {c.id for c, kind in lookups if kind == GRAPH}
     graph_texts = [t for i in graph_ids for t in s.results.get(i, [])]
+    saved = saved_paths(graph_texts)                 # a large graph result, read back from its file
+    graph_texts += [t for c in s.calls if c.name == r.read_tool and c.id not in graph_ids
+                    and _path_key(str(c.input.get(r.read_input) or "")) in saved for t in s.results.get(c.id, [])]
     first = lookups[0] if lookups else None
     quote = cited_quote(s.answer, graph_texts, r.quote_min_words)
     first_is_graph = first is not None and first[1] == GRAPH
@@ -232,6 +264,47 @@ def score_session(events: Iterable[dict], r: Rules) -> dict:
             "knowledge_tools": [c.name for c, _ in lookups], "tool_calls": len(s.calls),
             "answer_chars": len(s.answer), "is_error": bool(s.result.get("is_error")) or not s.result,
             "permission_denials": len(s.result.get("permission_denials") or [])}
+
+
+def init_event(events: Iterable[dict]) -> dict:
+    return next((e for e in events if isinstance(e, dict) and e.get("type") == "system"
+                 and e.get("subtype") == "init"), {})
+
+
+def reach_problems(events: Iterable[dict], reach: dict, plugin: Path) -> list[str]:
+    """Why a session's init event shows the graph unreachable ([] when it is reachable):
+    no graph server connected, or (when the event lists plugins) the plugin missing or
+    loaded from another folder."""
+    init = init_event(events)
+    if not init:
+        return ["the session reported no init event"]
+    servers = {str(m.get("name")): m.get("status") for m in init.get("mcp_servers") or [] if isinstance(m, dict)}
+    out = []
+    if not any(servers.get(name) == reach["connected"] for name in reach["graph_servers"]):
+        seen = {n: servers[n] for n in reach["graph_servers"] if n in servers}
+        out.append(f"no graph server connected ({seen or 'none of ' + str(reach['graph_servers']) + ' listed'})")
+    plugins = init.get("plugins")
+    if isinstance(plugins, list):
+        mine = [p for p in plugins if isinstance(p, dict) and p.get("name") == reach["plugin_name"]]
+        if not mine:
+            out.append(f"plugin {reach['plugin_name']!r} not loaded")
+        elif mine[0].get("path") and _path_key(str(mine[0]["path"])) != _path_key(str(plugin)):
+            out.append(f"plugin {reach['plugin_name']!r} loaded from {mine[0]['path']}, not {plugin}")
+    return out
+
+
+def note_in(note: str, text: str) -> bool:
+    """Whether `text` carries the graph-first note."""
+    return note.strip() in text
+
+
+def note_in_stream(events: Iterable[dict], note: str) -> Optional[bool]:
+    """Whether hook output in the stream carries the note's first line; None when the
+    stream shows no hook output at all (the CLI need not emit it)."""
+    first = note.strip().splitlines()[0]
+    hooks = [json.dumps(e, ensure_ascii=False) for e in events if isinstance(e, dict) and e.get("type") == "system"
+             and "hook" in str(e.get("subtype") or "").casefold()]
+    return any(first in h for h in hooks) if hooks else None
 
 
 def summarize(rows: list[dict], arms: Iterable[str], scored_arm: str, pass_min: int, n_questions: int) -> dict:
@@ -244,7 +317,9 @@ def summarize(rows: list[dict], arms: Iterable[str], scored_arm: str, pass_min: 
                     "meets_bar": passed >= pass_min, "scored": arm == scored_arm,
                     "first_is_graph": sum(1 for r in mine if r["first_is_graph"]),
                     "graph_used": sum(1 for r in mine if r["graph_used"]),
-                    "cited": sum(1 for r in mine if r["cited_quote"] is not None)}
+                    "cited": sum(1 for r in mine if r["cited_quote"] is not None),
+                    "note_in_stream": {str(v): sum(1 for r in mine if r.get("note_in_stream") is v)
+                                       for v in (True, False, None)}}
     return out
 
 
@@ -296,6 +371,34 @@ def estimate(cfg: dict, rows: list[dict]) -> tuple[float, str]:
                                 f"{ledger_path(cfg)} yet)")
 
 
+def live_settings_path(cfg: dict) -> Path:
+    named = settings(cfg)["live_settings"]
+    return Path(named) if named else Path.home() / ".claude" / "settings.json"
+
+
+def live_problems(cfg: dict) -> list[str]:
+    """Why your live Claude Code settings would not load this checkout ([] when they
+    do): their `env` names another plugin folder, or the plugin's whispr folder option
+    (else the folder above the plugin) is not this checkout. Read-only."""
+    g, path = settings(cfg), live_settings_path(cfg)
+    try:
+        live = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError) as exc:
+        return [f"the live settings {path} do not read ({exc})"]
+    env = live.get("env") if isinstance(live.get("env"), dict) else {}
+    options = (((live.get("pluginConfigs") or {}).get(g["reach"]["plugin_name"]) or {}).get("options") or {})
+    out = []
+    dirs = [d for d in str(env.get(g["plugin_dirs_env"]) or "").split(os.pathsep) if d.strip()]
+    if dirs and _path_key(str(plugin_dir(cfg))) not in {_path_key(d) for d in dirs}:
+        out.append(f"your settings load the plugin from {os.pathsep.join(dirs)} ({g['plugin_dirs_env']}),"
+                   f" not {plugin_dir(cfg)}: run this from that checkout")
+    root = options.get(g["root_option"]) or str(plugin_dir(cfg).parent)
+    if _path_key(str(root)) != _path_key(str(preflight.REPO)):
+        out.append(f"the plugin's {g['root_option']} is {root}, not this checkout {preflight.REPO}:"
+                   f" the hook and servers would run that code")
+    return out
+
+
 def hook_context(cfg: dict, note_on: bool, *, python: str = sys.executable) -> Optional[str]:
     """What the plugin's SessionStart hook gives Claude in an arm (its additionalContext,
     "" for nothing), run as Claude Code runs it, with no console window (models.NO_WINDOW,
@@ -305,7 +408,8 @@ def hook_context(cfg: dict, note_on: bool, *, python: str = sys.executable) -> O
     env.update(session_env(cfg, note_on))
     try:
         proc = subprocess.run([python, "-s", str(plugin_dir(cfg) / HOOK)], input=json.dumps(HOOK_EVENT),
-                              capture_output=True, text=True, encoding="utf-8", env=env, timeout=60,
+                              capture_output=True, text=True, encoding="utf-8", env=env,
+                              timeout=settings(cfg)["hook_timeout_s"],
                               creationflags=models.NO_WINDOW)
         if proc.returncode != 0:
             return None
@@ -317,8 +421,8 @@ def hook_context(cfg: dict, note_on: bool, *, python: str = sys.executable) -> O
 def refusals(cfg: dict, qs: list[Question], contexts: Mapping[str, Optional[str]]) -> list[str]:
     """Reasons a real run would not start: a bar it cannot meet, an unknown scored arm,
     or a hook that does not give each arm what it should (the manipulation check)."""
-    g, note = settings(cfg), cfg["graph_first_note"]["text"].strip()
-    out = []
+    g, note = settings(cfg), cfg["graph_first_note"]["text"]
+    out = live_problems(cfg)
     if g["scored_arm"] not in g["arms"]:
         out.append(f"eval.graph_first.scored_arm {g['scored_arm']!r} is not one of the arms {list(g['arms'])}")
     if g["pass_min"] > len(qs):
@@ -329,7 +433,7 @@ def refusals(cfg: dict, qs: list[Question], contexts: Mapping[str, Optional[str]
         ctx = contexts.get(arm)
         if ctx is None:
             out.append(f"arm {arm}: the plugin's SessionStart hook did not run")
-        elif (note in ctx) != on:
+        elif note_in(note, ctx) != on:
             out.append(f"arm {arm}: the hook's context {'lacks' if on else 'has'} the graph-first note "
                        f"(is {plugin_dir(cfg)} the plugin with P2b merged?)")
     return out
@@ -343,11 +447,20 @@ def _now() -> str:
 
 def spend(cfg: dict, key: str, *, run: bool = False) -> float:
     """Ledger spend of one session (its request key), or with `run` of every session of
-    the run whose id `key` is."""
+    the run whose id `key` is. models.py books a session with no result (timed out,
+    killed) at its cap."""
     def mine(k: str) -> bool:
         return k.startswith(key + ":") if run else k == key
     return sum(float(r.get("cost_usd") or 0.0) for r in models.read_jsonl(ledger_path(cfg))
                if mine(str(r.get("request_key") or "")))
+
+
+def run_spend(cfg: dict, run_id: str, started: Iterable[str]) -> float:
+    """The run's spend: its ledger rows, plus each started session with no row yet at
+    its cap (so a session whose row was never written still counts)."""
+    booked = {str(r.get("request_key")) for r in models.read_jsonl(ledger_path(cfg))}
+    missing = sum(1 for key in started if key not in booked)
+    return spend(cfg, run_id, run=True) + missing * settings(cfg)["max_budget_per_session_usd"]
 
 
 def print_plan(cfg: dict, qs: list[Question], contexts: Mapping[str, Optional[str]],
@@ -365,16 +478,22 @@ def print_plan(cfg: dict, qs: list[Question], contexts: Mapping[str, Optional[st
     switch = cfg["graph_first_note"]["switch_env"]
     for arm, on in g["arms"].items():
         ctx = contexts.get(arm)
-        seen = "hook did not run" if ctx is None else (
-            "note present" if cfg["graph_first_note"]["text"].strip() in ctx else "no note")
+        seen = ("hook did not run" if ctx is None else
+                "note present" if note_in(cfg["graph_first_note"]["text"], ctx) else "no note")
         out(f"  arm {arm}: note {'on' if on else 'off'} ({switch}={session_env(cfg, on)[switch]}); hook check: {seen}")
+    out(f"  live settings: {live_settings_path(cfg)}"
+        f" ({'; '.join(live_problems(cfg)) or 'they load this checkout'})")
     out(f"  bar: arm {g['scored_arm']} passes with at least {g['pass_min']} of {len(qs)} sessions passing")
     out(f"  estimate: ${per:.2f} per session x {n} = ${per * n:.2f} ({basis})")
     out(f"  worst case: ${g['max_budget_per_session_usd'] * n:.2f} ({n} x the per-session cap);"
-        f" the run stops before a session that could pass ${g['cap_usd']:.2f}")
-    for arm in g["arms"]:
-        for q in qs:
-            out(f"    {arm:7} {q.id}  {q.text}")
+        f" the run stops before a session whose cap could take it past ${g['cap_usd']:.2f}")
+    for q, arm, _ in sessions(cfg, qs):
+        out(f"    {q.id} {arm:7} {q.text}")
+
+
+def sessions(cfg: dict, qs: list[Question]) -> list[tuple[Question, str, bool]]:
+    """(question, arm, note on) in run order: question by question, each arm in turn."""
+    return [(q, arm, on) for q in qs for arm, on in settings(cfg)["arms"].items()]
 
 
 def _write_raw(path: Path) -> Callable[[dict], None]:
@@ -385,10 +504,14 @@ def _write_raw(path: Path) -> Callable[[dict], None]:
     return write
 
 
+def session_key(run_id: str, arm: str, q: Question) -> str:
+    return f"{run_id}:{arm}:{q.id}"
+
+
 def _session(cfg: dict, run_id: str, arm: str, on: bool, q: Question, raw: Path, r: Rules,
              call: Callable[..., models.CallResult]) -> dict:
     g = settings(cfg)
-    key = f"{run_id}:{arm}:{q.id}"
+    key = session_key(run_id, arm, q)
     error = None
     try:
         call(cfg, g["role"], q.text, max_budget_usd=g["max_budget_per_session_usd"], ledger=ledger_path(cfg),
@@ -398,8 +521,11 @@ def _session(cfg: dict, run_id: str, arm: str, on: bool, q: Question, raw: Path,
         raise                                        # fail closed: never score a session on the wrong sign-in
     except models.ModelCallError as exc:             # the cap, a timeout, an error result: still scored
         error = str(exc)
+    events = models.read_jsonl(raw)
     return {"arm": arm, "question_id": q.id, "question": q.text, "request_key": key, "raw": str(raw),
-            **score_session(models.read_jsonl(raw), r), "cost_usd": spend(cfg, key), "error": error, "ts": _now()}
+            **score_session(events, r), "reach": reach_problems(events, g["reach"], plugin_dir(cfg)),
+            "note_in_stream": note_in_stream(events, cfg["graph_first_note"]["text"]),
+            "cost_usd": spend(cfg, key), "error": error, "ts": _now()}
 
 
 def _finish(cfg: dict, run_dir: Path, rows: list[dict], qs: list[Question], stopped: Optional[str],
@@ -412,9 +538,11 @@ def _finish(cfg: dict, run_dir: Path, rows: list[dict], qs: list[Question], stop
     atomic_write_text(run_dir / SUMMARY_FILE, json.dumps(
         {"verdict": verdict, "stopped": stopped, "arms": summary, "ts": _now()}, indent=1))
     for arm, s in summary.items():
+        seen = s["note_in_stream"]
         out(f"arm {arm}{' (scored)' if s['scored'] else ' (baseline)'}: {s['passed']} / {s['of']} pass"
             f" (bar {s['pass_min']}); graph first {s['first_is_graph']}, graph used {s['graph_used']},"
-            f" graph quote cited {s['cited']}")
+            f" graph quote cited {s['cited']}; note in the stream: yes {seen['True']}, no {seen['False']},"
+            f" hook output not shown {seen['None']}")
     if stopped:
         out(f"STOPPED: {stopped}")
     out(f"verdict: {verdict}  ({run_dir})")
@@ -466,26 +594,26 @@ def run(cfg: dict, *, dry_run: bool = False, out: Callable[[str], None] = print,
          "questions": [asdict(q) for q in qs], "cli_base": cli_base(cfg), "working_dir": str(working_dir(cfg)),
          "plugin_dir": str(plugin_dir(cfg)), "hook_contexts": dict(contexts)}, indent=1))
     out(f"run {run_id}: {run_dir}")
-    r, rows, stopped = rules(cfg), [], None
-    for arm, on in g["arms"].items():
-        for q in qs:
-            spent = spend(cfg, run_id, run=True)
-            if spent + g["max_budget_per_session_usd"] > g["cap_usd"] + 1e-9:
-                stopped = (f"spent ${spent:.2f}; the next session (cap ${g['max_budget_per_session_usd']:.2f})"
-                           f" could pass eval.graph_first.cap_usd ${g['cap_usd']:.2f}")
-                break
-            try:
-                row = _session(cfg, run_id, arm, on, q, run_dir / RAW_DIR / f"{arm}-{q.id}.jsonl", r, call)
-            except models.AuthError as exc:          # fail closed: no session runs on the wrong sign-in
-                stopped = f"{arm} {q.id}: {exc}"
-                break
-            models.append_jsonl(run_dir / SCORED_FILE, row)
-            rows.append(row)
-            out(f"  {arm:7} {q.id}  {'PASS' if row['passed'] else 'fail'}  first {row['first_knowledge_tool']}"
-                f"  quote {'yes' if row['cited_quote'] else 'no'}"
-                f"  ${row['cost_usd']:.2f}"
-                f"{'  ERROR ' + row['error'][:120] if row['error'] else ''}")
-        if stopped:
+    r, rows, stopped, started = rules(cfg), [], None, []
+    for q, arm, on in sessions(cfg, qs):
+        spent = run_spend(cfg, run_id, started)
+        if spent + g["max_budget_per_session_usd"] > g["cap_usd"] + 1e-9:
+            stopped = (f"spent ${spent:.2f}; the next session's cap (${g['max_budget_per_session_usd']:.2f})"
+                       f" would take the run past eval.graph_first.cap_usd ${g['cap_usd']:.2f}")
             break
-    out(f"spent ${spend(cfg, run_id, run=True):.2f} (ledger {ledger_path(cfg)})")
+        started.append(session_key(run_id, arm, q))
+        try:
+            row = _session(cfg, run_id, arm, on, q, run_dir / RAW_DIR / f"{arm}-{q.id}.jsonl", r, call)
+        except models.AuthError as exc:              # fail closed: no session runs on the wrong sign-in
+            stopped = f"{arm} {q.id}: {exc}"
+            break
+        models.append_jsonl(run_dir / SCORED_FILE, row)
+        rows.append(row)
+        out(f"  {q.id} {arm:7} {'PASS' if row['passed'] else 'fail'}  first {row['first_knowledge_tool']}"
+            f"  quote {'yes' if row['cited_quote'] else 'no'}  ${row['cost_usd']:.2f}"
+            f"{'  ERROR ' + row['error'][:g['error_chars']] if row['error'] else ''}")
+        if row["reach"]:
+            stopped = f"graph unreachable in {arm} {q.id}: {'; '.join(row['reach'])}"
+            break
+    out(f"spent ${run_spend(cfg, run_id, started):.2f} (ledger {ledger_path(cfg)})")
     return _finish(cfg, run_dir, rows, qs, stopped, out)

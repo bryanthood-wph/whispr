@@ -811,9 +811,9 @@ eval:
     # lookup" and whose results count for the quote check (whispr-kg, and whispr-tasks'
     # read tools, which serve the same graph: owner's decision 2026-10-06), then the other
     # knowledge tools (checked after the graph tools). A Skill call naming one of
-    # `skills`, and a file tool whose path-like input matches one of file_patterns or lies
-    # under paths.transcripts, count as other. A list in the overlay replaces the default
-    # list (pipeline/config.py _merge), so an overlay repeats the entries it keeps.
+    # `skills`, and every file_tools call (whatever its path: review 2026-10-06), count as
+    # other. A Read of the file the CLI saved a large graph result to adds that file's
+    # text to the graph text for the quote check.
     knowledge:
       graph_tools: [mcp__plugin_whispr_whispr-kg__, mcp__whispr-kg__,
                     mcp__plugin_whispr_whispr-tasks__task_list, mcp__plugin_whispr_whispr-tasks__task_get,
@@ -824,9 +824,23 @@ eval:
       skill_input: skill
       skills: [vault]
       file_tools: [Read, Grep, Glob]
-      file_inputs: [file_path, path, pattern, glob]
-      # Generic only: a notes folder of your own (a vault) goes in your overlay.
-      file_patterns: ['(?i)transcript']
+      read_tool: Read                 # the file tool whose result can be a saved graph result
+      read_input: file_path
+    # Every session's init event must show the graph reachable, or the run stops after
+    # that session ("graph unreachable"): a server in graph_servers with status
+    # `connected`, and, when the init event lists plugins, `plugin_name` loaded from
+    # plugin_dir.
+    reach:
+      graph_servers: ["plugin:whispr:whispr-kg", whispr-kg]
+      connected: connected
+      plugin_name: whispr
+    # The live plugin, read-only: your Claude Code settings' `env` (plugin_dirs_env) and
+    # the plugin's `root_option` (pluginConfigs). A run refuses unless they name this
+    # checkout, so the hook checked is the hook the sessions load. null: ~/.claude/settings.json.
+    live_settings: null
+    root_option: whispr_root
+    hook_timeout_s: 60                # the hook check's own run of the SessionStart hook
+    error_chars: 120                  # a failed session's error, clipped to this in the progress line
 
 setup:
   # /whispr-setup (pipeline/setup.py, `python -m pipeline setup ...`; D.7). It derives what

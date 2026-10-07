@@ -400,11 +400,16 @@ and use `/vault` only when the graph has nothing. It is on in every session unle
 environment sets `graph_first_note.switch_env` (`WHISPR_GRAPH_FIRST_NOTE`) to `off_value`
 (`off`). Only the harness sets it: `off` for the before arm, `on` for the after arm. The
 note ships with the plugin. It was chosen over a CLAUDE.md rule, which covers one machine.
+The nightly and weekly sync jobs (`scripts/nightly-ingest.ps1`, `scripts/weekly-lint-compile.ps1`)
+load the plugin through your settings, so they set the switch to `off`: their behaviour is
+unchanged. The pipeline's own calls load no settings and no plugin (`--setting-sources ""`, and
+`CLAUDE_CODE_PLUGIN_DIRS` stripped from the child), so the hook never runs in them.
 
 **Harness.** `python -m eval graph-first [--dry-run | --rescore RUN_ID]` (`eval/graph_first.py`,
 settings in `eval.graph_first`):
-- For each arm and each question in `config/graph-first-questions.yaml` (the 10 agreed,
-  verbatim), it runs one fresh `claude -p` session through `pipeline/models.py`. That module
+- For each question in `config/graph-first-questions.yaml` (the 10 agreed, verbatim), it runs
+  one fresh `claude -p` session per arm, before then after, question by question, so a spend
+  stop never cuts only the scored arm. Each goes through `pipeline/models.py`. That module
   supplies the model and effort (`models.graph_first_session`: Sonnet 5.5 medium), the
   per-session `--max-budget-usd` (`max_budget_per_session_usd`), the CLAUDECODE refusal, the
   auth check and the ledger row.
@@ -416,9 +421,16 @@ settings in `eval.graph_first`):
 - Its tools are read-only. `--tools` allows Read, Grep, Glob, Skill and ToolSearch only;
   `--allowedTools` adds whispr-kg, the whispr-tasks read tools and vault; `--disallowedTools`
   lists the write, shell and web tools; and `--permission-mode dontAsk` denies anything else.
-- It stops before a session that could take the run's spend past `cap_usd` ($15).
-- Before spending, it runs the real hook for each arm and refuses if the before arm gets the
-  note or the after arm doesn't.
+- It stops before a session whose cap would take the run's spend past `cap_usd` ($15). A
+  session with no result (timed out, killed) counts at its cap.
+- Before spending, it refuses unless your live settings (`~/.claude/settings.json`: the
+  `CLAUDE_CODE_PLUGIN_DIRS` env and the plugin's `whispr_root`) name this checkout. It also
+  runs the real hook for each arm and refuses if the before arm gets the note or the after
+  arm doesn't.
+- **Fail fast:** every session's init event must list a whispr-kg server as `connected` and,
+  when it lists plugins, whispr loaded from this checkout. Otherwise the run stops after that
+  session ("graph unreachable"). Each row also records whether the note shows in the stream's
+  hook output, or that the stream shows no hook output.
 - Output goes under `%LOCALAPPDATA%\whispr\eval\graph-first\`: `ledger.jsonl`, plus per run
   `results\<run>\`, holding `run.json`, `raw\<arm>-<q>.jsonl`, `scored.jsonl` and `summary.json`.
 - `--dry-run` makes no model call. It prints the plan, the hook check per arm, and the cost
@@ -426,11 +438,15 @@ settings in `eval.graph_first`):
   ($0.40 a session, $8.00 for 20; worst case $20.00 at the per-session cap).
 
 **Scorer.** `score_session` is a pure function over a session's stream-json. It reports:
-- the first knowledge lookup: a graph tool, another MCP knowledge tool (whispr-tasks, vault),
-  the vault skill, or Read/Grep/Glob over notes or transcripts;
-- whether whispr-kg was used;
-- the answer's quoted span that matches whispr-kg output from that session, compared word by
-  word and at least `quote_min_words` words;
+- the first knowledge lookup: a graph tool (whispr-kg, or whispr-tasks' read tools), another
+  MCP knowledge tool (vault, whispr-tasks' others), the vault skill, or any Read, Grep or Glob,
+  whatever its path;
+- whether a graph tool was used;
+- the answer's quoted span that matches graph output from that session. Both sides are
+  normalized: JSON escapes decoded even in a result cut short, curly and straight quotes
+  folded, ellipses and bracketed insertions treated as gaps, and whitespace collapsed. A span
+  needs at least `quote_min_words` words. A Read of the file the CLI saved a large graph
+  result to counts as graph output;
 - pass or fail.
 
 The arm summary gives n pass out of 10 against `pass_min` (9). Tests:
@@ -445,22 +461,24 @@ The arm summary gives n pass out of 10 against `pass_min` (9). Tests:
   the task's source episode in the graph. That step is now in the P3 row.
 
 **Your decisions (2026-10-06):** whispr-tasks' read tools count as graph tools, both for the
-first lookup and for the quote check (`knowledge.graph_tools`). The shipped
-`knowledge.file_patterns` is generic, and your vault folder's pattern goes in your overlay.
+first lookup and for the quote check (`knowledge.graph_tools`). After review, every Read, Grep
+or Glob counts as a non-graph lookup, so there are no path patterns and no overlay edit.
 
 **Runbook (one-shot scheduled task; register by hand, never from a Claude session).** Run
 it once P2b is merged into `rebuild`. The live plugin (`CLAUDE_CODE_PLUGIN_DIRS` in your
 settings) and its `whispr_root` option both name `C:\github\whispr-rebuild`, so the hook
-under test is the merged one. First run the dry run in a terminal and check that both
-hook checks pass. Then:
+under test is the merged one. The run refuses from any other checkout. First run the dry
+run in a terminal and check that the live settings line and both hook checks pass. Then:
 
 ```powershell
 $repo = 'C:\github\whispr-rebuild'
 $py   = 'C:\github\whispr\.venv\Scripts\python.exe'
 $log  = Join-Path $env:LOCALAPPDATA 'whispr\eval\graph-first\task.log'
-& $py -m eval graph-first --dry-run      # from $repo: plan, hook check per arm, estimate
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -WorkingDirectory $repo `
-  -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$repo\eval\graph_first_task.ps1`" -Repo `"$repo`" -Python `"$py`" -Log `"$log`""
+$pwsh = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'   # as register-task.ps1 resolves it
+Set-Location -LiteralPath $repo
+& $py -m eval graph-first --dry-run      # plan, live settings, hook check per arm, estimate
+$action = New-ScheduledTaskAction -Execute $pwsh -WorkingDirectory $repo `
+  -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$repo\eval\graph_first_task.ps1`" -Repo `"$repo`" -Python `"$py`" -Log `"$log`""
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 6) -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName whispr-eval-graph-first -Action $action -Settings $settings -Principal $principal
@@ -469,8 +487,9 @@ Start-ScheduledTask -TaskName whispr-eval-graph-first
 Unregister-ScheduledTask -TaskName whispr-eval-graph-first -Confirm:$false
 ```
 
-The task has no trigger, so it runs only when started. The default settings set leaves it on
-AC power only (B.9). Exit codes: 0 PASS, 1 FAIL, 2 refused or stopped. If the scorer needs a
+The task has no trigger, so it runs only when started, and `IgnoreNew` keeps a second start
+from overlapping. The default settings set leaves it on AC power only (B.9). If pwsh is not
+at that path, use the one register-task.ps1 prints. Exit codes: 0 PASS, 1 FAIL, 2 refused or stopped. If the scorer needs a
 fix, run `python -m eval graph-first --rescore <run>`, which re-scores the raw transcripts at
 no cost.
 

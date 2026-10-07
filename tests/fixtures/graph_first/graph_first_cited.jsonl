@@ -1,4 +1,4 @@
-{"type": "system", "subtype": "init", "model": "claude-sonnet-5-5", "apiKeySource": "none", "tools": ["Read", "Grep", "Glob", "Skill", "ToolSearch"]}
+{"type": "system", "subtype": "init", "model": "claude-sonnet-5-5", "apiKeySource": "none", "tools": ["Read", "Grep", "Glob", "Skill", "ToolSearch"], "mcp_servers": [{"name": "plugin:whispr:whispr-kg", "status": "connected"}, {"name": "plugin:whispr:whispr-tasks", "status": "connected"}]}
 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "ToolSearch", "input": {"query": "select:mcp__plugin_whispr_whispr-kg__search"}}]}}
 {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "loaded"}]}]}}
 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t2", "name": "mcp__plugin_whispr_whispr-kg__search", "input": {"query": "pilot demo"}}]}}

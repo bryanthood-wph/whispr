@@ -508,7 +508,7 @@
         },
         "graph_first": {
           "type": "object", "additionalProperties": false,
-          "required": ["role", "questions", "arms", "scored_arm", "pass_min", "quote_min_words", "working_dir", "plugin_dir", "plugin_dirs_env", "max_budget_per_session_usd", "cap_usd", "cost_seed_usd", "cli_args", "builtin_tools", "allowed_tools", "disallowed_tools", "knowledge"],
+          "required": ["role", "questions", "arms", "scored_arm", "pass_min", "quote_min_words", "working_dir", "plugin_dir", "plugin_dirs_env", "max_budget_per_session_usd", "cap_usd", "cost_seed_usd", "cli_args", "builtin_tools", "allowed_tools", "disallowed_tools", "knowledge", "reach", "live_settings", "root_option", "hook_timeout_s", "error_chars"],
           "properties": {
             "role": {"$ref": "#/$defs/str"},
             "questions": {"$ref": "#/$defs/str"},
@@ -528,7 +528,7 @@
             "disallowed_tools": {"$ref": "#/$defs/strs"},
             "knowledge": {
               "type": "object", "additionalProperties": false,
-              "required": ["graph_tools", "other_tools", "skill_tool", "skill_input", "skills", "file_tools", "file_inputs", "file_patterns"],
+              "required": ["graph_tools", "other_tools", "skill_tool", "skill_input", "skills", "file_tools", "read_tool", "read_input"],
               "properties": {
                 "graph_tools": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
                 "other_tools": {"$ref": "#/$defs/strs"},
@@ -536,10 +536,22 @@
                 "skill_input": {"$ref": "#/$defs/str"},
                 "skills": {"$ref": "#/$defs/strs"},
                 "file_tools": {"$ref": "#/$defs/strs"},
-                "file_inputs": {"$ref": "#/$defs/strs"},
-                "file_patterns": {"$ref": "#/$defs/strs"}
+                "read_tool": {"$ref": "#/$defs/str"},
+                "read_input": {"$ref": "#/$defs/str"}
               }
-            }
+            },
+            "reach": {
+              "type": "object", "additionalProperties": false, "required": ["graph_servers", "connected", "plugin_name"],
+              "properties": {
+                "graph_servers": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+                "connected": {"$ref": "#/$defs/str"},
+                "plugin_name": {"$ref": "#/$defs/str"}
+              }
+            },
+            "live_settings": {"type": ["string", "null"], "minLength": 1},
+            "root_option": {"$ref": "#/$defs/str"},
+            "hook_timeout_s": {"type": "number", "minimum": 1},
+            "error_chars": {"type": "integer", "minimum": 10}
           }
         }
       }

@@ -35,6 +35,7 @@ class _Case(unittest.TestCase):
         self.cfg = load_config(overlay=overlay(self.root))
         self.rules = G.rules(self.cfg)
         self.g = G.settings(self.cfg)
+        self.g["live_settings"] = str(self.root / "no-settings.json")   # never the real settings
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -75,11 +76,24 @@ class TestScoreSession(_Case):
         write = G.ToolCall("1", "mcp__plugin_whispr_whispr-tasks__task_update_status", {})
         self.assertEqual(G.lookup_kind(write, self.rules), G.OTHER)   # only its read tools are graph tools
 
-    def test_an_overlay_list_replaces_the_default_list(self):
-        ov = overlay(self.root)
-        ov["eval"] = {"graph_first": {"knowledge": {"file_patterns": ["(?i)mynotes", "(?i)transcript"]}}}
-        self.assertEqual(load_config(overlay=ov)["eval"]["graph_first"]["knowledge"]["file_patterns"],
-                         ["(?i)mynotes", "(?i)transcript"])
+    def test_neighbors_result_cut_short_with_escapes_an_insertion_and_an_ellipsis(self):
+        s = self.score("neighbors_escaped")
+        self.assertEqual(s["first_knowledge_tool"], KG + "neighbors")
+        self.assertTrue(s["passed"], s)
+
+    def test_timeline_result_saved_to_a_file_and_read_back_counts(self):
+        s = self.score("timeline_saved")
+        self.assertEqual(s["knowledge_tools"], [KG + "timeline", "Read"])
+        self.assertTrue(s["passed"], s)
+        events = fixture("timeline_saved")             # the same Read without the graph's pointer to it
+        events[2]["message"]["content"][0]["content"] = [{"type": "text", "text": "{}"}]
+        self.assertIsNone(G.score_session(events, self.rules)["cited_quote"])
+
+    def test_a_file_read_first_fails(self):
+        events = fixture("timeline_saved")
+        events.insert(1, fixture("timeline_saved")[3])   # the Read, before any graph call
+        self.assertEqual(G.score_session(events, self.rules)["first_knowledge_tool"], "Read")
+        self.assertFalse(G.score_session(events, self.rules)["passed"])
 
     def test_a_quote_only_another_tool_returned_does_not_count(self):
         events = fixture("graph_first_cited")
@@ -88,18 +102,15 @@ class TestScoreSession(_Case):
                 e["message"]["content"][0]["content"] = [{"type": "text", "text": "{}"}]
         self.assertIsNone(G.score_session(events, self.rules)["cited_quote"])
 
-    def test_vault_skill_and_note_reads_are_lookups_and_toolsearch_is_not(self):
+    def test_vault_skill_and_every_file_tool_are_lookups_and_toolsearch_is_not(self):
         r = self.rules
         self.assertEqual(G.lookup_kind(G.ToolCall("1", "Skill", {"skill": "vault"}), r), G.OTHER)
         self.assertEqual(G.lookup_kind(G.ToolCall("1", "Skill", {"skill": "plugin:vault"}), r), G.OTHER)
         self.assertIsNone(G.lookup_kind(G.ToolCall("1", "Skill", {"skill": "clarify"}), r))
-        vault = G.ToolCall("1", "Read", {"file_path": r"C:\notes\vault\index.md"})
-        self.assertIsNone(G.lookup_kind(vault, r))                  # no owner folder in the defaults
-        self.g["knowledge"]["file_patterns"].append(r"(?i)notes\\vault")   # as an overlay adds one
-        self.assertEqual(G.lookup_kind(vault, G.rules(self.cfg)), G.OTHER)
-        transcripts = str(Path(self.cfg["paths"]["transcripts"]) / "2026-10-01.md")
-        self.assertEqual(G.lookup_kind(G.ToolCall("1", "Grep", {"path": transcripts, "pattern": "x"}), r), G.OTHER)
-        self.assertIsNone(G.lookup_kind(G.ToolCall("1", "Read", {"file_path": r"C:\code\app.py"}), r))
+        self.assertEqual(G.lookup_kind(G.ToolCall("1", "Read", {"file_path": r"C:\github\cohoodOBS\index.md"}), r), G.OTHER)
+        self.assertEqual(G.lookup_kind(G.ToolCall("1", "Grep", {"pattern": "Purina"}), r), G.OTHER)   # no path
+        self.assertEqual(G.lookup_kind(G.ToolCall("1", "Glob", {"pattern": "*.md"}), r), G.OTHER)
+        self.assertEqual(G.lookup_kind(G.ToolCall("1", "Read", {"file_path": r"C:\code\app.py"}), r), G.OTHER)
         self.assertIsNone(G.lookup_kind(G.ToolCall("1", "ToolSearch", {"query": "whispr"}), r))
         self.assertEqual(G.lookup_kind(G.ToolCall("1", "mcp__whispr-kg__get", {}), r), G.GRAPH)
 
@@ -111,6 +122,29 @@ class TestScoreSession(_Case):
         self.assertIsNone(G.cited_quote('"not Gregorian"', hay, n))               # too short to prove anything
         self.assertIsNone(G.cited_quote('"the export keeps the weekly calendar"', hay, n))
         self.assertIsNone(G.cited_quote("the export keeps the 4-4-5 retail calendar", hay, n))   # not quoted
+        self.assertIsNotNone(G.cited_quote('“the export keeps [Purina’s] 4-4-5   retail\ncalendar format”',
+                                           hay, n))     # curly quotes, an insertion, extra whitespace
+        self.assertIsNotNone(G.cited_quote('"the export keeps the 4-4-5"', ['{"quote": "the export keeps the 4-4-5 ret'],
+                                           n))          # a result cut short: JSON escapes still decoded
+
+    def test_reach(self):
+        reach, plugin = self.g["reach"], G.plugin_dir(self.cfg)
+        self.assertEqual(G.reach_problems(fixture("graph_first_cited"), reach, plugin), [])
+        self.assertIn("no graph server connected", G.reach_problems(fixture("graph_unreachable"), reach, plugin)[0])
+        self.assertEqual(G.reach_problems([], reach, plugin), ["the session reported no init event"])
+        init = {**fixture("graph_first_cited")[0], "plugins": [{"name": "whispr", "path": r"C:\elsewhere\plugin"}]}
+        self.assertIn("loaded from", G.reach_problems([init], reach, plugin)[0])
+        init["plugins"] = [{"name": "whispr", "path": str(plugin)}]
+        self.assertEqual(G.reach_problems([init], reach, plugin), [])
+        init["plugins"] = [{"name": "other"}]
+        self.assertIn("not loaded", G.reach_problems([init], reach, plugin)[0])
+
+    def test_note_in_stream(self):
+        note = self.cfg["graph_first_note"]["text"]
+        self.assertIsNone(G.note_in_stream(fixture("graph_first_cited"), note))       # no hook output shown
+        hook = {"type": "system", "subtype": "hook_response", "output": note}
+        self.assertTrue(G.note_in_stream([hook], note))
+        self.assertFalse(G.note_in_stream([{**hook, "output": "whispr: 1 open alert(s)."}], note))
 
     def test_summary_against_the_bar(self):
         rows = [{"arm": "after", "passed": i < 9, "first_is_graph": True, "graph_used": True,
@@ -160,6 +194,24 @@ class TestPlan(_Case):
         per, basis = G.estimate(self.cfg, rows)
         self.assertAlmostEqual(per, 0.3)
         self.assertIn("ledger: mean of 2", basis)
+
+    def test_the_live_settings_must_load_this_checkout(self):
+        live = self.root / "settings.json"
+        self.g["live_settings"] = str(live)
+        plugin, name, env = G.plugin_dir(self.cfg), self.g["reach"]["plugin_name"], self.g["plugin_dirs_env"]
+        live.write_text(json.dumps({"env": {env: str(plugin)},
+                                    "pluginConfigs": {name: {"options": {"whispr_root": str(plugin.parent)}}}}),
+                        encoding="utf-8")
+        self.assertEqual(G.live_problems(self.cfg), [])
+        live.write_text(json.dumps({"env": {env: r"C:\other\plugin"},
+                                    "pluginConfigs": {name: {"options": {"whispr_root": r"C:\other"}}}}),
+                        encoding="utf-8")
+        problems = G.live_problems(self.cfg)
+        self.assertEqual(len(problems), 2, problems)
+        self.assertTrue(any("not " + str(plugin) in p for p in problems))
+        self.assertIn(problems[0], G.refusals(self.cfg, G.questions(self.cfg), {"before": "", "after": None}))
+        live.write_text("{not json", encoding="utf-8")
+        self.assertIn("do not read", G.live_problems(self.cfg)[0])
 
     def test_the_hook_check_refuses_a_wrong_arm(self):
         qs, note = G.questions(self.cfg), self.cfg["graph_first_note"]["text"].strip()
@@ -230,7 +282,7 @@ class TestRun(_Case):
         stub = _Stub({"before": "vault_first", "after": "graph_first_cited"})
         code, text = self.run_it(stub)
         self.assertEqual(code, G.EXIT_PASS, text)
-        self.assertEqual([s["arm"] for s in stub.seen], ["before"] * 10 + ["after"] * 10)
+        self.assertEqual([s["arm"] for s in stub.seen], ["before", "after"] * 10)   # interleaved per question
         self.assertEqual(stub.seen[0]["prompt"], G.questions(self.cfg)[0].text)
         self.assertEqual({s["cwd"] for s in stub.seen}, {Path.home()})
         self.assertEqual({s["cap"] for s in stub.seen}, {self.g["max_budget_per_session_usd"]})
@@ -264,7 +316,21 @@ class TestRun(_Case):
         code, text = self.run_it(_Stub({"before": "no_tools", "after": "graph_first_cited"}, cost=0.25))
         self.assertEqual(code, G.EXIT_REFUSED, text)
         self.assertIn("STOPPED", text)
-        self.assertEqual(len(models.read_jsonl(self.only_run() / G.SCORED_FILE)), 3)
+        rows = models.read_jsonl(self.only_run() / G.SCORED_FILE)
+        self.assertEqual([(r["question_id"], r["arm"]) for r in rows], [("q01", "before"), ("q01", "after"),
+                                                                        ("q02", "before")])
+
+    def test_a_started_session_without_a_ledger_row_counts_at_its_cap(self):
+        key = G.session_key("gf-x", "before", G.questions(self.cfg)[0])
+        self.assertEqual(G.run_spend(self.cfg, "gf-x", [key]), self.g["max_budget_per_session_usd"])
+        models.append_jsonl(G.ledger_path(self.cfg), {"request_key": key, "cost_usd": 0.1})
+        self.assertAlmostEqual(G.run_spend(self.cfg, "gf-x", [key]), 0.1)
+
+    def test_an_unreachable_graph_stops_the_run_after_that_session(self):
+        code, text = self.run_it(_Stub({"before": "graph_unreachable", "after": "graph_first_cited"}))
+        self.assertEqual(code, G.EXIT_REFUSED, text)
+        self.assertIn("graph unreachable in before q01", text)
+        self.assertEqual(len(models.read_jsonl(self.only_run() / G.SCORED_FILE)), 1)
 
     def test_refuses_inside_a_claude_session_and_on_a_wrong_hook(self):
         with mock.patch.dict(os.environ, {"CLAUDECODE": "1"}):
@@ -292,6 +358,27 @@ class TestRun(_Case):
                 contextlib.redirect_stdout(buf):
             self.assertEqual(cli.main(["graph-first", "--dry-run"]), 0)
         self.assertIn("dry run: zero model calls made", buf.getvalue())
+
+
+class TestProductionStaysOff(_Case):
+    """The note must not reach production claude calls (review 2026-10-06)."""
+
+    def test_the_sync_jobs_turn_the_note_off(self):
+        note = self.cfg["graph_first_note"]
+        line = f"$env:{note['switch_env']} = '{note['off_value']}'"
+        for name in ("nightly-ingest.ps1", "weekly-lint-compile.ps1"):
+            with self.subTest(job=name):
+                text = (Path(__file__).resolve().parents[1] / "scripts" / name).read_text(encoding="utf-8")
+                self.assertIn(line, text)
+                self.assertLess(text.index("sync-common.ps1')"), text.index(line))
+                self.assertLess(text.index(line), text.index("Invoke-ClaudeStep -StepName"))
+
+    def test_pipeline_calls_load_no_plugin(self):
+        # cli.isolation_args load no settings (so no settings env and no plugins), and the
+        # plugin variable is stripped from the child (auth.strip_env_prefixes).
+        self.assertEqual(self.cfg["cli"]["isolation_args"], ["--setting-sources", ""])
+        with mock.patch.dict(os.environ, {self.g["plugin_dirs_env"]: "x"}):
+            self.assertNotIn(self.g["plugin_dirs_env"], models.child_env(self.cfg))
 
 
 class TestThroughModels(_Case):
