@@ -396,13 +396,15 @@ now adds a three-line note to Claude's context (`additionalContext`, not shown t
 any alert line. Its text is `graph_first_note.text` in `config/defaults.yaml`: use whispr-kg
 first for the user's work, people, projects, meetings and tasks (loading its tools with
 ToolSearch if deferred), back each claim with the transcript quote from `source` and cite it,
-and use `/vault` only when the graph has nothing. It is on in every session unless the
-environment sets `graph_first_note.switch_env` (`WHISPR_GRAPH_FIRST_NOTE`) to `off_value`
-(`off`). Only the harness sets it: `off` for the before arm, `on` for the after arm. The
-note ships with the plugin. It was chosen over a CLAUDE.md rule, which covers one machine.
-The nightly and weekly sync jobs (`scripts/nightly-ingest.ps1`, `scripts/weekly-lint-compile.ps1`)
-load the plugin through your settings, so they set the switch to `off`: their behaviour is
-unchanged. The pipeline's own calls load no settings and no plugin (`--setting-sources ""`, and
+and use `/vault` only when the graph has nothing. A session whose environment sets
+`graph_first_note.switch_env` (`WHISPR_GRAPH_FIRST_NOTE`) to `on` or `off` gets that; every
+other session gets `graph_first_note.default_on`, which is **false until the run passes**.
+Only the harness sets the switch: `off` for the before arm, `on` for the after arm. Turning
+the note on for everyone, once vetted, is that one config value. The note ships with the
+plugin. It was chosen over a CLAUDE.md rule, which covers one machine. The nightly and
+weekly sync jobs run from the master checkout and load the plugin through your settings, so
+default-off is what keeps them unchanged; the `off` their scripts set on this branch is a
+second guard for when the branches merge. The pipeline's own calls load no settings and no plugin (`--setting-sources ""`, and
 `CLAUDE_CODE_PLUGIN_DIRS` stripped from the child), so the hook never runs in them.
 
 **Harness.** `python -m eval graph-first [--dry-run | --rescore RUN_ID]` (`eval/graph_first.py`,
