@@ -7,6 +7,8 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 _configured = False
+# The log's file name in paths.logs; pipeline/setup.py points paths.recorder_log at it.
+LOG_FILENAME = "whispr.log"
 
 
 def configure_logging(log_dir: Path, level: int = logging.INFO) -> None:
@@ -19,7 +21,7 @@ def configure_logging(log_dir: Path, level: int = logging.INFO) -> None:
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     file_handler = RotatingFileHandler(
-        log_dir / "whispr.log", maxBytes=2_000_000, backupCount=5, encoding="utf-8"
+        log_dir / LOG_FILENAME, maxBytes=2_000_000, backupCount=5, encoding="utf-8"
     )
     file_handler.setFormatter(fmt)
     logger.addHandler(file_handler)

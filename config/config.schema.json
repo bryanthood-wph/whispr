@@ -1,0 +1,580 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "whispr pipeline config (defaults.yaml merged with the user overlay)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["config_version", "owner", "paths", "auth", "cli", "models", "prompts", "schemas", "ontology", "prepare", "extract", "pipeline", "kg", "tasks", "alerts", "graph_first_note", "backup", "maintain", "reconcile", "liveness", "doctor", "schedules", "eval", "setup"],
+  "$defs": {
+    "str": {"type": "string", "minLength": 1},
+    "folder_hint": {
+      "type": "object", "additionalProperties": false, "required": ["env", "name"],
+      "properties": {"env": {"type": "array", "items": {"$ref": "#/$defs/str"}}, "name": {"$ref": "#/$defs/str"}}
+    },
+    "strs": {"type": "array", "items": {"type": "string"}},
+    "money": {"type": "number", "minimum": 0},
+    "frac": {"type": "number", "minimum": 0, "maximum": 1},
+    "role": {
+      "type": "object", "additionalProperties": false, "required": ["model", "effort", "thinking_tokens"],
+      "properties": {
+        "model": {"$ref": "#/$defs/str"},
+        "effort": {"type": ["string", "null"], "enum": [null, "low", "medium", "high", "xhigh", "max"]},
+        "thinking_tokens": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "job": {
+      "type": "object", "additionalProperties": false,
+      "required": ["args", "daily_at", "at_logon", "every_min", "time_limit_min", "ac_power_only", "stop_on_battery", "start_when_available", "wake_to_run", "restart_count", "restart_interval_min", "multiple_instances"],
+      "properties": {
+        "args": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+        "daily_at": {"type": ["string", "null"], "minLength": 1},
+        "at_logon": {"type": "boolean"},
+        "every_min": {"type": ["integer", "null"], "minimum": 1},
+        "time_limit_min": {"type": "integer", "minimum": 1},
+        "ac_power_only": {"type": "boolean"},
+        "stop_on_battery": {"type": "boolean"},
+        "start_when_available": {"type": "boolean"},
+        "wake_to_run": {"type": "boolean"},
+        "restart_count": {"type": "integer", "minimum": 0},
+        "restart_interval_min": {"type": ["integer", "null"], "minimum": 1},
+        "multiple_instances": {"enum": ["IgnoreNew", "Parallel", "Queue"]}
+      }
+    },
+    "cell": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "kind", "min_exclusive", "max_inclusive", "core", "task_only", "dev"],
+      "properties": {
+        "name": {"$ref": "#/$defs/str"},
+        "kind": {"enum": ["call", "meeting", "stub"]},
+        "min_exclusive": {"type": ["number", "null"]},
+        "max_inclusive": {"type": ["number", "null"]},
+        "core": {"type": "integer", "minimum": 0},
+        "task_only": {"type": "integer", "minimum": 0},
+        "dev": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "properties": {
+    "config_version": {"type": "integer", "enum": [1]},
+    "owner": {
+      "type": "object", "additionalProperties": false, "required": ["name", "email", "tenant"],
+      "properties": {
+        "name": {"$ref": "#/$defs/str"},
+        "email": {"$ref": "#/$defs/str"},
+        "tenant": {"type": ["string", "null"]}
+      }
+    },
+    "paths": {
+      "type": "object", "additionalProperties": false, "required": ["transcripts", "data_dir", "recorder_log"],
+      "properties": {"transcripts": {"$ref": "#/$defs/str"}, "data_dir": {"$ref": "#/$defs/str"},
+                     "recorder_log": {"type": ["string", "null"]}}
+    },
+    "auth": {
+      "type": "object", "additionalProperties": false, "required": ["approved_sources", "strip_env_prefixes", "refuse_if_set"],
+      "properties": {
+        "approved_sources": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "strip_env_prefixes": {"$ref": "#/$defs/strs"},
+        "refuse_if_set": {"$ref": "#/$defs/strs"}
+      }
+    },
+    "cli": {
+      "type": "object", "additionalProperties": false, "required": ["executable", "version", "base_args", "isolation_args", "cached_prefix_until", "thinking_tokens_env", "timeout_s"],
+      "properties": {
+        "executable": {"$ref": "#/$defs/str"},
+        "version": {"$ref": "#/$defs/str"},
+        "base_args": {"$ref": "#/$defs/strs"},
+        "isolation_args": {"$ref": "#/$defs/strs"},
+        "cached_prefix_until": {"$ref": "#/$defs/strs"},
+        "thinking_tokens_env": {"$ref": "#/$defs/str"},
+        "timeout_s": {"type": "number", "minimum": 1}
+      }
+    },
+    "models": {
+      "type": "object", "additionalProperties": {"$ref": "#/$defs/role"},
+      "required": ["extractor", "reference_a", "reference_b", "matcher", "judge", "judge_escalate_1", "judge_escalate_2", "kg_resolve"]
+    },
+    "prompts": {
+      "type": "object", "additionalProperties": false, "required": ["extract", "system_minimal", "reference", "matcher", "presence", "judge"],
+      "properties": {"extract": {"$ref": "#/$defs/str"}, "system_minimal": {"$ref": "#/$defs/str"}, "reference": {"$ref": "#/$defs/str"}, "matcher": {"$ref": "#/$defs/str"}, "presence": {"$ref": "#/$defs/str"}, "judge": {"$ref": "#/$defs/str"}}
+    },
+    "schemas": {
+      "type": "object", "additionalProperties": false, "required": ["extract", "task", "scorecard", "reference", "matcher", "presence", "judge"],
+      "properties": {"extract": {"$ref": "#/$defs/str"}, "task": {"$ref": "#/$defs/str"}, "scorecard": {"$ref": "#/$defs/str"}, "reference": {"$ref": "#/$defs/str"}, "matcher": {"$ref": "#/$defs/str"}, "presence": {"$ref": "#/$defs/str"}, "judge": {"$ref": "#/$defs/str"}}
+    },
+    "ontology": {"$ref": "#/$defs/str"},
+    "prepare": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "min_words", "echo_window_s", "echo_overlap", "merge_gap_min", "echo_min_words", "redaction_patterns", "redaction_token", "title_segment_separator", "metadata_reject_patterns", "mojibake_markers"],
+      "properties": {
+        "version": {"type": "integer", "minimum": 1},
+        "min_words": {"type": "integer", "minimum": 0},
+        "echo_window_s": {"type": "number", "minimum": 0},
+        "echo_overlap": {"$ref": "#/$defs/frac"},
+        "echo_min_words": {"type": "integer", "minimum": 1},
+        "merge_gap_min": {"type": "number", "minimum": 0},
+        "redaction_patterns": {"$ref": "#/$defs/strs"},
+        "redaction_token": {"type": "string"},
+        "title_segment_separator": {"$ref": "#/$defs/str"},
+        "metadata_reject_patterns": {"$ref": "#/$defs/strs"},
+        "mojibake_markers": {"$ref": "#/$defs/strs"}
+      }
+    },
+    "extract": {
+      "type": "object", "additionalProperties": false, "required": ["missing_value", "list_separator"],
+      "properties": {"missing_value": {"$ref": "#/$defs/str"}, "list_separator": {"$ref": "#/$defs/str"}}
+    },
+    "pipeline": {
+      "type": "object", "additionalProperties": false, "required": ["max_attempts", "max_budget_per_call_usd", "files", "run", "write"],
+      "properties": {
+        "max_attempts": {"type": "integer", "minimum": 1},
+        "max_budget_per_call_usd": {"$ref": "#/$defs/money"},
+        "files": {
+          "type": "object", "additionalProperties": false, "required": ["notes", "log", "ledger", "cache", "lock", "daily_lock", "resolve_cache", "hashes"],
+          "properties": {"notes": {"$ref": "#/$defs/str"}, "log": {"$ref": "#/$defs/str"}, "ledger": {"$ref": "#/$defs/str"},
+                         "cache": {"$ref": "#/$defs/str"}, "lock": {"$ref": "#/$defs/str"},
+                         "daily_lock": {"$ref": "#/$defs/str"}, "resolve_cache": {"$ref": "#/$defs/str"},
+                         "hashes": {"$ref": "#/$defs/str"}}
+        },
+        "run": {
+          "type": "object", "additionalProperties": false,
+          "required": ["time_budget_s", "max_items", "cap_usd", "daily_cap_usd", "retry_backoff_min", "process_since",
+                       "est_cost_per_call_usd"],
+          "properties": {
+            "time_budget_s": {"type": "number", "minimum": 0},
+            "max_items": {"type": "integer", "minimum": 1},
+            "cap_usd": {"$ref": "#/$defs/money"},
+            "daily_cap_usd": {"$ref": "#/$defs/money"},
+            "retry_backoff_min": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 1},
+            "process_since": {"type": ["string", "null"], "minLength": 10},
+            "est_cost_per_call_usd": {"$ref": "#/$defs/money"}
+          }
+        },
+        "write": {
+          "type": "object", "additionalProperties": false, "required": ["low_mic_coverage", "task_confidence"],
+          "properties": {
+            "low_mic_coverage": {"$ref": "#/$defs/frac"},
+            "task_confidence": {
+              "type": "object", "additionalProperties": false, "required": ["verbatim", "unverified"],
+              "properties": {"verbatim": {"$ref": "#/$defs/frac"}, "unverified": {"$ref": "#/$defs/frac"}}
+            }
+          }
+        }
+      }
+    },
+    "kg": {
+      "type": "object", "additionalProperties": false, "required": ["database", "search_cards", "busy_timeout_ms", "traverse", "er", "models", "tasks", "rederive_approval_usd", "view"],
+      "properties": {
+        "database": {"$ref": "#/$defs/str"},
+        "search_cards": {"type": "integer", "minimum": 1},
+        "busy_timeout_ms": {"type": "integer", "minimum": 0},
+        "traverse": {
+          "type": "object", "additionalProperties": false, "required": ["max_hops", "default_hops", "max_results", "max_paths", "quote_chars", "time_limit_ms"],
+          "properties": {
+            "max_hops": {"type": "integer", "minimum": 1},
+            "default_hops": {"type": "integer", "minimum": 1},
+            "max_results": {"type": "integer", "minimum": 1},
+            "max_paths": {"type": "integer", "minimum": 1},
+            "quote_chars": {"type": "integer", "minimum": 1},
+            "time_limit_ms": {"type": "integer", "minimum": 1}
+          }
+        },
+        "er": {
+          "type": "object", "additionalProperties": false, "required": ["max_edit_distance", "block_chars", "context_items", "prompt", "schema"],
+          "properties": {
+            "max_edit_distance": {"type": "integer", "minimum": 0},
+            "block_chars": {"type": "integer", "minimum": 1},
+            "context_items": {"type": "integer", "minimum": 0},
+            "prompt": {"$ref": "#/$defs/str"},
+            "schema": {"$ref": "#/$defs/str"}
+          }
+        },
+        "models": {
+          "type": "object", "additionalProperties": false, "required": ["resolve"],
+          "properties": {"resolve": {"$ref": "#/$defs/str"}}
+        },
+        "tasks": {
+          "type": "object", "additionalProperties": false,
+          "required": ["funnel_days", "list_limit", "mine_owner_basis", "confirm_owner_basis", "tools_status", "review_statuses"],
+          "properties": {
+            "funnel_days": {"type": "integer", "minimum": 1},
+            "list_limit": {"type": "integer", "minimum": 1},
+            "mine_owner_basis": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+            "confirm_owner_basis": {"type": "array", "items": {"$ref": "#/$defs/str"}},
+            "tools_status": {"$ref": "#/$defs/str"},
+            "review_statuses": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1}
+          }
+        },
+        "rederive_approval_usd": {"$ref": "#/$defs/money"},
+        "view": {
+          "type": "object", "additionalProperties": false,
+          "required": ["default_hops", "max_nodes", "svg_max_chars", "canvas_px", "margin_px", "ring_px", "start_deg", "node_radius_px", "center_radius_px", "label_gap_px", "label_chars", "quote_chars", "font_family", "font_px", "coord_decimals", "text_indent", "route_only_opacity", "stroke_px", "colors", "palette"],
+          "properties": {
+            "default_hops": {"type": "integer", "minimum": 1},
+            "max_nodes": {"type": "integer", "minimum": 1},
+            "svg_max_chars": {"type": "integer", "minimum": 1},
+            "canvas_px": {"type": "number", "minimum": 1},
+            "margin_px": {"type": "number", "minimum": 0},
+            "ring_px": {"type": "number", "minimum": 0},
+            "start_deg": {"type": "number"},
+            "node_radius_px": {"type": "number", "minimum": 0},
+            "center_radius_px": {"type": "number", "minimum": 0},
+            "label_gap_px": {"type": "number", "minimum": 0},
+            "label_chars": {"type": "integer", "minimum": 1},
+            "quote_chars": {"type": "integer", "minimum": 1},
+            "font_family": {"$ref": "#/$defs/str"},
+            "font_px": {"type": "number", "minimum": 1},
+            "coord_decimals": {"type": "integer", "minimum": 0},
+            "text_indent": {"type": "integer", "minimum": 0},
+            "route_only_opacity": {"$ref": "#/$defs/frac"},
+            "stroke_px": {
+              "type": "object", "additionalProperties": false, "required": ["edge", "hover", "hit", "node", "halo"],
+              "properties": {"edge": {"type": "number", "minimum": 0}, "hover": {"type": "number", "minimum": 0}, "hit": {"type": "number", "minimum": 0}, "node": {"type": "number", "minimum": 0}, "halo": {"type": "number", "minimum": 0}}
+            },
+            "colors": {
+              "type": "object", "additionalProperties": false, "required": ["edge", "highlight", "label", "label_halo", "node_stroke"],
+              "properties": {"edge": {"$ref": "#/$defs/str"}, "highlight": {"$ref": "#/$defs/str"}, "label": {"$ref": "#/$defs/str"}, "label_halo": {"$ref": "#/$defs/str"}, "node_stroke": {"$ref": "#/$defs/str"}}
+            },
+            "palette": {"type": "object", "additionalProperties": {"$ref": "#/$defs/str"}}
+          }
+        }
+      }
+    },
+    "tasks": {
+      "type": "object", "additionalProperties": false, "required": ["intake", "folder", "m365"],
+      "properties": {
+        "folder": {"$ref": "#/$defs/str"},
+        "m365": {
+          "type": "object", "additionalProperties": false,
+          "required": ["scope_type", "grammar", "default_window_days", "default_folders", "bind_statuses", "date_picture", "call_timeout_s", "read_retries", "error_samples", "untrusted_label", "mail", "calendar", "attachments", "drafts", "sanitize"],
+          "properties": {
+            "scope_type": {"$ref": "#/$defs/str"},
+            "grammar": {
+              "type": "object", "additionalProperties": false, "required": ["separator", "keys", "date_format", "folder_separator"],
+              "properties": {
+                "separator": {"$ref": "#/$defs/str"},
+                "keys": {
+                  "type": "object", "additionalProperties": false, "required": ["sender", "folder", "subject", "since", "until"],
+                  "properties": {"sender": {"$ref": "#/$defs/str"}, "folder": {"$ref": "#/$defs/str"}, "subject": {"$ref": "#/$defs/str"},
+                                 "since": {"$ref": "#/$defs/str"}, "until": {"$ref": "#/$defs/str"}}
+                },
+                "date_format": {"$ref": "#/$defs/str"},
+                "folder_separator": {"$ref": "#/$defs/str"}
+              }
+            },
+            "default_window_days": {"type": "integer", "minimum": 1},
+            "default_folders": {"type": "array", "items": {"type": ["string", "integer"], "minLength": 1, "minimum": 0}, "minItems": 1},
+            "bind_statuses": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+            "date_picture": {"type": ["string", "null"], "minLength": 1},
+            "call_timeout_s": {"type": "number", "minimum": 0.01},
+            "read_retries": {"type": "integer", "minimum": 0},
+            "error_samples": {"type": "integer", "minimum": 0},
+            "untrusted_label": {"$ref": "#/$defs/str"},
+            "mail": {
+              "type": "object", "additionalProperties": false, "required": ["max_results", "max_scan", "max_folders", "body_max_results", "snippet_chars", "body_chars"],
+              "properties": {"max_results": {"type": "integer", "minimum": 1}, "max_scan": {"type": "integer", "minimum": 1},
+                             "max_folders": {"type": "integer", "minimum": 1},
+                             "body_max_results": {"type": "integer", "minimum": 1}, "snippet_chars": {"type": "integer", "minimum": 1},
+                             "body_chars": {"type": "integer", "minimum": 1}}
+            },
+            "calendar": {
+              "type": "object", "additionalProperties": false, "required": ["default_days", "max_window_days", "future_days", "max_results", "max_scan", "body_chars"],
+              "properties": {"default_days": {"type": "integer", "minimum": 1}, "max_window_days": {"type": "integer", "minimum": 1},
+                             "future_days": {"type": "integer", "minimum": 0}, "max_results": {"type": "integer", "minimum": 1},
+                             "max_scan": {"type": "integer", "minimum": 1}, "body_chars": {"type": "integer", "minimum": 1}}
+            },
+            "attachments": {
+              "type": "object", "additionalProperties": false, "required": ["folder", "max_bytes", "name_chars", "fallback_name", "ext_chars", "digest_chars", "temp_suffix"],
+              "properties": {"folder": {"$ref": "#/$defs/str"}, "max_bytes": {"type": "integer", "minimum": 1},
+                             "name_chars": {"type": "integer", "minimum": 8}, "fallback_name": {"$ref": "#/$defs/str"},
+                             "ext_chars": {"type": "integer", "minimum": 0}, "digest_chars": {"type": "integer", "minimum": 8, "maximum": 64},
+                             "temp_suffix": {"$ref": "#/$defs/str"}}
+            },
+            "drafts": {
+              "type": "object", "additionalProperties": false, "required": ["marker_property", "source_property", "max_attachments", "body_chars"],
+              "properties": {"marker_property": {"$ref": "#/$defs/str"}, "source_property": {"$ref": "#/$defs/str"}, "max_attachments": {"type": "integer", "minimum": 0},
+                             "body_chars": {"type": "integer", "minimum": 1}}
+            },
+            "sanitize": {
+              "type": "object", "additionalProperties": false, "required": ["tags", "drop_content", "attributes", "url_schemes", "url_attributes"],
+              "properties": {"tags": {"type": "array", "items": {"$ref": "#/$defs/str"}},
+                             "drop_content": {"type": "array", "items": {"$ref": "#/$defs/str"}},
+                             "attributes": {"type": "object", "additionalProperties": {"type": "array", "items": {"$ref": "#/$defs/str"}}},
+                             "url_schemes": {"type": "array", "items": {"$ref": "#/$defs/str"}},
+                             "url_attributes": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1}}
+            }
+          }
+        },
+        "intake": {
+          "type": "object", "additionalProperties": false,
+          "required": ["fields", "required_fields", "answer_sources", "scope_field", "scope_types", "scope_none", "scope_entity_type", "budget_field", "budget"],
+          "properties": {
+            "fields": {"type": "object", "additionalProperties": {"$ref": "#/$defs/str"}},
+            "required_fields": {"$ref": "#/$defs/strs"},
+            "answer_sources": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+            "scope_field": {"$ref": "#/$defs/str"},
+            "scope_types": {"type": "object", "additionalProperties": {"$ref": "#/$defs/str"}},
+            "scope_none": {"$ref": "#/$defs/str"},
+            "scope_entity_type": {"$ref": "#/$defs/str"},
+            "budget_field": {"$ref": "#/$defs/str"},
+            "budget": {
+              "type": "object", "additionalProperties": false, "required": ["amount_key", "reason_key", "amount_min_usd"],
+              "properties": {"amount_key": {"$ref": "#/$defs/str"}, "reason_key": {"$ref": "#/$defs/str"}, "amount_min_usd": {"$ref": "#/$defs/money"}}
+            }
+          }
+        }
+      }
+    },
+    "alerts": {
+      "type": "object", "additionalProperties": false, "required": ["quarantine_digest_days", "repeat_item_runs", "session_start"],
+      "properties": {
+        "quarantine_digest_days": {"type": "number", "minimum": 0},
+        "repeat_item_runs": {"type": "integer", "minimum": 1},
+        "session_start": {
+          "type": "object", "additionalProperties": false, "required": ["max_alerts", "message_chars", "timeout_s"],
+          "properties": {
+            "max_alerts": {"type": "integer", "minimum": 1},
+            "message_chars": {"type": "integer", "minimum": 10},
+            "timeout_s": {"type": "number", "minimum": 0.1}
+          }
+        }
+      }
+    },
+    "graph_first_note": {
+      "type": "object", "additionalProperties": false, "required": ["default_on", "switch_env", "off_value", "on_value", "text"],
+      "properties": {
+        "default_on": {"type": "boolean"},
+        "switch_env": {"$ref": "#/$defs/str"},
+        "off_value": {"$ref": "#/$defs/str"},
+        "on_value": {"$ref": "#/$defs/str"},
+        "text": {"$ref": "#/$defs/str"}
+      }
+    },
+    "backup": {
+      "type": "object", "additionalProperties": false, "required": ["destination", "keep", "prefix", "include", "transcripts", "locked_retries", "locked_retry_s"],
+      "properties": {
+        "destination": {"type": ["string", "null"], "minLength": 1},
+        "keep": {"type": "integer", "minimum": 1},
+        "prefix": {"$ref": "#/$defs/str"},
+        "include": {"type": "array", "items": {"$ref": "#/$defs/str"}},
+        "transcripts": {"type": "boolean"},
+        "locked_retries": {"type": "integer", "minimum": 0},
+        "locked_retry_s": {"type": "number", "minimum": 0}
+      }
+    },
+    "maintain": {
+      "type": "object", "additionalProperties": false, "required": ["max_budget_per_call_usd", "cap_usd", "time_budget_s", "listed"],
+      "properties": {
+        "max_budget_per_call_usd": {"$ref": "#/$defs/money"},
+        "cap_usd": {"$ref": "#/$defs/money"},
+        "time_budget_s": {"type": "number", "minimum": 1},
+        "listed": {"type": "integer", "minimum": 0}
+      }
+    },
+    "reconcile": {
+      "type": "object", "additionalProperties": false,
+      "required": ["window_days", "settle_min", "max_tombstones", "outlook_slack_min", "recorder_log"],
+      "properties": {
+        "window_days": {"type": "number", "minimum": 0},
+        "settle_min": {"type": "number", "minimum": 0},
+        "max_tombstones": {"type": "integer", "minimum": 0},
+        "outlook_slack_min": {"type": "number", "minimum": 0},
+        "recorder_log": {
+          "type": "object", "additionalProperties": false, "required": ["stamp", "queued", "written"],
+          "properties": {"stamp": {"$ref": "#/$defs/str"}, "queued": {"$ref": "#/$defs/str"}, "written": {"$ref": "#/$defs/str"}}
+        }
+      }
+    },
+    "liveness": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mutex", "command", "working_dir", "confirm_timeout_s", "confirm_poll_s"],
+      "properties": {
+        "mutex": {"$ref": "#/$defs/str"},
+        "command": {"type": ["array", "null"], "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+        "working_dir": {"type": ["string", "null"], "minLength": 1},
+        "confirm_timeout_s": {"type": "number", "minimum": 0},
+        "confirm_poll_s": {"type": "number", "minimum": 0.1}
+      }
+    },
+    "doctor": {
+      "type": "object", "additionalProperties": false,
+      "required": ["stale_after_h", "liveness_stale_min", "incidents_file", "incident_days", "attention_incidents", "listed"],
+      "properties": {
+        "stale_after_h": {"type": "object", "additionalProperties": {"type": "number", "minimum": 0}},
+        "liveness_stale_min": {"type": "number", "minimum": 0},
+        "incidents_file": {"$ref": "#/$defs/str"},
+        "incident_days": {"type": "number", "minimum": 0},
+        "attention_incidents": {"$ref": "#/$defs/strs"},
+        "listed": {"type": "integer", "minimum": 0}
+      }
+    },
+    "schedules": {
+      "type": "object", "additionalProperties": false,
+      "required": ["task_path", "reserved_names", "skip", "powershell", "powershell_timeout_s", "interpreter", "interpreter_name", "interpreter_args", "version_stamp_patterns", "principal", "tasks"],
+      "properties": {
+        "task_path": {"$ref": "#/$defs/str"},
+        "reserved_names": {"$ref": "#/$defs/strs"},
+        "skip": {"$ref": "#/$defs/strs"},
+        "powershell": {"$ref": "#/$defs/str"},
+        "powershell_timeout_s": {"type": "number", "minimum": 1},
+        "interpreter": {"type": ["string", "null"], "minLength": 1},
+        "interpreter_name": {"$ref": "#/$defs/str"},
+        "interpreter_args": {"$ref": "#/$defs/strs"},
+        "version_stamp_patterns": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+        "principal": {
+          "type": "object", "additionalProperties": false, "required": ["logon_type", "run_level"],
+          "properties": {"logon_type": {"enum": ["Interactive", "S4U"]}, "run_level": {"enum": ["Limited", "Highest"]}}
+        },
+        "tasks": {"type": "object", "additionalProperties": {"$ref": "#/$defs/job"}}
+      }
+    },
+    "eval": {
+      "type": "object", "additionalProperties": false,
+      "required": ["budget_usd", "stop_margin_usd", "max_budget_per_call_usd", "cost_overrun_factor", "min_effective_tasks", "stability_n", "stability_min_jaccard", "seed", "workers", "bootstrap_replicates", "alpha", "judge", "calibration_min_sensitivity", "bar", "sample", "run_tag", "stages", "scoring", "regress", "reference", "graph_first"],
+      "properties": {
+        "budget_usd": {"$ref": "#/$defs/money"},
+        "stop_margin_usd": {"$ref": "#/$defs/money"},
+        "max_budget_per_call_usd": {"$ref": "#/$defs/money"},
+        "cost_overrun_factor": {"type": "number", "minimum": 1},
+        "min_effective_tasks": {"type": "integer", "minimum": 1},
+        "stability_n": {"type": "integer", "minimum": 1},
+        "stability_min_jaccard": {"$ref": "#/$defs/frac"},
+        "seed": {"type": "integer"},
+        "workers": {"type": "integer", "minimum": 1},
+        "bootstrap_replicates": {"type": "integer", "minimum": 100},
+        "alpha": {"$ref": "#/$defs/frac"},
+        "judge": {
+          "type": "object", "additionalProperties": false, "required": ["samples", "escalate_below"],
+          "properties": {"samples": {"type": "integer", "minimum": 1}, "escalate_below": {"$ref": "#/$defs/frac"}}
+        },
+        "calibration_min_sensitivity": {"$ref": "#/$defs/frac"},
+        "bar": {
+          "type": "object", "additionalProperties": false,
+          "required": ["my_task_recall", "my_task_recall_lower_bound", "my_task_precision"],
+          "properties": {
+            "my_task_recall": {"$ref": "#/$defs/frac"},
+            "my_task_recall_lower_bound": {"$ref": "#/$defs/frac"},
+            "my_task_precision": {"$ref": "#/$defs/frac"}
+          }
+        },
+        "sample": {
+          "type": "object", "additionalProperties": false,
+          "required": ["frame_cutoff", "pilot_n", "cells", "speaker_device_pattern", "low_mic"],
+          "properties": {
+            "frame_cutoff": {"$ref": "#/$defs/str"},
+            "pilot_n": {"type": "integer", "minimum": 1},
+            "low_mic": {
+              "type": "object", "additionalProperties": false,
+              "required": ["min_duration_min", "max_mic_ratio", "join_tolerance_s"],
+              "properties": {"min_duration_min": {"type": "number", "minimum": 0},
+                             "max_mic_ratio": {"$ref": "#/$defs/frac"},
+                             "join_tolerance_s": {"type": "number", "minimum": 0}}
+            },
+            "cells": {"type": "array", "items": {"$ref": "#/$defs/cell"}, "minItems": 1},
+            "speaker_device_pattern": {"$ref": "#/$defs/str"}
+          }
+        },
+        "run_tag": {"$ref": "#/$defs/str"},
+        "stages": {
+          "type": "object", "additionalProperties": false, "required": ["pilot"],
+          "properties": {"pilot": {"type": "object", "additionalProperties": false,
+                                   "required": ["cap_usd", "judge_subjects", "plants_per_kind", "positives", "probe_max_budget_usd"],
+                                   "properties": {"cap_usd": {"$ref": "#/$defs/money"},
+                                                  "max_budget_per_call_usd": {"$ref": "#/$defs/money"},
+                                                  "probe_max_budget_usd": {"$ref": "#/$defs/money"},
+                                                  "judge_subjects": {"type": "integer", "minimum": 1},
+                                                  "plants_per_kind": {"type": "integer", "minimum": 1},
+                                                  "positives": {"type": "integer", "minimum": 1}}},
+                         "dev": {"type": "object", "additionalProperties": false,
+                                 "required": ["cap_usd", "max_budget_per_call_usd"],
+                                 "properties": {"cap_usd": {"$ref": "#/$defs/money"},
+                                                "max_budget_per_call_usd": {"$ref": "#/$defs/money"}}}}
+        },
+        "scoring": {
+          "type": "object", "additionalProperties": false, "required": ["wilson_max_units"],
+          "properties": {"wilson_max_units": {"type": "integer", "minimum": 0}}
+        },
+        "regress": {
+          "type": "object", "additionalProperties": false, "required": ["n", "budget_usd", "tolerance"],
+          "properties": {
+            "n": {"type": "integer", "minimum": 1},
+            "budget_usd": {"$ref": "#/$defs/money"},
+            "tolerance": {"type": "object", "additionalProperties": {"$ref": "#/$defs/frac"}}
+          }
+        },
+        "reference": {
+          "type": "object", "additionalProperties": false, "required": ["min_quote_words", "near_miss_max_turns", "overlap_min_tokens", "utterance_end_chars", "utterance_closing_chars"],
+          "properties": {
+            "min_quote_words": {"type": "integer", "minimum": 1},
+            "near_miss_max_turns": {"type": "integer", "minimum": 0},
+            "overlap_min_tokens": {"type": "integer", "minimum": 1},
+            "utterance_end_chars": {"type": "string", "minLength": 1},
+            "utterance_closing_chars": {"type": "string"}
+          }
+        },
+        "graph_first": {
+          "type": "object", "additionalProperties": false,
+          "required": ["role", "questions", "arms", "scored_arm", "pass_min", "quote_min_words", "working_dir", "plugin_dir", "plugin_dirs_env", "max_budget_per_session_usd", "cap_usd", "cost_seed_usd", "cli_args", "builtin_tools", "allowed_tools", "disallowed_tools", "knowledge", "reach", "live_settings", "root_option", "hook_timeout_s", "error_chars"],
+          "properties": {
+            "role": {"$ref": "#/$defs/str"},
+            "questions": {"$ref": "#/$defs/str"},
+            "arms": {"type": "object", "additionalProperties": {"type": "boolean"}},
+            "scored_arm": {"$ref": "#/$defs/str"},
+            "pass_min": {"type": "integer", "minimum": 1},
+            "quote_min_words": {"type": "integer", "minimum": 1},
+            "working_dir": {"type": ["string", "null"], "minLength": 1},
+            "plugin_dir": {"type": ["string", "null"], "minLength": 1},
+            "plugin_dirs_env": {"$ref": "#/$defs/str"},
+            "max_budget_per_session_usd": {"$ref": "#/$defs/money"},
+            "cap_usd": {"$ref": "#/$defs/money"},
+            "cost_seed_usd": {"$ref": "#/$defs/money"},
+            "cli_args": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+            "builtin_tools": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+            "allowed_tools": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+            "disallowed_tools": {"$ref": "#/$defs/strs"},
+            "knowledge": {
+              "type": "object", "additionalProperties": false,
+              "required": ["graph_tools", "other_tools", "skill_tool", "skill_input", "skills", "file_tools", "read_tool", "read_input"],
+              "properties": {
+                "graph_tools": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+                "other_tools": {"$ref": "#/$defs/strs"},
+                "skill_tool": {"$ref": "#/$defs/str"},
+                "skill_input": {"$ref": "#/$defs/str"},
+                "skills": {"$ref": "#/$defs/strs"},
+                "file_tools": {"$ref": "#/$defs/strs"},
+                "read_tool": {"$ref": "#/$defs/str"},
+                "read_input": {"$ref": "#/$defs/str"}
+              }
+            },
+            "reach": {
+              "type": "object", "additionalProperties": false, "required": ["graph_servers", "connected", "plugin_name"],
+              "properties": {
+                "graph_servers": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+                "connected": {"$ref": "#/$defs/str"},
+                "plugin_name": {"$ref": "#/$defs/str"}
+              }
+            },
+            "live_settings": {"type": ["string", "null"], "minLength": 1},
+            "root_option": {"$ref": "#/$defs/str"},
+            "hook_timeout_s": {"type": "number", "minimum": 1},
+            "error_chars": {"type": "integer", "minimum": 10}
+          }
+        }
+      }
+    },
+    "setup": {
+      "type": "object", "additionalProperties": false,
+      "required": ["keys", "ask", "recorder_args", "data_dir", "backup", "test_alert"],
+      "properties": {
+        "keys": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+        "ask": {"type": "array", "items": {"$ref": "#/$defs/str"}},
+        "recorder_args": {"type": "array", "items": {"$ref": "#/$defs/str"}, "minItems": 1},
+        "data_dir": {"$ref": "#/$defs/folder_hint"},
+        "backup": {"$ref": "#/$defs/folder_hint"},
+        "test_alert": {
+          "type": "object", "additionalProperties": false, "required": ["kind", "key", "message", "fix"],
+          "properties": {"kind": {"$ref": "#/$defs/str"}, "key": {"$ref": "#/$defs/str"},
+                         "message": {"$ref": "#/$defs/str"}, "fix": {"$ref": "#/$defs/str"}}
+        }
+      }
+    }
+  }
+}

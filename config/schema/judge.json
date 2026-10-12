@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Judge answer (B.5). One typed decision per call.",
+  "description": "Kept to keywords structured outputs accept: no numeric or length constraints. The answer's vocabulary per decision and the confidence range [0, 1] are checked in eval/judge.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["answer", "confidence"],
+  "properties": {
+    "answer": {"type": "string", "description": "Exactly one of the allowed answers listed in the prompt"},
+    "confidence": {"type": "number", "description": "Probability from 0 to 1 that the answer is correct"},
+    "missing": {
+      "type": "array",
+      "description": "Only when the question asks for it: the ids of the listed items that are absent",
+      "items": {"type": "string"}
+    }
+  }
+}

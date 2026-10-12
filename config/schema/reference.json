@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Reference extraction output (B.4). One call per prepared transcript per model family.",
+  "description": "Kept to keywords structured outputs accept: no numeric or length constraints, so importance is an enum. Item types are eval.reference.ITEM_TYPES (the ontology's fact_types plus task); owner_basis values are the ontology's.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["items"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "description": "Every item worth keeping from the call, one per distinct statement. Empty when there are none.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "text", "owner", "owner_basis", "mine", "due", "quote", "importance"],
+        "properties": {
+          "type": {"enum": ["decision", "task", "number", "risk", "open_question", "fact"]},
+          "text": {"type": "string", "description": "The item as a short, self-contained statement"},
+          "owner": {"type": ["string", "null"], "description": "Tasks only: \"Me\" for the recording owner, a named person, or null. Null for every other type"},
+          "owner_basis": {"enum": ["assigned", "volunteered", "others", "unclear"]},
+          "mine": {"type": "boolean", "description": "True only for a task the recording owner owns"},
+          "due": {"type": ["string", "null"], "description": "Tasks only: the deadline exactly as stated, or null"},
+          "quote": {"type": "string", "description": "Words copied verbatim from one transcript line that support this item"},
+          "importance": {"enum": [1, 2, 3]}
+        }
+      }
+    }
+  }
+}

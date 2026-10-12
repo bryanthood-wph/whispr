@@ -1,0 +1,85 @@
+{
+  "description": "Multi-hop retrieval fixture: seed of the C.6 retrieval-QA suite (docs/plan/C-knowledge-graph.md). Three synthetic episodes where each question needs 2-3 hops across entities, edges and tasks, one superseded edge (the as-of case), and the evidence chain each answer must cite. Names are references resolved by tests/test_kg_graph.py; quotes are verbatim substrings of the transcripts. No real people or data.",
+  "episodes": [
+    {"id": "ep-2026-09-01-1500", "meeting_start": "2026-09-01T15:00:00+00:00", "transcript": [
+      "[00:01:10] Others: Dana is leading the Atlas migration this quarter",
+      "[00:02:30] Others: Atlas runs on Snowflake for now",
+      "[00:04:05] Me: Sam will draft the Atlas cutover runbook by Friday"]},
+    {"id": "ep-2026-09-08-1500", "meeting_start": "2026-09-08T15:00:00+00:00", "transcript": [
+      "[00:00:40] Others: Priya owns our Snowflake account",
+      "[00:03:12] Others: Sam is on the Data Platform team",
+      "[00:05:01] Others: Dana sits in Data Platform too",
+      "[00:06:20] Others: Sam is helping Dana on Atlas"]},
+    {"id": "ep-2026-09-15-1500", "meeting_start": "2026-09-15T15:00:00+00:00", "transcript": [
+      "[00:02:00] Others: we decided to move Atlas to Databricks",
+      "[00:03:30] Others: Lee runs the Databricks workspace",
+      "[00:05:00] Me: Priya will close out the Snowflake contract"]}
+  ],
+  "people": [
+    {"name": "Dana Reyes", "email": "dana.reyes@example.test"},
+    {"name": "Sam Ortiz", "email": "sam.ortiz@example.test"},
+    {"name": "Priya Shah", "email": "priya.shah@example.test"},
+    {"name": "Lee Wong", "email": "lee.wong@example.test"}
+  ],
+  "entities": [
+    {"name": "Project Atlas", "type": "project"},
+    {"name": "Snowflake", "type": "system"},
+    {"name": "Databricks", "type": "system"},
+    {"name": "Data Platform", "type": "organization"}
+  ],
+  "edges": [
+    {"key": "dana-atlas", "src": "Dana Reyes", "relation": "works_on", "dst": "Project Atlas", "episode": "ep-2026-09-01-1500", "start": "00:01:10", "quote": "Dana is leading the Atlas migration"},
+    {"key": "atlas-snowflake", "src": "Project Atlas", "relation": "uses", "dst": "Snowflake", "episode": "ep-2026-09-01-1500", "start": "00:02:30", "quote": "Atlas runs on Snowflake for now"},
+    {"key": "priya-snowflake", "src": "Priya Shah", "relation": "responsible_for", "dst": "Snowflake", "episode": "ep-2026-09-08-1500", "start": "00:00:40", "quote": "Priya owns our Snowflake account"},
+    {"key": "sam-dataplatform", "src": "Sam Ortiz", "relation": "member_of", "dst": "Data Platform", "episode": "ep-2026-09-08-1500", "start": "00:03:12", "quote": "Sam is on the Data Platform team"},
+    {"key": "dana-dataplatform", "src": "Dana Reyes", "relation": "member_of", "dst": "Data Platform", "episode": "ep-2026-09-08-1500", "start": "00:05:01", "quote": "Dana sits in Data Platform too"},
+    {"key": "sam-atlas", "src": "Sam Ortiz", "relation": "works_on", "dst": "Project Atlas", "episode": "ep-2026-09-08-1500", "start": "00:06:20", "quote": "Sam is helping Dana on Atlas"},
+    {"key": "atlas-databricks", "src": "Project Atlas", "relation": "uses", "dst": "Databricks", "episode": "ep-2026-09-15-1500", "start": "00:02:00", "quote": "we decided to move Atlas to Databricks"},
+    {"key": "lee-databricks", "src": "Lee Wong", "relation": "responsible_for", "dst": "Databricks", "episode": "ep-2026-09-15-1500", "start": "00:03:30", "quote": "Lee runs the Databricks workspace"}
+  ],
+  "supersede": [
+    {"old": "atlas-snowflake", "new": "atlas-databricks", "reason": "Atlas moved from Snowflake to Databricks"}
+  ],
+  "facts": [
+    {"type": "decision", "subject": "Project Atlas", "text": "Atlas moves from Snowflake to Databricks", "episode": "ep-2026-09-15-1500", "start": "00:02:00", "quote": "we decided to move Atlas to Databricks"}
+  ],
+  "tasks": [
+    {"episode": "ep-2026-09-01-1500", "start": "00:04:05", "quote": "Sam will draft the Atlas cutover runbook by Friday", "owner": "Sam Ortiz", "owner_basis": "assigned", "action": "Draft the Atlas cutover runbook", "due": "Friday", "due_basis": "stated", "context": "Atlas migration", "entities": ["Project Atlas"]},
+    {"episode": "ep-2026-09-15-1500", "start": "00:05:00", "quote": "Priya will close out the Snowflake contract", "owner": "Priya Shah", "owner_basis": "assigned", "action": "Close out the Snowflake contract", "due": null, "due_basis": "not_stated", "context": "Atlas leaves Snowflake", "entities": ["Snowflake"]}
+  ],
+  "questions": [
+    {"question": "Who owns the task that came out of the project Dana Reyes is leading?",
+     "answer": "Sam Ortiz",
+     "steps": [
+       {"tool": "search", "args": {"query": "Dana"}, "expect": {"finds": "Dana Reyes"}},
+       {"tool": "neighbors", "args": {"entity_id": "Dana Reyes", "hops": 1, "relations": ["works_on"]},
+        "expect": {"reaches": "Project Atlas", "chain": ["Dana is leading the Atlas migration"]}},
+       {"tool": "timeline", "args": {"entity_id": "Project Atlas"},
+        "expect": {"task": {"owner": "Sam Ortiz", "quote": "Sam will draft the Atlas cutover runbook by Friday"}}},
+       {"tool": "source", "args": {"episode_id": "ep-2026-09-01-1500"},
+        "expect": {"span": "Sam will draft the Atlas cutover runbook by Friday"}}]},
+    {"question": "Who was responsible for the system Dana's project ran on in early September?",
+     "answer": "Priya Shah",
+     "steps": [
+       {"tool": "neighbors", "args": {"entity_id": "Dana Reyes", "hops": 3, "as_of": "2026-09-10T00:00:00+00:00"},
+        "expect": {"reaches": "Priya Shah", "chain": ["Dana is leading the Atlas migration", "Atlas runs on Snowflake for now", "Priya owns our Snowflake account"]}}]},
+    {"question": "Who is responsible for the system Dana's project runs on now?",
+     "answer": "Lee Wong",
+     "steps": [
+       {"tool": "neighbors", "args": {"entity_id": "Dana Reyes", "hops": 3},
+        "expect": {"reaches": "Lee Wong", "chain": ["Dana is leading the Atlas migration", "we decided to move Atlas to Databricks", "Lee runs the Databricks workspace"],
+                   "not_reaches": ["Priya Shah"]}}]},
+    {"question": "How are Sam Ortiz and Dana Reyes connected?",
+     "answer": "Both work on Project Atlas, and both are in Data Platform",
+     "steps": [
+       {"tool": "paths", "args": {"src_id": "Sam Ortiz", "dst_id": "Dana Reyes", "max_hops": 2},
+        "expect": {"paths": [["Sam is helping Dana on Atlas", "Dana is leading the Atlas migration"],
+                             ["Sam is on the Data Platform team", "Dana sits in Data Platform too"]]}}]},
+    {"question": "What did Project Atlas run on before Databricks, and why did it change?",
+     "answer": "Snowflake, until the 2026-09-15 decision to move Atlas to Databricks",
+     "steps": [
+       {"tool": "timeline", "args": {"entity_id": "Project Atlas"},
+        "expect": {"sequence": [["edge", "Atlas runs on Snowflake for now", "superseded"],
+                                ["edge", "we decided to move Atlas to Databricks", "active"]]}}]}
+  ]
+}

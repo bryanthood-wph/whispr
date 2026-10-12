@@ -16,7 +16,7 @@
 | Stage | Kind | Input → output | Idempotency key |
 |---|---|---|---|
 | **prepare** | code | transcript → prepared transcript + metadata (D.4) | transcript sha256 + prepare version + hash of the `prepare.*` config and the alias table |
-| **extract** | 1 model call | prepared transcript → unified JSON (summary, required `my_actions`, tasks, entities, facts, edges with quotes) validated against `config/schema/extract.json` | sha256 of the exact request (model, effort, system prompt, schema hash, input text) |
+| **extract** | 1 model call | prepared transcript → unified JSON (summary, required `my_actions`, tasks, entities, facts, edges with quotes) validated against `config/schema/extract.json` | sha256 of the exact request (CLI base args, model, effort, system prompt, schema hash, input text) |
 | **write** | code | JSON → graph rows + rendered summary note | episode id |
 | **maintain** | code + typed decisions | graph → repaired graph + health metrics (Appendix C.5) | run id |
 
@@ -132,6 +132,8 @@ Deterministic and versioned, and it gets its own checks (Appendix B.8):
   "tools_allowed": ["..."] }
 ```
 
+**Id collisions:** when two or more of one transcript's tasks share a quote, each id is instead sha1(episode + quote + "\x1f" + its action, lower-cased and whitespace-collapsed), so none is folded into another.
+
 - **Ownership in production** (JEV-style, and exactly what the eval
   scores).
   - `owner_basis` is a typed choice (assigned / volunteered / other's /
@@ -146,6 +148,10 @@ Deterministic and versioned, and it gets its own checks (Appendix B.8):
     added only if the eval winner alone misses the 90% precision bar.
 - **Lifecycle state lives only in the database**, never copied into files
   (lesson L19).
+- **A re-written transcript retracts the tasks it no longer produces.** The
+  task keeps its status, leaves the review, and records the transcript's
+  sha256 as the reason; it returns if a later write produces it again.
+  Approving or undoing a retraction in review is not built yet.
 - **Funnel metric:** captured → confirmed → ready → done. It is reported
   weekly. Today 0 of 1,262 vault items ever reached the task system
   (lesson L20).

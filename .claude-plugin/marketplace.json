@@ -1,0 +1,16 @@
+{
+  "name": "whispr",
+  "owner": {
+    "name": "whispr"
+  },
+  "metadata": {
+    "description": "The whispr Claude Code plugin, installed from this repository"
+  },
+  "plugins": [
+    {
+      "name": "whispr",
+      "source": "./plugin",
+      "description": "Your whispr meeting graph in Claude Code: graph tools, task review, the /whispr-graph pane, session-start alerts and /whispr-setup"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Entity resolution decision (C.5 step 1): are two graph records one entity?",
+  "description": "kg.er.schema. Kept to keywords structured outputs accept. The decision names must equal kg/resolve.py's SAME, DIFFERENT, UNSURE (checked when a Resolver is made).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decision", "reason"],
+  "properties": {
+    "decision": {"enum": ["same", "different", "unsure"], "description": "same: one entity recorded twice; different: two entities; unsure: the evidence does not settle it"},
+    "reason": {"type": "string", "description": "One sentence naming the evidence relied on"}
+  }
+}

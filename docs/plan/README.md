@@ -16,6 +16,7 @@
 | [E. Lessons learned](E-lessons.md) | you're about to build anything (26 mistakes not to repeat) |
 | [F. ASR & live assist](F-asr-live.md) | you're working on the audio or live tracks |
 | [G. Git & tracking](G-git-and-tracking.md) | you're opening a branch, issue or PR |
+| [Task intake and worker](task-intake-and-worker.md) | you're building task intake, the worker, or the Microsoft tools |
 
 ---
 
@@ -115,6 +116,7 @@ until its trigger fires.
 | Separate system-time columns | an "as recorded on" query is ever needed |
 | Audio replay harness for recorder tests | the live-call checklist misses a regression |
 | Effort sweeps beyond D/E, more prompt variants | a later change record needs them |
+| **Task intake and worker (your note, 2026-10-06): a clarify-style intake that sets each task's scope and brief, plus an on-demand whispr worker.** Planned in full in [task-intake-and-worker.md](task-intake-and-worker.md) | you say go (plan only for now) |
 
 ## 4. Agents: encouraged, least privilege
 
@@ -177,6 +179,15 @@ docs/              this plan, per-area READMEs, history/ (archived docs)
   re-pointed at `ops/` (Phase 8).
 
 ## 7. The march
+
+> **Reordered 2026-10-05 (your decision).** Phase 8's build starts now, on what is
+> already known (lessons, prepare, the task contract, config, distribution), with the
+> knowledge graph as the minimal SQLite core (C.3). The extract prompt is tuned in a
+> capped loop on a 25-transcript tuning set (`python -m eval run --stage dev`, $65 cap).
+> Phases 2–4 shrink to a **task-first** comparison (my-task measures; faithfulness on a
+> claim sample) that runs last, as the acceptance test of the built pipeline, followed by
+> your Phase 7 approvals and the Phase 8 cutover gates. The table below is the original
+> order. See `eval/PREREGISTRATION.md` (2026-10-05 reorder row).
 
 **Legend**
 - **Configs:**

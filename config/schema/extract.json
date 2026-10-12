@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Unified extraction output (B.8, D.1). One call per prepared transcript.",
+  "description": "Kept to keywords structured outputs accept: no numeric or length constraints. Type names must match config/ontology.yaml.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["headline", "sections", "my_actions", "other_tasks", "topics", "entities", "facts", "edges"],
+  "$defs": {
+    "timestamp": {"type": ["string", "null"], "description": "hh:mm:ss of the supporting turn, or null"},
+    "quote": {"type": "string", "description": "Verbatim words from the transcript that support this item"},
+    "due": {
+      "type": "object", "additionalProperties": false, "required": ["text", "basis"],
+      "properties": {
+        "text": {"type": ["string", "null"], "description": "The due date or time as stated, or null"},
+        "basis": {"enum": ["stated", "not_stated"]}
+      }
+    }
+  },
+  "properties": {
+    "headline": {"type": "string", "description": "One sentence: the core outcome of the call"},
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["heading", "points"],
+        "properties": {
+          "heading": {"type": "string"},
+          "points": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "my_actions": {
+      "type": "array",
+      "description": "Every task the owner was assigned or volunteered for, plus tasks whose ownership is unclear. Empty when there are none.",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["action", "owner_basis", "due", "context", "quote", "start"],
+        "properties": {
+          "action": {"type": "string"},
+          "owner_basis": {"enum": ["assigned", "volunteered", "unclear"]},
+          "due": {"$ref": "#/$defs/due"},
+          "context": {"type": "string", "description": "What someone needs to act without reading the transcript"},
+          "quote": {"$ref": "#/$defs/quote"},
+          "start": {"$ref": "#/$defs/timestamp"}
+        }
+      }
+    },
+    "other_tasks": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["action", "owner", "due", "context", "quote", "start"],
+        "properties": {
+          "action": {"type": "string"},
+          "owner": {"type": ["string", "null"], "description": "Named owner, or null if the call names none"},
+          "due": {"$ref": "#/$defs/due"},
+          "context": {"type": "string"},
+          "quote": {"$ref": "#/$defs/quote"},
+          "start": {"$ref": "#/$defs/timestamp"}
+        }
+      }
+    },
+    "topics": {"type": "array", "items": {"type": "string"}},
+    "entities": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["name", "type", "aliases"],
+        "properties": {
+          "name": {"type": "string"},
+          "type": {"enum": ["person", "organization", "project", "system", "topic"]},
+          "aliases": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "facts": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["type", "text", "subject", "quote", "start"],
+        "properties": {
+          "type": {"enum": ["decision", "number", "risk", "open_question", "fact"]},
+          "text": {"type": "string"},
+          "subject": {"type": ["string", "null"], "description": "Entity name this fact is about, or null"},
+          "quote": {"$ref": "#/$defs/quote"},
+          "start": {"$ref": "#/$defs/timestamp"}
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["src", "relation", "dst", "quote", "start"],
+        "properties": {
+          "src": {"type": "string"},
+          "relation": {"enum": ["works_on", "member_of", "responsible_for", "uses", "part_of", "related_to"]},
+          "dst": {"type": "string"},
+          "quote": {"$ref": "#/$defs/quote"},
+          "start": {"$ref": "#/$defs/timestamp"}
+        }
+      }
+    }
+  }
+}
