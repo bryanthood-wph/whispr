@@ -13,8 +13,10 @@
   own State already answers "is it still running?" with no guessing needed.
 
 .CHECKS
-  A — task disabled or deleted (would never self-heal, unlike a laptop being
-      off, which resolves itself the next time it's on).
+  A — REMOVED 2026-10-08: whispr-nightly-ingest is deliberately disabled (old
+      vault-sync pipeline retired in favor of whispr-rebuild's own pipeline).
+      See the comment at its old call site for why it had to go, not just be
+      skipped.
   B — today's nightly-ingest-<date>.log exists, the task is not currently
       Running, and its last line reports neither success nor failure — i.e.
       a run started and never reached a terminal state. This is today's
@@ -147,14 +149,15 @@ if ($detail) {
 
 $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 
-# -- Check A: task disabled or deleted ---------------------------------------
-if (-not $task -or -not $task.Settings.Enabled) {
-    $detail = if (-not $task) { "scheduled task '$TaskName' does not exist" } else { "scheduled task '$TaskName' exists but is disabled" }
-    Invoke-CheckFailure -Check 'A' -StepName 'watchdog-task-registration' -Detail $detail
-    Write-Log -Message "=== check-nightly-freshness done (Check A fired; Check B skipped — nothing to check without a task) ==="
-    return
-}
-Write-Log -Message "Check A OK: task '$TaskName' exists and is enabled."
+# -- Check A: REMOVED 2026-10-08 -----------------------------------------------
+# whispr-nightly-ingest is deliberately disabled (old vault-sync pipeline retired
+# in favor of whispr-rebuild's own pipeline). Check A's entire premise — "disabled
+# or deleted never self-heals, so alert" — assumed this job was always supposed
+# to be running; that's no longer true, so the check would fire a false alarm
+# every single run and (since Invoke-JobFailure exits 1) block Checks B/E/D below
+# it from ever running too. Check B is left in place: with no task and no log it
+# falls through to its own "no run today" OK path, so it's inert, not broken.
+# Checks C, E, D are unaffected and still the reason this task stays enabled.
 
 # -- Check B: today's run started but never reached a terminal state --------
 $todayLog = Join-Path $LogDir ('nightly-ingest-{0}.log' -f (Get-Date -Format 'yyyy-MM-dd'))
